@@ -17,7 +17,10 @@ export interface BusinessProfile {
 export interface DashboardMetrics {
   mrr: number;
   monthly_burn: number;
+  net_burn?: number;
+  is_profitable?: boolean;
   runway_months: number;
+  runway_status?: string;
   cash_balance: number;
   active_customers_count: number;
   overdue_invoices_count: number;
@@ -25,6 +28,7 @@ export interface DashboardMetrics {
   pending_tasks_count: number;
   goals_count: number;
   health_score: number;
+  tenant_id?: string;
 }
 
 export interface CouncilRole {
@@ -40,6 +44,7 @@ export interface DeliberationTranscriptItem {
   department: string;
   stage: string;
   content: string;
+  inference_engine?: "local_ollama" | "offline_simulated";
   timestamp: string;
 }
 
@@ -74,7 +79,7 @@ export interface AdviserScorecard {
   evidence_completeness_score: number;
   action_completion_rate: number;
   verified_outcome_rate: number;
-  last_evaluated: string;
+  last_evaluated?: string;
 }
 
 export interface DecisionRecord {
@@ -83,27 +88,34 @@ export interface DecisionRecord {
   business_context: string;
   advisers_consulted: string[];
   recommendations_summary: string;
-  assumptions: { id: string; text: string; status: string }[];
+  assumptions?: { id: string; text: string; status: string }[];
   dissenting_opinions: any[];
   founder_decision: string;
-  expected_outcomes: { metric: string; predicted_value: number; timeframe_days: number }[];
-  actual_outcomes: { metric: string; predicted_value: number; actual_value: number; absolute_error: number; percentage_error: number; verified_at: string; notes?: string }[];
+  founder_notes?: string;
+  expected_outcomes: { metric: string; predicted_value?: number; target_value?: number; timeframe_days: number; unit?: string }[];
+  actual_outcomes?: { metric: string; predicted_value?: number; actual_value: number; absolute_error?: number; percentage_error?: number; verified_at?: string; notes?: string }[];
   outcome_verified: boolean;
   outcome_notes?: string;
+  outcome_review_date: string;
   created_at: string;
 }
 
 export interface MemoryConflict {
   id: string;
-  entity_type: string;
+  entity_type?: string;
   entity_name: string;
   source_a: { name: string; value: string };
   source_b: { name: string; value: string };
-  classification: string;
-  explanation: string;
-  suggested_resolution: string;
+  source_a_name?: string;
+  source_a_value?: string;
+  source_b_name?: string;
+  source_b_value?: string;
+  field_name?: string;
+  classification?: string;
+  explanation?: string;
+  suggested_resolution?: string;
   status: string;
-  created_at: string;
+  created_at?: string;
 }
 
 export interface ProactiveAlert {
@@ -153,4 +165,21 @@ export interface GatewayStatus {
   profile_details: Record<string, any>;
   offline_mode?: boolean;
   message?: string;
+}
+
+export interface UserSession {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  business_id: string;
+  business_name: string;
+  api_key_preview?: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  api_key?: string;
+  user: UserSession;
 }

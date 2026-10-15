@@ -10,236 +10,378 @@ import {
   CustomAgent,
   WorkflowDef,
   GatewayStatus,
+  UserSession,
+  AuthResponse
 } from '../types';
 
 const API_BASE = '/api';
 
+export class ApiError extends Error {
+  status: number;
+  detail: any;
+
+  constructor(message: string, status: number, detail?: any) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  const token = localStorage.getItem('oneboard_token');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options.headers as Record<string, string> || {}),
+  };
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  // Do not set Content-Type for FormData uploads (browser sets multipart boundary)
+  if (options.body instanceof FormData) {
+    delete headers['Content-Type'];
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
+      headers,
+    });
+
+    if (!res.ok) {
+      let errMessage = `HTTP ${res.status}: ${res.statusText}`;
+      let errDetail: any = null;
+      try {
+        const data = await res.json();
+        errDetail = data.detail || data.message || data;
+        if (typeof errDetail === 'string') {
+          errMessage = errDetail;
+        } else if (errDetail) {
+          errMessage = JSON.stringify(errDetail);
+        }
+      } catch {
+        // Response body was not JSON
+      }
+      throw new ApiError(errMessage, res.status, errDetail);
+    }
+
+    return await res.json();
+  } catch (err: any) {
+    if (err instanceof ApiError) {
+      throw err;
+    }
+    throw new ApiError(
+      err?.message || 'Network connection failed. Ensure OneBoard API backend is running on port 8000.',
+      0
+    );
+  }
+}
+
 export const api = {
+  // Authentication & Sessions
+  login: async (email: string, password: string): Promise<AuthResponse> => {
+    const res = await request<AuthResponse>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    if (res.access_token) {
+      localStorage.setItem('oneboard_token', res.access_token);
+    }
+    return res;
+  },
+
+  register: async (payload: { email: string; password: string; name: string; company_name: string; industry?: string }): Promise<AuthResponse> => {
+    const res = await request<AuthResponse>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    if (res.access_token) {
+      localStorage.setItem('oneboard_token', res.access_token);
+    }
+    return res;
+  },
+
+  getMe: async (): Promise<UserSession> => {
+    return request<UserSession>('/auth/me');
+  },
+
+  logout: () => {
+    localStorage.removeItem('oneboard_token');
+  },
+
+  getAuthToken: (): string | null => {
+    return localStorage.getItem('oneboard_token');
+  },
+
   // Business & Metrics
   getBusiness: async (): Promise<BusinessProfile> => {
-    const res = await fetch(`${API_BASE}/business`);
-    return res.json();
+    return request<BusinessProfile>('/business');
   },
+
   getMetrics: async (): Promise<DashboardMetrics> => {
-    const res = await fetch(`${API_BASE}/business/metrics`);
-    return res.json();
+    return request<DashboardMetrics>('/business/metrics');
   },
+
   resetDemo: async (): Promise<any> => {
-    const res = await fetch(`${API_BASE}/business/seed-demo`, { method: 'POST' });
-    return res.json();
+    return request<any>('/business/seed-demo', { method: 'POST' });
   },
 
   // Council & Boardroom
   getCouncilRoles: async (): Promise<CouncilRole[]> => {
-    const res = await fetch(`${API_BASE}/council/roles`);
-    return res.json();
+    return request<CouncilRole[]>('/council/roles');
   },
+
   getCouncilMeetings: async (): Promise<CouncilMeeting[]> => {
-    const res = await fetch(`${API_BASE}/council/meetings`);
-    return res.json();
+    return request<CouncilMeeting[]>('/council/meetings');
   },
+
   deliberateMeeting: async (payload: { title: string; meeting_type: string; topic: string; selected_advisers?: string[] }): Promise<CouncilMeeting> => {
-    const res = await fetch(`${API_BASE}/council/deliberate`, {
+    return request<CouncilMeeting>('/council/deliberate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return res.json();
   },
+
   approveMeeting: async (meetingId: string, notes?: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/council/meetings/${meetingId}/approve`, {
+    return request<any>(`/council/meetings/${meetingId}/approve`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ decision_notes: notes }),
     });
-    return res.json();
   },
 
   // AI Gateway & Founder Command
   getGatewayStatus: async (): Promise<GatewayStatus> => {
-    const res = await fetch(`${API_BASE}/ai/status`);
-    return res.json();
+    return request<GatewayStatus>('/ai/status');
   },
+
   switchProfile: async (profile: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/ai/profile`, {
+    return request<any>('/ai/profile', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile }),
     });
-    return res.json();
   },
+
   benchmarkGateway: async (): Promise<any> => {
-    const res = await fetch(`${API_BASE}/ai/benchmark`, { method: 'POST' });
-    return res.json();
+    return request<any>('/ai/benchmark', { method: 'POST' });
   },
+
   executeCommand: async (command: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/ai/command`, {
+    return request<any>('/ai/command', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command }),
     });
-    return res.json();
   },
 
-  // Workflows & Visual Studio
+  // Workflows
   getWorkflows: async (): Promise<WorkflowDef[]> => {
-    const res = await fetch(`${API_BASE}/workflows`);
-    return res.json();
+    return request<WorkflowDef[]>('/workflows');
   },
-  createWorkflow: async (payload: any): Promise<WorkflowDef> => {
-    const res = await fetch(`${API_BASE}/workflows`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    return res.json();
+
+  getWorkflowRuns: async (): Promise<any[]> => {
+    return request<any[]>('/workflows/runs');
   },
-  executeWorkflow: async (workflowId: string, dryRun: boolean = false): Promise<any> => {
-    const res = await fetch(`${API_BASE}/workflows/${workflowId}/execute?dry_run=${dryRun}`, {
-      method: 'POST',
-    });
-    return res.json();
+
+  getWorkflowTemplates: async (): Promise<any[]> => {
+    return request<any[]>('/workflows/templates');
   },
-  generateWorkflowFromPrompt: async (prompt: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/workflows/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt }),
-    });
-    return res.json();
-  },
-  teachProcess: async (description: string, examples?: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/workflows/teach-process`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description, examples }),
-    });
-    return res.json();
-  },
+
   getPendingApprovals: async (): Promise<any[]> => {
-    const res = await fetch(`${API_BASE}/workflows/approvals`);
-    return res.json();
+    return request<any[]>('/workflows/approvals');
   },
+
   resolveApproval: async (requestId: string, action: 'approve' | 'reject', notes?: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/workflows/approvals/${requestId}/action`, {
+    return request<any>(`/workflows/approvals/${requestId}/action`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, notes }),
     });
-    return res.json();
-  },
-  getWorkflowTemplates: async (): Promise<any[]> => {
-    const res = await fetch(`${API_BASE}/workflows/templates`);
-    return res.json();
   },
 
-  // Agent Studio
-  getAgents: async (): Promise<CustomAgent[]> => {
-    const res = await fetch(`${API_BASE}/agents`);
-    return res.json();
-  },
-  createAgent: async (payload: any): Promise<CustomAgent> => {
-    const res = await fetch(`${API_BASE}/agents`, {
+  createWorkflow: async (payload: { name: string; description?: string; category: string; trigger_type: string; nodes: any[]; edges: any[] }): Promise<WorkflowDef> => {
+    return request<WorkflowDef>('/workflows', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return res.json();
   },
-  generateAgentConfig: async (prompt: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/agents/generate`, {
+
+  executeWorkflow: async (workflowId: string, dryRun: boolean = false): Promise<any> => {
+    return request<any>(`/workflows/${workflowId}/execute?dry_run=${dryRun}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    });
+  },
+
+  generateWorkflowPrompt: async (prompt: string): Promise<any> => {
+    return request<any>('/workflows/generate', {
+      method: 'POST',
       body: JSON.stringify({ prompt }),
     });
-    return res.json();
   },
-  testAgent: async (agentId: string, testInput: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/agents/${agentId}/test`, {
+
+  generateWorkflowFromPrompt: async (prompt: string): Promise<any> => {
+    return request<any>('/workflows/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+  },
+
+  teachProcess: async (description: string, examples?: string): Promise<any> => {
+    return request<any>('/workflows/teach-process', {
+      method: 'POST',
+      body: JSON.stringify({ description, examples }),
+    });
+  },
+
+  // Custom Agents
+  getAgents: async (): Promise<CustomAgent[]> => {
+    return request<CustomAgent[]>('/agents');
+  },
+
+  createAgent: async (agentData: any): Promise<CustomAgent> => {
+    return request<CustomAgent>('/agents', {
+      method: 'POST',
+      body: JSON.stringify(agentData),
+    });
+  },
+
+  generateAgentPrompt: async (prompt: string): Promise<any> => {
+    return request<any>('/agents/generate', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    });
+  },
+
+  generateAgentConfig: async (prompt: string): Promise<any> => {
+    return request<any>('/agents/generate', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    });
+  },
+
+  testAgent: async (agentId: string, testInput: string): Promise<any> => {
+    return request<any>(`/agents/${agentId}/test`, {
+      method: 'POST',
       body: JSON.stringify({ test_input: testInput }),
     });
-    return res.json();
+  },
+
+  toggleAgentStatus: async (agentId: string): Promise<any> => {
+    return request<any>(`/agents/${agentId}/toggle-status`, {
+      method: 'POST',
+    });
   },
 
   // Accountability & Outcomes
   getDecisions: async (): Promise<DecisionRecord[]> => {
-    const res = await fetch(`${API_BASE}/accountability/decisions`);
-    return res.json();
-  },
-  getScorecards: async (): Promise<AdviserScorecard[]> => {
-    const res = await fetch(`${API_BASE}/accountability/scorecards`);
-    return res.json();
-  },
-  verifyOutcome: async (payload: { decision_id: string; metric_name: string; actual_value: number; notes?: string }): Promise<any> => {
-    const res = await fetch(`${API_BASE}/accountability/verify-outcome`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    return res.json();
+    return request<DecisionRecord[]>('/accountability/decisions');
   },
 
-  // Memory & Knowledge Graph
-  searchMemory: async (query: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/memory/search`, {
+  getScorecards: async (): Promise<AdviserScorecard[]> => {
+    return request<AdviserScorecard[]>('/accountability/scorecards');
+  },
+
+  verifyOutcome: async (
+    payloadOrId: string | { decision_id: string; metric_name: string; actual_value: number; notes?: string },
+    metricName?: string,
+    actualValue?: number,
+    notes?: string
+  ): Promise<any> => {
+    let body: any;
+    if (typeof payloadOrId === 'object' && payloadOrId !== null) {
+      body = payloadOrId;
+    } else {
+      body = {
+        decision_id: payloadOrId,
+        metric_name: metricName,
+        actual_value: actualValue,
+        notes,
+      };
+    }
+    return request<any>('/accountability/verify-outcome', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify(body),
     });
-    return res.json();
-  },
-  getMemoryGraph: async (): Promise<any> => {
-    const res = await fetch(`${API_BASE}/memory/graph`);
-    return res.json();
-  },
-  getConflicts: async (): Promise<MemoryConflict[]> => {
-    const res = await fetch(`${API_BASE}/memory/conflicts`);
-    return res.json();
-  },
-  resolveConflict: async (conflictId: string, resolution: string, action: string = 'custom'): Promise<any> => {
-    const res = await fetch(`${API_BASE}/memory/conflicts/${conflictId}/resolve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resolution, action }),
-    });
-    return res.json();
   },
 
   // Proactive Alerts
   getAlerts: async (): Promise<ProactiveAlert[]> => {
-    const res = await fetch(`${API_BASE}/alerts`);
-    return res.json();
+    return request<ProactiveAlert[]>('/alerts');
+  },
+
+  // Business Memory & Graph
+  searchMemory: async (query: string, topK: number = 5): Promise<any> => {
+    return request<any>('/memory/search', {
+      method: 'POST',
+      body: JSON.stringify({ query, top_k: topK }),
+    });
+  },
+
+  getMemoryGraph: async (): Promise<any> => {
+    return request<any>('/memory/graph');
+  },
+
+  getMemoryConflicts: async (): Promise<MemoryConflict[]> => {
+    return request<MemoryConflict[]>('/memory/conflicts');
+  },
+
+  getConflicts: async (): Promise<MemoryConflict[]> => {
+    return request<MemoryConflict[]>('/memory/conflicts');
+  },
+
+  resolveConflict: async (conflictId: string, resolution: string, action: string): Promise<any> => {
+    return request<any>(`/memory/conflicts/${conflictId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ resolution, action }),
+    });
+  },
+
+  uploadDocument: async (file: File): Promise<any> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return request<any>('/memory/upload', {
+      method: 'POST',
+      body: formData,
+    });
   },
 
   // Integrations
   getIntegrations: async (): Promise<any[]> => {
-    const res = await fetch(`${API_BASE}/integrations`);
-    return res.json();
+    return request<any[]>('/integrations');
   },
-  syncIntegration: async (id: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/integrations/${id}/sync`, { method: 'POST' });
-    return res.json();
-  },
-  importChat: async (conversation_text: string): Promise<any> => {
-    const res = await fetch(`${API_BASE}/integrations/import-chat`, {
+
+  syncIntegration: async (integrationId: string): Promise<any> => {
+    return request<any>(`/integrations/${integrationId}/sync`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ conversation_text }),
     });
-    return res.json();
   },
-  getCRMContacts: async (): Promise<any[]> => {
-    const res = await fetch(`${API_BASE}/integrations/crm/contacts`);
-    return res.json();
+
+  importChatConversation: async (conversationText: string): Promise<any> => {
+    return request<any>('/integrations/import-chat', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_text: conversationText }),
+    });
   },
+
+  importChat: async (conversationText: string): Promise<any> => {
+    return request<any>('/integrations/import-chat', {
+      method: 'POST',
+      body: JSON.stringify({ conversation_text: conversationText }),
+    });
+  },
+
+  getCRMContacts: async (): Promise<any> => {
+    return request<any>('/integrations/crm/contacts');
+  },
+
   getFinanceLedger: async (): Promise<any> => {
-    const res = await fetch(`${API_BASE}/integrations/finance/ledger`);
-    return res.json();
+    return request<any>('/integrations/finance/ledger');
   },
-  getEmailOutbox: async (): Promise<any[]> => {
-    const res = await fetch(`${API_BASE}/integrations/email/outbox`);
-    return res.json();
+
+  getEmailOutbox: async (): Promise<any> => {
+    return request<any>('/integrations/email/outbox');
+  },
+
+  getGithubStatus: async (): Promise<any> => {
+    return request<any>('/integrations/github/status');
   },
 };
