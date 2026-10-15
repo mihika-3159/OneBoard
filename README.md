@@ -58,6 +58,20 @@ Solopreneurs, boutique agency owners, and technical consultants operate at a str
 
 ---
 
+## Capability Status & Implementation Honesty Matrix
+
+| Module / Feature | Execution Status | Implementation Details |
+|---|---|---|
+| **Multi-Agent Boardroom** | ✅ Full Implementation | Dynamic peer cross-examination, evidence-grounded analysis via local Ollama or deterministic heuristic fallback |
+| **Workflow DAG Runtime** | ✅ Full Implementation | Kahn's algorithm topological execution, cycle rejection, and checkpointed HITL approval resumption |
+| **Financial Core** | ✅ Full Implementation | Pure deterministic Python arithmetic for MRR, burn rate, cash runway, and composite health score |
+| **Multi-Tenant Auth** | ✅ Full Implementation | Salted PBKDF2 hashing, signed session tokens, API keys, and strict 403 cross-tenant isolation |
+| **Evidence Vault** | ✅ Full Implementation | 10MB quota, MIME whitelist, SHA-256 cryptographic provenance hashing, and path traversal protection |
+| **Demo Integrations (CRM/Email)** | 🔬 Sandbox Simulation | Local sandbox adapters labeled `is_simulated: True`. Safe for demonstrations without paid external APIs |
+| **Audit & QA Verification** | 🛡️ Audited & Verified | 51 automated tests (unit, integration, adversarial, Ollama gateway). See [`docs/QA_AUDIT_REPORT.md`](docs/QA_AUDIT_REPORT.md) |
+
+---
+
 ## System Architecture
 
 ```mermaid
