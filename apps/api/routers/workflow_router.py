@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from apps.api.core.database import get_db
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.models.business import User
 from apps.api.models.workflow import WorkflowDefinition, WorkflowRun, ApprovalRequest
 from apps.api.services.workflow_engine import workflow_engine
 from apps.api.services.natural_language_builder import natural_language_builder
-from apps.api.services.seed_data import DEMO_BUSINESS_ID
 
 router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 
@@ -31,17 +32,26 @@ class ApprovalActionRequest(BaseModel):
     notes: Optional[str] = None
 
 @router.get("")
-def list_workflows(db: Session = Depends(get_db)):
-    return db.query(WorkflowDefinition).filter(WorkflowDefinition.business_id == DEMO_BUSINESS_ID).all()
+def list_workflows(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return db.query(WorkflowDefinition).filter(
+        WorkflowDefinition.business_id == current_user.business_id
+    ).all()
 
 @router.post("")
-def create_workflow(req: WorkflowCreateRequest, db: Session = Depends(get_db)):
+def create_workflow(
+    req: WorkflowCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     validation = workflow_engine.validate_workflow({"nodes": req.nodes, "edges": req.edges})
     if not validation.get("is_valid"):
-        raise HTTPException(status_code=400, detail=validation.get("error"))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation.get("error"))
 
     wf = WorkflowDefinition(
-        business_id=DEMO_BUSINESS_ID,
+        business_id=current_user.business_id,
         name=req.name,
         description=req.description,
         category=req.category,
@@ -57,21 +67,31 @@ def create_workflow(req: WorkflowCreateRequest, db: Session = Depends(get_db)):
     return wf
 
 @router.post("/{workflow_id}/execute")
-def execute_workflow(workflow_id: str, dry_run: bool = False, db: Session = Depends(get_db)):
+def execute_workflow(
+    workflow_id: str,
+    dry_run: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     try:
         run = workflow_engine.execute_workflow(
             db=db,
-            business_id=DEMO_BUSINESS_ID,
+            business_id=current_user.business_id,
             workflow_id=workflow_id,
             dry_run=dry_run
         )
         return run
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 @router.get("/runs")
-def list_runs(db: Session = Depends(get_db)):
-    return db.query(WorkflowRun).filter(WorkflowRun.business_id == DEMO_BUSINESS_ID).order_by(WorkflowRun.started_at.desc()).all()
+def list_runs(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return db.query(WorkflowRun).filter(
+        WorkflowRun.business_id == current_user.business_id
+    ).order_by(WorkflowRun.started_at.desc()).all()
 
 @router.post("/generate")
 async def generate_from_prompt(req: PromptGenerationRequest):
@@ -83,26 +103,37 @@ async def teach_process(req: TeachProcessRequest):
     return await natural_language_builder.teach_a_process(req.description, req.examples)
 
 @router.get("/approvals")
-def get_pending_approvals(db: Session = Depends(get_db)):
+def get_pending_approvals(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     return db.query(ApprovalRequest).filter(
-        ApprovalRequest.business_id == DEMO_BUSINESS_ID,
+        ApprovalRequest.business_id == current_user.business_id,
         ApprovalRequest.status == "pending"
     ).all()
 
 @router.post("/approvals/{request_id}/action")
-def resolve_approval(request_id: str, req: ApprovalActionRequest, db: Session = Depends(get_db)):
+def resolve_approval(
+    request_id: str,
+    req: ApprovalActionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     approval = db.query(ApprovalRequest).filter(ApprovalRequest.id == request_id).first()
     if not approval:
-        raise HTTPException(status_code=404, detail="Approval request not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
+
+    enforce_tenant_boundary(approval.business_id, current_user)
 
     if req.action == "approve" and approval.workflow_run_id:
-        run = workflow_engine.approve_and_resume_run(db, approval.workflow_run_id, request_id)
-        return {"status": "approved", "run": run}
+        try:
+            run = workflow_engine.approve_and_resume_run(db, approval.workflow_run_id, request_id)
+            return {"status": "approved", "run": run}
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     else:
-        approval.status = "rejected"
-        approval.reviewer_notes = req.notes
-        db.commit()
-        return {"status": "rejected", "request_id": request_id}
+        run = workflow_engine.reject_run(db, approval.workflow_run_id, request_id, notes=req.notes)
+        return {"status": "rejected", "request_id": request_id, "run": run}
 
 @router.get("/templates")
 def get_workflow_templates():

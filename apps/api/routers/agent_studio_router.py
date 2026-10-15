@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 from apps.api.core.database import get_db
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.models.business import User
 from apps.api.models.workflow import CustomAgent
 from apps.api.services.natural_language_builder import natural_language_builder
 from apps.api.services.ollama_gateway import ollama_gateway
-from apps.api.services.seed_data import DEMO_BUSINESS_ID
 
 router = APIRouter(prefix="/api/agents", tags=["Agent Studio"])
 
@@ -28,13 +29,22 @@ class AgentTestRequest(BaseModel):
     test_input: str
 
 @router.get("")
-def list_agents(db: Session = Depends(get_db)):
-    return db.query(CustomAgent).filter(CustomAgent.business_id == DEMO_BUSINESS_ID).all()
+def list_agents(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return db.query(CustomAgent).filter(
+        CustomAgent.business_id == current_user.business_id
+    ).all()
 
 @router.post("")
-def create_agent(req: AgentCreateRequest, db: Session = Depends(get_db)):
+def create_agent(
+    req: AgentCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     agent = CustomAgent(
-        business_id=DEMO_BUSINESS_ID,
+        business_id=current_user.business_id,
         name=req.name,
         role_title=req.role_title,
         department=req.department,
@@ -56,10 +66,17 @@ async def generate_agent_config(req: AgentGenerateRequest):
     return await natural_language_builder.generate_agent_from_prompt(req.prompt)
 
 @router.post("/{agent_id}/test")
-async def test_agent(agent_id: str, req: AgentTestRequest, db: Session = Depends(get_db)):
+async def test_agent(
+    agent_id: str,
+    req: AgentTestRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     agent = db.query(CustomAgent).filter(CustomAgent.id == agent_id).first()
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    enforce_tenant_boundary(agent.business_id, current_user)
 
     res = await ollama_gateway.chat_complete(
         messages=[{"role": "user", "content": req.test_input}],
@@ -71,14 +88,22 @@ async def test_agent(agent_id: str, req: AgentTestRequest, db: Session = Depends
         "input": req.test_input,
         "output": res.get("content"),
         "model_used": res.get("model"),
-        "simulated": res.get("simulated", False)
+        "simulated": res.get("simulated", False),
+        "inference_engine": "offline_simulated" if res.get("simulated") else "local_ollama"
     }
 
 @router.post("/{agent_id}/toggle-status")
-def toggle_agent_status(agent_id: str, db: Session = Depends(get_db)):
+def toggle_agent_status(
+    agent_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     agent = db.query(CustomAgent).filter(CustomAgent.id == agent_id).first()
     if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    enforce_tenant_boundary(agent.business_id, current_user)
+
     agent.status = "paused" if agent.status == "active" else "active"
     db.commit()
     return {"id": agent.id, "status": agent.status}

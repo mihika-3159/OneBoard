@@ -1,7 +1,8 @@
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import uuid
-from apps.api.models.business import Business
+from apps.api.models.business import Business, User
+from apps.api.core.auth import hash_password
 from apps.api.models.entities import Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket
 from apps.api.models.goals_tasks import Goal, Task, Project
 from apps.api.models.decision_evidence import Decision, Evidence
@@ -20,7 +21,7 @@ def seed_northstar_studio(db: Session, reset: bool = False):
         if not reset:
             return existing
         # Clear existing records for clean reset
-        for model in [Business, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
+        for model in [Business, User, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
                       Goal, Task, Project, Decision, Evidence, CouncilMeeting, AdviserScorecard,
                       MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict,
                       CustomAgent, WorkflowDefinition, IntegrationAccount]:
@@ -48,6 +49,18 @@ def seed_northstar_studio(db: Session, reset: bool = False):
         runway_months=7.2
     )
     db.add(business)
+
+    founder_user = User(
+        id="user-northstar-founder",
+        email="founder@northstar.studio",
+        name="Alex Mercer (Solo Founder)",
+        role="founder",
+        hashed_password=hash_password("oneboard2026"),
+        api_key="obk_northstar_demo_master_key_local",
+        business_id=DEMO_BUSINESS_ID,
+        is_active=True
+    )
+    db.add(founder_user)
 
     # 2. Products
     p1 = Product(id="prod-1", business_id=DEMO_BUSINESS_ID, name="Starter Plan", tier="Starter", price=29.0, billing_interval="monthly", description="Up to 100k events/mo, 3 endpoints, community support.", active_customers_count=14)
