@@ -46,3 +46,42 @@ test('two registered founders cannot read each other business records', async ({
     expect((await bBusiness.json()).id).toBe(userB.business.id);
   } finally { await a.close(); await b.close(); }
 });
+
+
+test('tenant B cannot execute tenant A workflow or see its definition', async ({ browser }) => {
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const base = 'http://127.0.0.1:4173';
+  try {
+    const register = async (ctx: typeof a, label: string) => {
+      const res = await ctx.request.post(base + '/api/auth/register', {
+        data: { name: label, email: `e2e-${randomUUID()}@example.test`, password: 'TestPassword123!', business_name: label }
+      });
+      expect(res.status()).toBe(201);
+      return res.json();
+    };
+    const userA = await register(a, 'Workflow Owner');
+    const userB = await register(b, 'Other Tenant');
+    const headersA = { Authorization: `Bearer ${userA.token}` };
+    const headersB = { Authorization: `Bearer ${userB.token}` };
+    const created = await a.request.post(base + '/api/workflows', {
+      headers: headersA,
+      data: { name: 'Tenant A private workflow', nodes: [], edges: [] }
+    });
+    expect(created.status(), await created.text()).toBe(200);
+    const workflow = await created.json();
+    expect(workflow.business_id).toBe(userA.business.id);
+    const listB = await b.request.get(base + '/api/workflows', { headers: headersB });
+    expect(listB.status()).toBe(200);
+    expect((await listB.json()).some((w: { id: string }) => w.id === workflow.id)).toBe(false);
+    const forbidden = await b.request.post(base + `/api/workflows/${workflow.id}/execute?dry_run=true`, {
+      headers: headersB
+    });
+    expect(forbidden.status()).toBe(403);
+    const listA = await a.request.get(base + '/api/workflows', { headers: headersA });
+    expect((await listA.json()).some((w: { id: string }) => w.id === workflow.id)).toBe(true);
+  } finally {
+    await a.close();
+    await b.close();
+  }
+});
