@@ -133,6 +133,8 @@ export const App: React.FC = () => {
       setCurrentUser(null);
       setCurrentBusiness(null);
       setIsAuthenticated(false);
+      setIsRegisterMode(false);
+      setAuthPassword('');
       setAlerts([]);
       setActiveTab('overview');
     }
