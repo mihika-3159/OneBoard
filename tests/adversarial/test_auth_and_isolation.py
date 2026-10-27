@@ -222,8 +222,15 @@ def multi_tenant_fixture():
     db.commit()
 
     # Mint sessions
-    token_a = create_access_token(user_id=user_a.id, business_id=biz_a.id, role=user_a.role)
-    token_b = create_access_token(user_id=user_b.id, business_id=biz_b.id, role=user_b.role)
+    from secrets import token_hex
+    session_a, session_b = token_hex(16), token_hex(16)
+    db.add_all([
+        UserSession(id=session_a, user_id=user_a.id, business_id=biz_a.id, expires_at=datetime.utcnow() + timedelta(hours=1), is_revoked=False),
+        UserSession(id=session_b, user_id=user_b.id, business_id=biz_b.id, expires_at=datetime.utcnow() + timedelta(hours=1), is_revoked=False),
+    ])
+    db.commit()
+    token_a = create_access_token(user_id=user_a.id, business_id=biz_a.id, role=user_a.role, jti=session_a)
+    token_b = create_access_token(user_id=user_b.id, business_id=biz_b.id, role=user_b.role, jti=session_b)
 
     yield {
         "db": db,
