@@ -238,12 +238,11 @@ def verify_csrf_protection(request: Request) -> None:
             )
 
     # Double submit cookie check if csrf cookie or header is provided
-    if csrf_cookie or csrf_header:
-        if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="CSRF token mismatch or missing X-CSRF-Token header."
-            )
+    if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF token mismatch or missing X-CSRF-Token header."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +324,8 @@ def get_current_user(
         # Verify session revocation in database if jti is present
         if jti:
             session_record = db.query(UserSession).filter(UserSession.id == jti).first()
+            if not session_record or session_record.user_id != user_id or session_record.business_id != payload.get("biz"):
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unknown or mismatched session.")
             if session_record:
                 if session_record.is_revoked:
                     raise HTTPException(
@@ -346,6 +347,8 @@ def get_current_user(
                 detail="User account associated with this session no longer exists or is inactive.",
                 headers={"WWW-Authenticate": "Bearer"}
             )
+        if user.business_id != payload.get("biz"):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session tenant mismatch.")
         return user
 
     # 2. X-API-Key Header Authentication
