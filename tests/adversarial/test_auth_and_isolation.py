@@ -502,3 +502,42 @@ class TestLoginThrottling:
         assert exc_info.value.status_code == 429
 
         reset_login_throttle(throttle_id)
+
+
+# Additional regression cases: missing CSRF and untracked or mismatched sessions.
+class TestFailClosedSessionAndCsrf:
+    def test_cookie_mutation_without_csrf_header_rejected(self, multi_tenant_fixture):
+        f = multi_tenant_fixture
+        with TestClient(app, raise_server_exceptions=False) as isolated:
+            isolated.cookies.set("oneboard_session", f["token_a"])
+            response = isolated.post("/api/workflows", json={
+                "name": "No CSRF header", "nodes": [], "edges": []
+            })
+            assert response.status_code == 403
+
+    def test_signed_token_without_database_session_rejected(self, multi_tenant_fixture):
+        f = multi_tenant_fixture
+        token = create_access_token(user_id=f["user_a"].id, business_id=f["biz_a"].id)
+        response = client.get("/api/business", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 401
+
+    def test_signed_token_with_wrong_tenant_rejected(self, multi_tenant_fixture):
+        f = multi_tenant_fixture
+        db = f["db"]
+        from secrets import token_hex
+        session_id = token_hex(16)
+        db.add(UserSession(
+            id=session_id,
+            user_id=f["user_a"].id,
+            business_id=f["biz_a"].id,
+            expires_at=datetime.utcnow() + timedelta(hours=1),
+            is_revoked=False,
+        ))
+        db.commit()
+        token = create_access_token(
+            user_id=f["user_a"].id,
+            business_id=f["biz_b"].id,
+            jti=session_id,
+        )
+        response = client.get("/api/business", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 401
