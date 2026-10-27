@@ -12,7 +12,7 @@ test('founder registers, sees workspace, logs out and cannot reuse session', asy
   await page.locator('input[type=password]').fill('TestPassword123!');
   await page.getByRole('button', { name: 'Create Workspace & Sign In' }).click();
   await expect(page.getByText('CI Founder')).toBeVisible();
-  await expect(page.getByText('CI Workspace')).toBeVisible();
+  await expect(page.getByRole('complementary').getByText('CI Workspace')).toBeVisible();
   const me = await page.request.get('/api/auth/me');
   expect(me.status()).toBe(200);
   await page.getByTitle('Log out and invalidate session').click();
