@@ -134,6 +134,8 @@ class WorkflowEngine:
         wf = db.query(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id).first()
         if not wf:
             raise ValueError(f"Workflow {workflow_id} not found")
+        if wf.business_id != business_id:
+            raise PermissionError(f"Workflow {workflow_id} does not belong to business {business_id}")
 
         run = WorkflowRun(
             workflow_id=wf.id,
@@ -230,11 +232,15 @@ class WorkflowEngine:
         else:
             return {"executed": True, "type": node_type, "label": node_data.get("label")}
 
-    def approve_and_resume_run(self, db: Session, run_id: str, request_id: str) -> WorkflowRun:
+    def approve_and_resume_run(self, db: Session, run_id: str, request_id: str, business_id: Optional[str] = None) -> WorkflowRun:
         req = db.query(ApprovalRequest).filter(ApprovalRequest.id == request_id).first()
         run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).first()
         if not req or not run:
             raise ValueError("Invalid approval or run ID")
+        if req.business_id != run.business_id:
+            raise PermissionError("Cross-tenant approval request and run mismatch")
+        if business_id and (req.business_id != business_id or run.business_id != business_id):
+            raise PermissionError(f"Approval request does not belong to business {business_id}")
 
         req.status = "approved"
         req.reviewed_at = datetime.utcnow()
