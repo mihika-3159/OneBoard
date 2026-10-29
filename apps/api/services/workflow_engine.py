@@ -124,7 +124,7 @@ class WorkflowEngine:
                 raise ValueError("Workflow edge must be an object")
             source, target = edge.get("source"), edge.get("target")
             if source not in by_id or target not in by_id:
-                raise ValueError("Workflow contains a dangling edge")
+                raise ValueError("Dangling edge in workflow graph")
             if (source, target) in seen_edges:
                 raise ValueError("Workflow contains a duplicate edge")
             seen_edges.add((source, target))
