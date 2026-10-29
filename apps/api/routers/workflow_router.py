@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Literal
+from datetime import datetime
 from apps.api.core.database import get_db
-from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.workflow import WorkflowDefinition, WorkflowRun, ApprovalRequest
 from apps.api.services.workflow_engine import workflow_engine
@@ -28,7 +29,7 @@ class TeachProcessRequest(BaseModel):
     examples: Optional[str] = None
 
 class ApprovalActionRequest(BaseModel):
-    action: str # "approve", "reject"
+    action: Literal["approve", "reject"]
     notes: Optional[str] = None
 
 @router.get("")
@@ -129,7 +130,7 @@ def get_pending_approvals(
 def resolve_approval(
     request_id: str,
     req: ApprovalActionRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     approval = db.query(ApprovalRequest).filter(ApprovalRequest.id == request_id).first()
@@ -137,8 +138,15 @@ def resolve_approval(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
 
     enforce_tenant_boundary(approval.business_id, current_user)
+    if approval.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval already resolved")
 
-    if req.action == "approve" and approval.workflow_run_id:
+    if req.action == "approve":
+        if not approval.workflow_run_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Approval is not associated with a workflow run"
+            )
         try:
             run = workflow_engine.approve_and_resume_run(
                 db=db,
@@ -147,13 +155,69 @@ def resolve_approval(
                 business_id=current_user.business_id
             )
             return {"status": "approved", "run": run}
-        except Exception as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    else:
-        approval.status = "rejected"
-        approval.reviewer_notes = req.notes
-        db.commit()
-        return {"status": "rejected", "request_id": request_id}
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc)
+            ) from exc
+
+    # Rejecting a workflow gate must terminate its run, not strand it in
+    # awaiting_approval. Claim the pending request and run in one transaction.
+    run = None
+    if approval.workflow_run_id:
+        run = db.query(WorkflowRun).filter(
+            WorkflowRun.id == approval.workflow_run_id,
+            WorkflowRun.business_id == current_user.business_id,
+        ).first()
+        if (
+            not run
+            or run.status != "awaiting_approval"
+            or run.current_step_id != (approval.payload or {}).get("step_id")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Approval checkpoint is no longer pending"
+            )
+
+    now = datetime.utcnow()
+    claimed = db.query(ApprovalRequest).filter(
+        ApprovalRequest.id == request_id,
+        ApprovalRequest.business_id == current_user.business_id,
+        ApprovalRequest.status == "pending",
+    ).update(
+        {"status": "rejected", "reviewer_notes": req.notes, "reviewed_at": now},
+        synchronize_session=False,
+    )
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval already resolved")
+    if run:
+        run_claimed = db.query(WorkflowRun).filter(
+            WorkflowRun.id == run.id,
+            WorkflowRun.business_id == current_user.business_id,
+            WorkflowRun.status == "awaiting_approval",
+        ).update(
+            {
+                "status": "failed",
+                "error_message": "Founder rejected workflow approval",
+                "completed_at": now,
+                "verified_success": False,
+            },
+            synchronize_session=False,
+        )
+        if run_claimed != 1:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run already resolved")
+        results = dict(run.step_results or {})
+        results[run.current_step_id] = {
+            "status": "rejected", "request_id": request_id, "timestamp": now.isoformat()
+        }
+        db.query(WorkflowRun).filter(WorkflowRun.id == run.id).update(
+            {"step_results": results}, synchronize_session=False
+        )
+    db.commit()
+    return {"status": "rejected", "request_id": request_id}
+
 
 @router.get("/templates")
 def get_workflow_templates(current_user: User = Depends(get_current_user)):
