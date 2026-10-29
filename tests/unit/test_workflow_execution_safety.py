@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import Session
 
 from apps.api.core.database import Base
@@ -22,7 +23,7 @@ from apps.api.services.workflow_engine import workflow_engine
 
 @pytest.fixture
 def db():
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         yield session
@@ -177,3 +178,40 @@ def test_failed_step_after_approval_does_not_complete(db):
     assert run.status == "failed"
     assert run.verified_success is False
     assert run.step_results["broken"]["status"] == "failed"
+
+
+def test_reject_approval_terminates_run_and_replay_is_blocked(db):
+    from types import SimpleNamespace
+    from fastapi.testclient import TestClient
+    from apps.api.main import app
+    from apps.api.core.database import get_db
+    from apps.api.core.auth import get_current_user
+
+    wf = make_workflow(
+        db, [node("gate", "approval"), node("after")],
+        edges(("gate", "after")),
+    )
+    with patch.object(workflow_engine, "_dispatch_node_tool") as dispatch:
+        run = workflow_engine.execute_workflow(db, "tenant-a", wf.id)
+        approval = db.query(ApprovalRequest).filter_by(workflow_run_id=run.id).one()
+        app.dependency_overrides[get_db] = lambda: db
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+            id="founder-a", business_id="tenant-a", role="founder"
+        )
+        try:
+            client = TestClient(app, raise_server_exceptions=False)
+            endpoint = f"/api/workflows/approvals/{approval.id}/action"
+            invalid = client.post(endpoint, json={"action": "arbitrary"})
+            assert invalid.status_code == 422
+            rejected = client.post(endpoint, json={"action": "reject", "notes": "Not authorized"})
+            assert rejected.status_code == 200, rejected.text
+            db.expire_all()
+            assert db.get(WorkflowRun, run.id).status == "failed"
+            assert db.get(WorkflowRun, run.id).step_results["gate"]["status"] == "rejected"
+            assert db.get(ApprovalRequest, approval.id).status == "rejected"
+            assert client.post(endpoint, json={"action": "reject"}).status_code == 409
+            assert client.post(endpoint, json={"action": "approve"}).status_code == 409
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            app.dependency_overrides.pop(get_current_user, None)
+        dispatch.assert_not_called()
