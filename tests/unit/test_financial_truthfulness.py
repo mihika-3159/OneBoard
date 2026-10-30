@@ -143,3 +143,17 @@ def test_financial_snapshot_provenance_and_no_cross_tenant_overdue(db):
     assert snapshot["overdue_receivables_amount"] == 0
     assert snapshot["financial_sources"]["cash_balance"] == "business_profile"
     assert snapshot["financial_data_updated_at"] is not None
+
+
+def test_cash_only_does_not_produce_fake_health_score(db):
+    business = Business(name="Cash Only", current_cash_balance=50000)
+    db.add(business)
+    db.commit()
+    metrics = get_dashboard_metrics(
+        current_user=SimpleNamespace(business_id=business.id), db=db
+    )
+    assert metrics["cash_balance"] == 50000
+    assert metrics["mrr"] == 0
+    assert metrics["monthly_burn"] == 0
+    assert metrics["health_score"] is None
+    assert metrics["runway_months"] is None
