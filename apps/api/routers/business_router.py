@@ -98,7 +98,7 @@ def get_dashboard_metrics(
     tasks = db.query(Task).filter(Task.business_id == biz_id).all()
 
     # Do not assign a reassuring health score to an empty, unconfigured account.
-    if snapshot["financial_data_status"] == "unconfigured":
+    if snapshot["financial_data_status"] == "unconfigured" or (snapshot["mrr"] == 0 and snapshot["monthly_burn"] == 0):
         health_score = None
     else:
         overdue_ratio = (
