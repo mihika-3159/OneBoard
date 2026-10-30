@@ -8,6 +8,7 @@ from apps.api.models.business import Business, User
 from apps.api.models.entities import Customer, Product, Invoice, Expense
 from apps.api.models.goals_tasks import Goal, Task
 from apps.api.services.seed_data import seed_northstar_studio, DEMO_BUSINESS_ID
+from apps.api.services.financial_metrics import calculate_business_financials
 
 router = APIRouter(prefix="/api/business", tags=["Business"])
 
@@ -92,54 +93,30 @@ def get_dashboard_metrics(
     if not biz:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
 
-    customers = db.query(Customer).filter(Customer.business_id == biz_id, Customer.status == "active").all()
-    invoices = db.query(Invoice).filter(Invoice.business_id == biz_id).all()
-    expenses = db.query(Expense).filter(Expense.business_id == biz_id).all()
+    snapshot = calculate_business_financials(db, biz_id)
     goals = db.query(Goal).filter(Goal.business_id == biz_id).all()
     tasks = db.query(Task).filter(Task.business_id == biz_id).all()
 
-    total_mrr = sum(float(c.mrr or 0.0) for c in customers)
-    monthly_burn = sum(float(e.amount or 0.0) for e in expenses)
-    overdue_invoices = [i for i in invoices if i.status == "overdue"]
-    overdue_receivables = sum(float(i.amount or 0.0) for i in overdue_invoices)
-    
-    # Net burn and runway based strictly on actual data
-    net_burn = round(monthly_burn - total_mrr, 2)
-    is_profitable = net_burn <= 0.0
-    cash_balance = float(biz.current_cash_balance if biz.current_cash_balance is not None else 0.0)
-    
-    if is_profitable:
-        runway_months = 999.0  # Profitable, infinite runway
-        runway_status = "profitable"
+    # Do not assign a reassuring health score to an empty, unconfigured account.
+    if snapshot["financial_data_status"] == "unconfigured":
+        health_score = None
     else:
-        if cash_balance <= 0.0:
-            runway_months = 0.0
-            runway_status = "critical_depleted"
-        else:
-            runway_months = round(cash_balance / net_burn, 1)
-            runway_status = "healthy" if runway_months >= 12.0 else ("warning" if runway_months >= 6.0 else "critical")
-
-    overdue_ratio = (overdue_receivables / (total_mrr or 1.0))
-    health_score = compute_financial_health_score(
-        runway_months=runway_months,
-        is_profitable=is_profitable,
-        overdue_ratio=overdue_ratio,
-        active_customers=len(customers)
-    )
+        overdue_ratio = (
+            snapshot["overdue_receivables_amount"] / snapshot["mrr"]
+            if snapshot["mrr"] > 0 else
+            (1.0 if snapshot["overdue_receivables_amount"] > 0 else 0.0)
+        )
+        health_score = compute_financial_health_score(
+            runway_months=snapshot["runway_months"] or 0.0,
+            is_profitable=snapshot["net_burn"] <= 0,
+            overdue_ratio=overdue_ratio,
+            active_customers=snapshot["active_customers_count"],
+        )
 
     return {
-        "mrr": round(total_mrr, 2),
-        "monthly_burn": round(monthly_burn, 2),
-        "net_burn": net_burn,
-        "is_profitable": is_profitable,
-        "runway_months": runway_months,
-        "runway_status": runway_status,
-        "cash_balance": round(cash_balance, 2),
-        "active_customers_count": len(customers),
-        "overdue_invoices_count": len(overdue_invoices),
-        "overdue_receivables_amount": round(overdue_receivables, 2),
-        "pending_tasks_count": len([t for t in tasks if t.status != "done"]),
+        **snapshot,
+        "pending_tasks_count": len([task for task in tasks if task.status != "done"]),
         "goals_count": len(goals),
         "health_score": health_score,
-        "tenant_id": biz_id
+        "tenant_id": biz_id,
     }
