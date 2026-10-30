@@ -7,6 +7,7 @@ from apps.api.models.decision_evidence import Decision
 from apps.api.models.goals_tasks import Task
 from apps.api.models.entities import Invoice, Expense, Customer, Product
 from apps.api.services.ollama_gateway import ollama_gateway
+from apps.api.services.financial_metrics import calculate_business_financials
 
 COUNCIL_ROLES = {
     "Chief of Staff": {
@@ -69,28 +70,18 @@ class CouncilEngine:
 
     def _calculate_deterministic_financials(self, db: Session, business_id: str) -> Dict[str, Any]:
         """Deterministic calculations for Finance Adviser - not hallucinated by LLM."""
-        invoices = db.query(Invoice).filter(Invoice.business_id == business_id).all()
-        expenses = db.query(Expense).filter(Expense.business_id == business_id).all()
-        customers = db.query(Customer).filter(Customer.business_id == business_id, Customer.status == "active").all()
-        
-        total_revenue_paid = sum(i.amount for i in invoices if i.status == "paid")
-        total_revenue_overdue = sum(i.amount for i in invoices if i.status == "overdue")
-        total_monthly_expenses = sum(e.amount for e in expenses)
-        total_mrr = sum(c.mrr for c in customers)
-        
-        # Cash on hand assumed $132,840 for Northstar Studio baseline
-        cash_balance = 132840.0
-        net_burn = max(total_monthly_expenses - total_mrr, 0.0)
-        runway_months = round(cash_balance / (net_burn or 1.0), 1) if net_burn > 0 else 24.0
-
+        snapshot = calculate_business_financials(db, business_id)
         return {
-            "mrr": round(total_mrr, 2),
-            "monthly_expenses": round(total_monthly_expenses, 2),
-            "net_burn": round(net_burn, 2),
-            "cash_balance": cash_balance,
-            "runway_months": runway_months,
-            "overdue_receivables": round(total_revenue_overdue, 2),
-            "active_paying_customers": len(customers)
+            "mrr": snapshot["mrr"],
+            "monthly_expenses": snapshot["monthly_burn"],
+            "net_burn": snapshot["net_burn"],
+            "cash_balance": snapshot["cash_balance"],
+            "runway_months": snapshot["runway_months"],
+            "runway_status": snapshot["runway_status"],
+            "overdue_receivables": snapshot["overdue_receivables_amount"],
+            "active_paying_customers": snapshot["active_customers_count"],
+            "financial_data_status": snapshot["financial_data_status"],
+            "financial_data_updated_at": snapshot["financial_data_updated_at"],
         }
 
     async def conduct_deliberation(
