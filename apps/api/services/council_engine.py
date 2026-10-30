@@ -121,7 +121,9 @@ class CouncilEngine:
             prompt = (
                 f"You are the {adviser_name} ({role_info.get('title')}) on the virtual board of a solo SaaS company.\n"
                 f"Financial Context: MRR=${financials['mrr']}, Monthly Burn=${financials['monthly_expenses']}, "
-                f"Runway={financials['runway_months']} months, Overdue Receivables=${financials['overdue_receivables']}.\n"
+                f"Runway={financials['runway_months'] if financials['runway_months'] is not None else financials['runway_status']}, "
+                f"Overdue Receivables=${financials['overdue_receivables']}. "
+                f"Data Status={financials['financial_data_status']}; do not invent missing financial facts.\n"
                 f"Meeting Topic: {topic}\n"
                 f"Provide your structured position, identifying: 1) Recommendation, 2) Assumptions, 3) Risks, 4) Measurable Target Metric."
             )
