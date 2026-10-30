@@ -71,9 +71,10 @@ def register(
     business = Business(
         name=biz_name,
         industry=req.industry or "B2B SaaS",
-        current_cash_balance=10000.0,
-        monthly_burn_rate=2000.0,
-        runway_months=5.0
+        # Real accounts start without fabricated financial history.
+        current_cash_balance=0.0,
+        monthly_burn_rate=0.0,
+        runway_months=0.0
     )
     db.add(business)
     db.commit()
