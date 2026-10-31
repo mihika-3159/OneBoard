@@ -246,9 +246,15 @@ class CouncilEngine:
         decision_notes: Optional[str] = None
     ) -> Decision:
         """Founder approves the board recommendation. Creates immutable Decision record and executable Tasks."""
-        meeting = db.query(CouncilMeeting).filter(CouncilMeeting.id == meeting_id).first()
+        meeting = db.query(CouncilMeeting).filter(
+            CouncilMeeting.id == meeting_id,
+            CouncilMeeting.business_id == business_id
+        ).with_for_update().first()
         if not meeting:
             raise ValueError(f"Meeting {meeting_id} not found")
+
+        if meeting.stage != "completed" or meeting.founder_decision is not None:
+            raise ValueError("Meeting is not eligible for approval")
 
         meeting.founder_decision = "approved"
         meeting.founder_notes = decision_notes or "Approved plan as synthesized by Chief of Staff."
@@ -260,42 +266,38 @@ class CouncilEngine:
             business_context=meeting.topic,
             advisers_consulted=meeting.advisers_present,
             recommendations_summary=meeting.synthesis_summary,
-            assumptions=[
-                {"id": "a1", "text": "Annual prepay conversion will reach 18%", "status": "tracking"},
-                {"id": "a2", "text": "Average CAC remains below $180", "status": "tracking"}
-            ],
+            assumptions=[],  # Do not invent financial or acquisition predictions.
             dissenting_opinions=meeting.areas_of_disagreement,
             founder_decision="approved",
             founder_notes=meeting.founder_notes,
-            expected_outcomes=[
-                {"metric": "Runway Extension", "target_value": 3.0, "timeframe_days": 60, "unit": "months"},
-                {"metric": "Overdue Invoices Recovered", "target_value": 4500.0, "timeframe_days": 30, "unit": "$"}
-            ],
+            expected_outcomes=[],  # No unsupported monetary outcome targets.
+            planned_actions=meeting.recommended_actions or [],
             outcome_review_date=datetime.utcnow() + timedelta(days=30)
         )
-        db.add(decision)
-        db.commit()
-        db.refresh(decision)
-
-        # Convert recommended actions into real Tasks in Task queue
-        created_task_ids = []
-        for action in (meeting.recommended_actions or []):
-            task = Task(
-                business_id=business_id,
-                decision_id=decision.id,
-                title=action.get("title", "Executive Action Item"),
-                responsible_agent=action.get("owner", "Operations Adviser"),
-                priority=action.get("priority", "medium"),
-                status="todo",
-                deadline=datetime.utcnow() + timedelta(days=7)
-            )
-            db.add(task)
+        # A single transaction avoids partial approvals and orphaned tasks.
+        try:
+            db.add(decision)
+            db.flush()
+            created_task_ids = []
+            for action in (meeting.recommended_actions or []):
+                task = Task(
+                    business_id=business_id,
+                    decision_id=decision.id,
+                    title=action.get("title", "Review council recommendation"),
+                    responsible_agent=action.get("owner", "Chief of Staff"),
+                    priority=action.get("priority", "medium"),
+                    status="todo",
+                    deadline=datetime.utcnow() + timedelta(days=7)
+                )
+                db.add(task)
+                db.flush()
+                created_task_ids.append(task.id)
+            meeting.created_tasks = created_task_ids
             db.commit()
-            db.refresh(task)
-            created_task_ids.append(task.id)
-
-        meeting.created_tasks = created_task_ids
-        db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        db.refresh(decision)
         return decision
 
 council_engine = CouncilEngine()
