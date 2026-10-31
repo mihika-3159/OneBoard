@@ -1,15 +1,16 @@
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import uuid
-from apps.api.models.business import Business
+from apps.api.models.business import Business, User, BusinessMembership, UserSession
 from apps.api.models.entities import Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket
 from apps.api.models.goals_tasks import Goal, Task, Project
 from apps.api.models.decision_evidence import Decision, Evidence
 from apps.api.models.agent_council import CouncilMeeting, AdviserScorecard
 from apps.api.models.memory import MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict
-from apps.api.models.workflow import CustomAgent, WorkflowDefinition
+from apps.api.models.workflow import CustomAgent, WorkflowDefinition, WorkflowRun, ApprovalRequest
 from apps.api.models.integrations import IntegrationAccount
 from apps.api.services.memory_engine import memory_engine
+from apps.api.core.auth import hash_password
 
 DEMO_BUSINESS_ID = "northstar-studio-001"
 
@@ -19,12 +20,20 @@ def seed_northstar_studio(db: Session, reset: bool = False):
     if existing:
         if not reset:
             return existing
-        # Clear existing records for clean reset
-        for model in [Business, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
+        # Clear existing demo records only (NEVER wipe other tenants)
+        demo_doc_ids = [d.id for d in db.query(MemoryDocument.id).filter(MemoryDocument.business_id == DEMO_BUSINESS_ID).all()]
+        if demo_doc_ids:
+            db.query(MemoryChunk).filter(MemoryChunk.document_id.in_(demo_doc_ids)).delete(synchronize_session=False)
+
+        for model in [Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
                       Goal, Task, Project, Decision, Evidence, CouncilMeeting, AdviserScorecard,
-                      MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict,
-                      CustomAgent, WorkflowDefinition, IntegrationAccount]:
-            db.query(model).delete()
+                      MemoryDocument, EntityRelationship, MemoryConflict,
+                      CustomAgent, ApprovalRequest, WorkflowRun, WorkflowDefinition, IntegrationAccount,
+                      BusinessMembership, UserSession]:
+            db.query(model).filter(model.business_id == DEMO_BUSINESS_ID).delete(synchronize_session=False)
+
+        db.query(User).filter(User.business_id == DEMO_BUSINESS_ID).delete(synchronize_session=False)
+        db.query(Business).filter(Business.id == DEMO_BUSINESS_ID).delete(synchronize_session=False)
         db.commit()
 
     now = datetime.utcnow()
@@ -304,6 +313,35 @@ def seed_northstar_studio(db: Session, reset: bool = False):
             records_synced={"records": 42}
         ))
 
+    # 16. Demo Founder User & Membership
+    demo_user = db.query(User).filter(User.email == "founder@northstar.studio").first()
+    if not demo_user:
+        demo_user = User(
+            id="demo-founder-001",
+            email="founder@northstar.studio",
+            name="Sarah Founder",
+            hashed_password=hash_password("oneboard2026"),
+            role="founder",
+            business_id=DEMO_BUSINESS_ID,
+            api_key="obk_northstar_demo_local_key",
+            is_active=True
+        )
+        db.add(demo_user)
+        db.flush()
+
+    business.owner_id = demo_user.id
+    membership = db.query(BusinessMembership).filter(
+        BusinessMembership.user_id == demo_user.id,
+        BusinessMembership.business_id == DEMO_BUSINESS_ID
+    ).first()
+    if not membership:
+        db.add(BusinessMembership(
+            user_id=demo_user.id,
+            business_id=DEMO_BUSINESS_ID,
+            role="owner"
+        ))
+
     db.commit()
     db.refresh(business)
     return business
+

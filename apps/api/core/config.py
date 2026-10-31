@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     DATA_DIR: Path = BASE_DIR / "data"
     DATABASE_URL: str = f"sqlite:///{BASE_DIR}/data/oneboard.db"
     
+    # Security & Authentication
+    AUTH_SECRET_KEY: str = ""
+    ONEBOARD_DEMO_MODE: bool = False
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
+    COOKIE_SECURE: bool = False
+    SESSION_EXPIRY_SECONDS: int = 7 * 24 * 3600  # 7 days
+    LOGIN_MAX_ATTEMPTS: int = 5
+    LOGIN_LOCKOUT_SECONDS: int = 300  # 5 minutes
+    
     # Centralized Ollama Model Gateway
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     DEFAULT_MODEL_PROFILE: str = "balanced"  # 'lightweight', 'balanced', 'high_quality'
