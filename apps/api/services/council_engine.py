@@ -85,120 +85,155 @@ class CouncilEngine:
         }
 
     async def conduct_deliberation(
-        self,
-        db: Session,
-        business_id: str,
-        title: str,
-        meeting_type: str,
-        topic: str,
-        selected_advisers: Optional[List[str]] = None
+        self, db: Session, business_id: str, title: str, meeting_type: str,
+        topic: str, selected_advisers: Optional[List[str]] = None
     ) -> CouncilMeeting:
-        if not selected_advisers:
-            # Select relevant advisers based on topic
-            selected_advisers = ["Chief of Staff", "Strategy Adviser", "Finance Adviser", "Marketing Adviser", "Operations Adviser"]
-            
+        """Use real tenant facts and visible adviser positions, never scripted debate."""
+        if not topic or not topic.strip():
+            raise ValueError("A meeting topic is required")
+        if selected_advisers is None:
+            selected_advisers = [
+                "Chief of Staff", "Strategy Adviser", "Finance Adviser",
+                "Marketing Adviser", "Operations Adviser"
+            ]
+        if (not selected_advisers or len(set(selected_advisers)) != len(selected_advisers)
+                or any(name not in COUNCIL_ROLES for name in selected_advisers)):
+            raise ValueError("Select distinct, recognized advisers")
+
+        topic = topic.strip()
         financials = self._calculate_deterministic_financials(db, business_id)
-        
-        # Stage A: Context Preparation
+        facts = (
+            f"MRR={financials['mrr']}; monthly expenses={financials['monthly_expenses']}; "
+            f"net burn={financials['net_burn']}; cash={financials['cash_balance']}; "
+            f"runway={financials['runway_months'] if financials['runway_months'] is not None else financials['runway_status']}; "
+            f"overdue receivables={financials['overdue_receivables']}; "
+            f"data status={financials['financial_data_status']}."
+        )
         meeting = CouncilMeeting(
-            business_id=business_id,
-            title=title,
-            meeting_type=meeting_type,
-            topic=topic,
-            advisers_present=selected_advisers,
-            stage="deliberating"
+            business_id=business_id, title=title, meeting_type=meeting_type,
+            topic=topic, advisers_present=selected_advisers, stage="deliberating"
         )
         db.add(meeting)
         db.commit()
         db.refresh(meeting)
 
-        deliberation_transcript = []
-        
-        # Stage B: Independent Analysis per Adviser
-        for adviser_name in selected_advisers:
-            role_info = COUNCIL_ROLES.get(adviser_name, {})
-            
-            prompt = (
-                f"You are the {adviser_name} ({role_info.get('title')}) on the virtual board of a solo SaaS company.\n"
-                f"Financial Context: MRR=${financials['mrr']}, Monthly Burn=${financials['monthly_expenses']}, "
-                f"Runway={financials['runway_months'] if financials['runway_months'] is not None else financials['runway_status']}, "
-                f"Overdue Receivables=${financials['overdue_receivables']}. "
-                f"Data Status={financials['financial_data_status']}; do not invent missing financial facts.\n"
-                f"Meeting Topic: {topic}\n"
-                f"Provide your structured position, identifying: 1) Recommendation, 2) Assumptions, 3) Risks, 4) Measurable Target Metric."
-            )
-            
+        transcript = []
+        positions = {}
+        for name in selected_advisers:
+            role = COUNCIL_ROLES[name]
             res = await ollama_gateway.chat_complete(
-                messages=[{"role": "user", "content": prompt}],
-                system_prompt=f"Act as {adviser_name}. Department: {role_info.get('department')}.",
-                format_json=False
+                messages=[{"role": "user", "content": (
+                    f"Topic: {topic}\nRecorded financial facts: {facts}\n"
+                    f"Focus: {role['focus']}.\n"
+                    "Provide a position, assumptions, risks and a measurable next step. "
+                    "Do not invent customers, contracts, sources or numerical targets."
+                )}],
+                system_prompt=f"Act as {name}; use only supplied facts."
             )
-            
-            deliberation_transcript.append({
-                "adviser": adviser_name,
-                "role": role_info.get("title"),
-                "department": role_info.get("department"),
-                "stage": "independent_analysis",
-                "content": res.get("content", ""),
+            simulated = bool(res.get("simulated", False))
+            # The gateway's offline fallback contains canned Northstar Studio
+            # claims; never attribute that text to a real business or adviser.
+            content = (
+                f"No LLM analysis available. For '{topic}', review {role['focus']}. "
+                f"Available financial facts: {facts}"
+                if simulated else (res.get("content") or "No adviser response returned.")
+            )
+            positions[name] = content
+            transcript.append({
+                "adviser": name, "role": role["title"],
+                "department": role["department"], "stage": "independent_analysis",
+                "content": content, "simulated": simulated,
+                "source": "deterministic_fallback" if simulated else "local_ollama_unverified",
                 "timestamp": datetime.utcnow().isoformat()
             })
 
-        # Stage C: Challenge Round (Dissent / Adversarial Review)
-        if "Finance Adviser" in selected_advisers and "Marketing Adviser" in selected_advisers:
-            deliberation_transcript.append({
-                "adviser": "Finance Adviser",
-                "role": "Chief Financial Officer (Deterministic Engine)",
-                "department": "Finance",
-                "stage": "challenge_round",
-                "content": (
-                    f"OBJECTION TO MARKETING: An aggressive self-serve customer acquisition push without raising upfront annual deposits "
-                    f"will deplete working capital. With net monthly burn at ${financials['net_burn']}, "
-                    f"we cannot approve ad spend greater than $3,500/mo without 30% upfront cash collection."
-                ),
+        disagreements = []
+        challengers = [n for n in selected_advisers if n != "Chief of Staff"]
+        if len(challengers) >= 2:
+            first, second = challengers[:2]
+            challenge = await ollama_gateway.chat_complete(
+                messages=[{"role": "user", "content": (
+                    f"Topic: {topic}\nRecorded facts: {facts}\n"
+                    f"{first} position: {positions[first][:1500]}\n"
+                    f"{second} position: {positions[second][:1500]}\n"
+                    "Identify a specific tension only if the positions support one; "
+                    "otherwise say there is no demonstrated disagreement. "
+                    "Do not invent a quote, source or target."
+                )}],
+                system_prompt="Compare actual positions; do not impersonate advisers."
+            )
+            simulated = bool(challenge.get("simulated", False))
+            comparison = (
+                f"Offline comparison: positions from {first} and {second} are recorded above. "
+                "No independent challenge was generated."
+                if simulated else (challenge.get("content") or "No challenge returned.")
+            )
+            transcript.append({
+                "adviser": "Council facilitator", "role": "Position comparison",
+                "department": "Executive Office", "stage": "challenge_round",
+                "content": comparison, "simulated": simulated,
+                "source": "deterministic_fallback" if simulated else "local_ollama_unverified",
+                "compared_advisers": [first, second],
                 "timestamp": datetime.utcnow().isoformat()
             })
-            deliberation_transcript.append({
-                "adviser": "Marketing Adviser",
-                "role": "Chief Marketing Officer",
-                "department": "Growth",
-                "stage": "challenge_round",
-                "content": (
-                    "COUNTER-ARGUMENT: Restricting customer trials to annual upfront will hurt top-of-funnel velocity. "
-                    "We propose a blended strategy: 14-day free trial on Growth tier with an opt-in 20% discount on annual commitment."
-                ),
-                "timestamp": datetime.utcnow().isoformat()
-            })
+            if not simulated and comparison.strip():
+                disagreements.append(
+                    f"Unverified comparison ({first} / {second}): {comparison[:800]}"
+                )
 
-        # Stage D: Synthesis by Chief of Staff
-        synthesis_prompt = (
-            f"You are the Chief of Staff synthesizing the executive board deliberation on '{topic}'.\n"
-            f"Summarize areas of agreement, the specific trade-offs debated, and deliver an actionable consensus recommendation."
+        topic_short = " ".join(topic.split())[:110]
+        owner = next((n for n in selected_advisers if n != "Chief of Staff"), selected_advisers[0])
+        actions = [{
+            "title": f"Define evidence and next steps for: {topic_short}",
+            "owner": owner, "priority": "medium", "source": "meeting_topic"
+        }]
+        if financials["financial_data_status"] == "recorded":
+            if financials["runway_status"] in ("critical", "critical_depleted"):
+                actions.append({
+                    "title": f"Review cash runway and net burn ({financials['net_burn']} per month)",
+                    "owner": "Finance Adviser" if "Finance Adviser" in selected_advisers else owner,
+                    "priority": "high", "source": "tenant_financial_snapshot"
+                })
+            if financials["overdue_receivables"] > 0:
+                actions.append({
+                    "title": f"Review overdue receivables ({financials['overdue_receivables']})",
+                    "owner": "Finance Adviser" if "Finance Adviser" in selected_advisers else owner,
+                    "priority": "medium", "source": "tenant_financial_snapshot"
+                })
+
+        visible_positions = "\n".join(
+            f"{name}: {positions[name][:1500]}" for name in selected_advisers
         )
-        synthesis_res = await ollama_gateway.chat_complete(
-            messages=[{"role": "user", "content": synthesis_prompt}],
-            system_prompt="Act as Chief of Staff.",
-            format_json=False
+        synthesis = await ollama_gateway.chat_complete(
+            messages=[{"role": "user", "content": (
+                f"Topic: {topic}\nRecorded facts: {facts}\n"
+                f"Actual adviser positions:\n{visible_positions}\n"
+                f"Challenge: {transcript[-1]['content'] if len(challengers) >= 2 else 'Not performed'}\n"
+                "Summarize only supported advice and trade-offs. "
+                "Do not invent evidence, numeric targets or consensus."
+            )}],
+            system_prompt="Synthesize the visible transcript, labelling assumptions."
         )
-        synthesis_text = synthesis_res.get("content", "")
+        if synthesis.get("simulated", False):
+            summary = (
+                f"Offline council summary (no LLM inference). Topic: {topic}. "
+                f"Recorded financial facts: {facts} "
+                f"Suggested review tasks: {'; '.join(a['title'] for a in actions)}. "
+                "No independent agreement or disagreement established."
+            )
+        else:
+            summary = (
+                "AI-generated synthesis (unverified; review adviser positions): "
+                + (synthesis.get("content") or "No synthesis returned.")
+            )
 
-        meeting.deliberation_transcript = deliberation_transcript
-        meeting.synthesis_summary = synthesis_text
-        meeting.areas_of_agreement = [
-            "Protect minimum cash runway above 6 months",
-            "Resolve inconsistencies between public pricing tier ($59) and bespoke quotes ($49)",
-            "Automate recurring invoice reminders before initiating collections"
-        ]
-        meeting.areas_of_disagreement = [
-            "Finance insists on annual upfront cash; Marketing argues it increases SMB friction"
-        ]
-        meeting.recommended_actions = [
-            {"title": "Implement Annual Prepay Incentive", "owner": "Finance Adviser", "priority": "high"},
-            {"title": "Audit Staged Proposals for Price Discrepancies", "owner": "Operations Adviser", "priority": "critical"},
-            {"title": "Deploy Automated Invoice Reminder Workflow", "owner": "Operations Adviser", "priority": "medium"}
-        ]
+        meeting.deliberation_transcript = transcript
+        meeting.synthesis_summary = summary
+        meeting.areas_of_agreement = []
+        meeting.areas_of_disagreement = disagreements
+        meeting.recommended_actions = actions
         meeting.stage = "completed"
         meeting.completed_at = datetime.utcnow()
-        
         db.commit()
         db.refresh(meeting)
         return meeting
