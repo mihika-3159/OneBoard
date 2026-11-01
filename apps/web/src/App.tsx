@@ -264,11 +264,15 @@ export const App: React.FC = () => {
             >
               <span
                 className={`w-2 h-2 rounded-full ${
-                  gatewayStatus?.status === 'connected' ? 'bg-emerald-400' : 'bg-amber-400'
+                  gatewayStatus?.status === 'connected' && gatewayStatus?.inference_available ? 'bg-emerald-400' : 'bg-amber-400'
                 }`}
               ></span>
               <span className="text-slate-300 text-[11px]">
-                {gatewayStatus?.status === 'connected' ? 'Ollama: Connected' : 'Local Fallback Simulator'}
+                {gatewayStatus?.status === 'connected' && gatewayStatus?.inference_available
+                  ? 'Ollama: Ready'
+                  : gatewayStatus?.status === 'connected'
+                    ? 'Ollama: No Models'
+                    : 'Local Fallback Simulator'}
               </span>
             </div>
 
