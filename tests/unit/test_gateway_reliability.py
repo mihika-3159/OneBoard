@@ -9,7 +9,8 @@ from fastapi import HTTPException
 from apps.api.core.config import settings
 from apps.api.models.business import Business
 from apps.api.routers import model_gateway_router as router
-from apps.api.services import ollama_gateway as gateway_module
+import importlib
+gateway_module = importlib.import_module("apps.api.services.ollama_gateway")
 from apps.api.services.ollama_gateway import OllamaGateway
 
 
