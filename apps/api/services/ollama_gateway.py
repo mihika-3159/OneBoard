@@ -25,7 +25,10 @@ class OllamaGateway:
                         "status": "connected",
                         "base_url": self.base_url,
                         "latency_ms": latency_ms,
-                        "available_models": [m.get("name") for m in models],
+                        "available_models": [m.get("name") for m in models if isinstance(m, dict) and m.get("name")],
+                        "inference_available": bool(models),
+                        "offline_mode": False,
+                        "message": None if models else "Ollama is reachable but no models are installed. Inference will use a clearly labeled fallback.",
                         "active_profile": self.active_profile,
                         "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {})
                     }
@@ -37,19 +40,22 @@ class OllamaGateway:
             "base_url": self.base_url,
             "latency_ms": 0,
             "available_models": [],
+            "inference_available": False,
             "active_profile": self.active_profile,
             "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {}),
             "offline_mode": True,
             "message": "Local Ollama daemon is offline or not installed. High-fidelity local simulation adapter is active."
         }
 
-    def get_model_for_task(self, task_type: str = "chat") -> str:
-        profile = settings.MODEL_PROFILES.get(self.active_profile, settings.MODEL_PROFILES["balanced"])
+    def get_model_for_task(self, task_type: str = "chat", profile: Optional[str] = None) -> str:
+        # Request-scoped profiles prevent one tenant from changing another's model.
+        selected = profile or settings.DEFAULT_MODEL_PROFILE
+        profile_config = settings.MODEL_PROFILES.get(selected, settings.MODEL_PROFILES["balanced"])
         if task_type == "reasoning":
-            return profile.get("reasoning_model", "llama3.1:8b")
+            return profile_config.get("reasoning_model", "llama3.1:8b")
         elif task_type == "embedding":
-            return profile.get("embedding_model", "nomic-embed-text")
-        return profile.get("chat_model", "qwen2.5:7b")
+            return profile_config.get("embedding_model", "nomic-embed-text")
+        return profile_config.get("chat_model", "qwen2.5:7b")
 
     async def chat_complete(
         self,
@@ -76,21 +82,40 @@ class OllamaGateway:
             payload["format"] = "json"
 
         start_time = time.time()
+        fallback_reason = "provider_unavailable"
         try:
             async with httpx.AsyncClient(timeout=45.0) as client:
                 res = await client.post(f"{self.base_url}/api/chat", json=payload)
                 if res.status_code == 200:
-                    data = res.json()
-                    content = data.get("message", {}).get("content", "")
-                    duration_ms = int((time.time() - start_time) * 1000)
-                    return {
-                        "content": content,
-                        "model": target_model,
-                        "simulated": False,
-                        "duration_ms": duration_ms
-                    }
-        except Exception as e:
-            logger.warning(f"Ollama chat call failed ({e}). Engaging deterministic local business reasoning adapter.")
+                    try:
+                        data = res.json()
+                        message = data.get("message") if isinstance(data, dict) else None
+                        content = message.get("content") if isinstance(message, dict) else None
+                        if not isinstance(content, str) or not content.strip():
+                            raise ValueError("Missing model response content")
+                        if format_json:
+                            json.loads(content)  # Invalid structured output is not a successful completion.
+                    except (ValueError, TypeError, AttributeError):
+                        fallback_reason = "invalid_model_response"
+                    else:
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        return {
+                            "content": content,
+                            "model": target_model,
+                            "simulated": False,
+                            "duration_ms": duration_ms
+                        }
+                elif res.status_code == 404:
+                    fallback_reason = "model_unavailable"
+                else:
+                    fallback_reason = "provider_http_error"
+        except httpx.TimeoutException:
+            fallback_reason = "timeout"
+        except (httpx.RequestError, ValueError):
+            fallback_reason = "provider_unavailable"
+
+        # Never log prompts, response bodies or credentials on inference failure.
+        logger.warning("Ollama inference unavailable (reason=%s); using labeled fallback.", fallback_reason)
 
         # Deterministic simulation fallback
         duration_ms = int((time.time() - start_time) * 1000)
@@ -99,6 +124,7 @@ class OllamaGateway:
             "content": simulated_response,
             "model": f"{target_model} (local simulated fallback)",
             "simulated": True,
+            "fallback_reason": fallback_reason,
             "duration_ms": max(duration_ms, 85)
         }
 
