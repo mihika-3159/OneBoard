@@ -149,6 +149,7 @@ export interface GatewayStatus {
   base_url: string;
   latency_ms: number;
   available_models: string[];
+  inference_available?: boolean;
   active_profile: string;
   profile_details: Record<string, any>;
   offline_mode?: boolean;
