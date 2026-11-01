@@ -114,7 +114,9 @@ class OllamaGateway:
                     fallback_reason = "provider_http_error"
         except httpx.TimeoutException:
             fallback_reason = "timeout"
-        except (httpx.RequestError, ValueError):
+        except Exception:
+            # Invalid URL/port and transport ExceptionGroup must fail safely too.
+            # asyncio cancellation is BaseException and is not swallowed here.
             fallback_reason = "provider_unavailable"
 
         # Never log prompts, response bodies or credentials on inference failure.
