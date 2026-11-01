@@ -20,15 +20,18 @@ class OllamaGateway:
                 res = await client.get(f"{self.base_url}/api/tags")
                 latency_ms = int((time.time() - start) * 1000)
                 if res.status_code == 200:
-                    models = res.json().get("models", [])
+                    payload = res.json()
+                    models = payload.get("models", []) if isinstance(payload, dict) else []
+                    models = models if isinstance(models, list) else []
+                    available = [m.get("name") for m in models if isinstance(m, dict) and isinstance(m.get("name"), str) and m.get("name")]
                     return {
                         "status": "connected",
                         "base_url": self.base_url,
                         "latency_ms": latency_ms,
-                        "available_models": [m.get("name") for m in models if isinstance(m, dict) and m.get("name")],
-                        "inference_available": bool(models),
+                        "available_models": available,
+                        "inference_available": bool(available),
                         "offline_mode": False,
-                        "message": None if models else "Ollama is reachable but no models are installed. Inference will use a clearly labeled fallback.",
+                        "message": None if available else "Ollama is reachable but no models are installed. Inference will use a clearly labeled fallback.",
                         "active_profile": self.active_profile,
                         "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {})
                     }
