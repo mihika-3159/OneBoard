@@ -19,38 +19,69 @@ class SwitchProfileRequest(BaseModel):
 class FounderCommandRequest(BaseModel):
     command: str
 
+def _business_model_profile(db: Session, business_id: str) -> str:
+    """Read a tenant's persisted profile, without modifying global gateway state."""
+    business = db.query(Business).filter(Business.id == business_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    preferences = business.founder_preferences or {}
+    profile = preferences.get("model_profile") if isinstance(preferences, dict) else None
+    return profile if profile in settings.MODEL_PROFILES else settings.DEFAULT_MODEL_PROFILE
+
+
 @router.get("/status")
-async def get_gateway_status():
-    return await ollama_gateway.check_health()
+async def get_gateway_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    health = await ollama_gateway.check_health()
+    profile = _business_model_profile(db, current_user.business_id)
+    health["active_profile"] = profile
+    health["profile_details"] = settings.MODEL_PROFILES[profile]
+    return health
+
 
 @router.post("/profile")
 def switch_model_profile(
     req: SwitchProfileRequest,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
-    """Switch the active Ollama model profile. Requires authentication."""
-    if req.profile in settings.MODEL_PROFILES:
-        ollama_gateway.active_profile = req.profile
-        return {
-            "status": "success",
-            "active_profile": req.profile,
-            "profile_details": settings.MODEL_PROFILES[req.profile]
-        }
-    return {"status": "error", "message": f"Invalid profile: {req.profile}"}
+    """Persist model preferences per business, never in process-global state."""
+    if req.profile not in settings.MODEL_PROFILES:
+        raise HTTPException(status_code=422, detail="Unsupported model profile")
+    business = db.query(Business).filter(Business.id == current_user.business_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    business.founder_preferences = {**(business.founder_preferences or {}), "model_profile": req.profile}
+    db.commit()
+    return {
+        "status": "success",
+        "active_profile": req.profile,
+        "profile_details": settings.MODEL_PROFILES[req.profile]
+    }
 
 @router.post("/benchmark")
-async def benchmark_gateway(current_user: User = Depends(get_current_user)):
+async def benchmark_gateway(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Run a latency benchmark against the Ollama gateway. Requires authentication."""
+    profile = _business_model_profile(db, current_user.business_id)
     start = time.time()
     res = await ollama_gateway.chat_complete(
         messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
-        system_prompt="Return brief benchmark acknowledgment."
+        system_prompt="Return brief benchmark acknowledgment.",
+        model=ollama_gateway.get_model_for_task(profile=profile)
     )
     total_time = round((time.time() - start) * 1000, 2)
     is_simulated = res.get("simulated", False)
     
     return {
         "status": "simulated_fallback" if is_simulated else "passed",
+        "inference_available": not is_simulated,
+        "fallback_reason": res.get("fallback_reason") if is_simulated else None,
+        "active_profile": profile,
         "total_latency_ms": total_time,
         "model": res.get("model"),
         "simulated": is_simulated,
@@ -92,9 +123,11 @@ async def handle_founder_command(
         f"Respond concisely with concrete facts and recommended next steps."
     )
 
+    profile = _business_model_profile(db, biz_id)
     res = await ollama_gateway.chat_complete(
         messages=[{"role": "user", "content": context}],
-        system_prompt="You are OneBoard Founder Command Center."
+        system_prompt="You are OneBoard Founder Command Center.",
+        model=ollama_gateway.get_model_for_task(profile=profile)
     )
     is_simulated = res.get("simulated", False)
     
@@ -103,6 +136,7 @@ async def handle_founder_command(
         "response": res.get("content"),
         "model": res.get("model"),
         "simulated": is_simulated,
+        "fallback_reason": res.get("fallback_reason") if is_simulated else None,
         "inference_engine": "offline_simulated" if is_simulated else "local_ollama",
         "business_state_summary": {
             "mrr": total_mrr,
