@@ -48,7 +48,10 @@ class MemoryEngine:
             kw_match = 0.3 if any(word in c.content.lower() for word in q_lower.split() if len(word) > 3) else 0.0
             total_score = min(sim + kw_match, 1.0)
             
-            doc = db.query(MemoryDocument).filter(MemoryDocument.id == c.document_id).first()
+            doc = db.query(MemoryDocument).filter(
+                MemoryDocument.id == c.document_id,
+                MemoryDocument.business_id == business_id
+            ).first()
             source_title = doc.title if doc else "Business Document"
             
             scored_results.append({
