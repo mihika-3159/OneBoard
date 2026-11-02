@@ -548,3 +548,132 @@ class TestFailClosedSessionAndCsrf:
         )
         response = client.get("/api/business", headers={"Authorization": f"Bearer {token}"})
         assert response.status_code == 401
+
+
+# Issue #6: integration sync truthfulness and bounded, tenant-owned uploads.
+class TestIntegrationSyncSafety:
+    def test_mock_sync_is_explicitly_sandbox_only(self, multi_tenant_fixture):
+        from apps.api.models.integrations import IntegrationAccount
+        f = multi_tenant_fixture
+        db = f["db"]
+        account = IntegrationAccount(
+            business_id=f["biz_a"].id, connector_type="demo_crm",
+            name="Isolated CRM Sandbox", status="sandbox_ready", is_mock=True,
+        )
+        db.add(account)
+        db.commit()
+        response = client.post(
+            f"/api/integrations/{account.id}/sync",
+            headers={"Authorization": f"Bearer {f['token_a']}"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "sandbox_synced"
+        assert data["is_simulated"] is True
+        assert "No external provider" in data["note"]
+        assert data["provider"] == "demo_crm"
+        db.refresh(account)
+        assert account.status == "sandbox_synced"
+        assert account.last_sync is not None
+
+    def test_live_sync_fails_closed_without_changing_sync_state(self, multi_tenant_fixture):
+        from apps.api.models.integrations import IntegrationAccount
+        f = multi_tenant_fixture
+        db = f["db"]
+        account = IntegrationAccount(
+            business_id=f["biz_a"].id, connector_type="google",
+            name="Not Actually Connected", status="auth_required", is_mock=False,
+        )
+        db.add(account)
+        db.commit()
+        response = client.post(
+            f"/api/integrations/{account.id}/sync",
+            headers={"Authorization": f"Bearer {f['token_a']}"},
+        )
+        assert response.status_code == 501
+        db.refresh(account)
+        assert account.status == "auth_required"
+        assert account.last_sync is None
+
+    def test_cross_tenant_sync_forbidden_and_config_not_exposed(self, multi_tenant_fixture):
+        from apps.api.models.integrations import IntegrationAccount
+        f = multi_tenant_fixture
+        db = f["db"]
+        account = IntegrationAccount(
+            business_id=f["biz_b"].id, connector_type="demo_email",
+            name="Beta Private Email", status="connected", is_mock=True,
+            configuration={"api_token": "do-not-expose-this-secret"},
+        )
+        db.add(account)
+        db.commit()
+        headers_a = {"Authorization": f"Bearer {f['token_a']}"}
+        headers_b = {"Authorization": f"Bearer {f['token_b']}"}
+        denied = client.post(f"/api/integrations/{account.id}/sync", headers=headers_a)
+        assert denied.status_code in (403, 404)
+        listing_a = client.get("/api/integrations", headers=headers_a)
+        assert listing_a.status_code == 200
+        assert all(row["id"] != account.id for row in listing_a.json())
+        listing_b = client.get("/api/integrations", headers=headers_b)
+        assert listing_b.status_code == 200
+        own = next(row for row in listing_b.json() if row["id"] == account.id)
+        assert own["status"] == "sandbox_ready"  # legacy connected mock
+        assert "configuration" not in own
+        assert "do-not-expose-this-secret" not in listing_b.text
+
+
+class TestDocumentUploadLimits:
+    def test_oversized_upload_rejected_without_creating_document(self, multi_tenant_fixture):
+        f = multi_tenant_fixture
+        db = f["db"]
+        headers = {"Authorization": f"Bearer {f['token_a']}"}
+        before = db.query(MemoryDocument).filter(
+            MemoryDocument.business_id == f["biz_a"].id,
+            MemoryDocument.title == "too-large.txt",
+        ).count()
+        response = client.post(
+            "/api/memory/upload", headers=headers,
+            files={"file": ("too-large.txt", b"a" * (10 * 1024 * 1024 + 1), "text/plain")},
+        )
+        assert response.status_code == 413
+        db.expire_all()
+        after = db.query(MemoryDocument).filter(
+            MemoryDocument.business_id == f["biz_a"].id,
+            MemoryDocument.title == "too-large.txt",
+        ).count()
+        assert after == before
+
+    @pytest.mark.parametrize("filename", ["no_extension", "legacy.xls", "payload.exe"])
+    def test_unsupported_upload_extension_rejected(self, multi_tenant_fixture, filename):
+        f = multi_tenant_fixture
+        response = client.post(
+            "/api/memory/upload",
+            headers={"Authorization": f"Bearer {f['token_a']}"},
+            files={"file": (filename, b"sample", "application/octet-stream")},
+        )
+        assert response.status_code == 400
+        assert "Unsupported file extension" in response.json()["detail"]
+
+    def test_malformed_json_does_not_leak_parser_details(self, multi_tenant_fixture):
+        f = multi_tenant_fixture
+        response = client.post(
+            "/api/memory/upload",
+            headers={"Authorization": f"Bearer {f['token_a']}"},
+            files={"file": ("bad.json", b'{"private": invalid}', "application/json")},
+        )
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Document could not be parsed as the declared file type."
+        assert "private" not in response.text
+
+    def test_valid_text_upload_is_tenant_owned(self, multi_tenant_fixture):
+        f = multi_tenant_fixture
+        response = client.post(
+            "/api/memory/upload",
+            headers={"Authorization": f"Bearer {f['token_a']}"},
+            files={"file": ("tenant-a-note.txt", b"Tenant A operational note", "text/plain")},
+        )
+        assert response.status_code == 200
+        doc_id = response.json()["document_id"]
+        f["db"].expire_all()
+        doc = f["db"].query(MemoryDocument).filter(MemoryDocument.id == doc_id).one()
+        assert doc.business_id == f["biz_a"].id
+        assert doc.raw_content == "Tenant A operational note"
