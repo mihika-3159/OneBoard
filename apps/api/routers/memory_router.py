@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from pathlib import Path
+import logging
 from apps.api.core.database import get_db
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary
 from apps.api.models.business import User
@@ -13,7 +14,8 @@ from apps.api.models.memory import MemoryDocument, MemoryConflict
 router = APIRouter(prefix="/api/memory", tags=["Business Memory"])
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB limit
-ALLOWED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".xlsx", ".xls", ".pdf"}
+ALLOWED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".xlsx", ".pdf"}  # openpyxl cannot parse legacy .xls
+logger = logging.getLogger(__name__)
 
 class SearchRequest(BaseModel):
     query: str
@@ -75,26 +77,35 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    filename = Path(file.filename or "uploaded_doc").name
+    # Normalize both POSIX and Windows path separators; reject nameless files.
+    filename = Path((file.filename or "").replace("\\\\", "/")).name
     ext = Path(filename).suffix.lower()
-    
-    # 1. Enforce file extension whitelist
-    if ext and ext not in ALLOWED_EXTENSIONS:
+
+    if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"File extension '{ext}' is not permitted. Allowed: {sorted(list(ALLOWED_EXTENSIONS))}"
+            detail="Unsupported file extension. Allowed: " + ", ".join(sorted(ALLOWED_EXTENSIONS))
         )
 
-    # 2. Enforce file size limit
-    contents = await file.read()
+    # Read at most the limit plus one byte, never the full untrusted upload.
+    contents = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(contents) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"File size exceeds maximum allowed limit of {MAX_UPLOAD_BYTES // (1024*1024)}MB."
+            detail=f"File size exceeds maximum allowed limit of {MAX_UPLOAD_BYTES // (1024 * 1024)}MB."
         )
 
     try:
         extracted = local_files_adapter.extract_text(contents, filename)
+    except Exception as exc:
+        # Avoid returning parser exceptions, internal paths or document contents.
+        logger.warning("Rejected document upload (%s parser: %s)", ext, type(exc).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Document could not be parsed as the declared file type."
+        ) from None
+
+    try:
         doc = memory_engine.add_document_with_chunks(
             db=db,
             business_id=current_user.business_id,
@@ -102,12 +113,18 @@ async def upload_document(
             raw_content=extracted["text"],
             file_type=extracted["file_type"]
         )
-        return {
-            "status": "success",
-            "document_id": doc.id,
-            "chunks": doc.chunk_count,
-            "title": doc.title,
-            "file_type": doc.file_type
-        }
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to process document: {e}")
+    except Exception:
+        db.rollback()
+        logger.exception("Document persistence failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Document could not be stored."
+        ) from None
+
+    return {
+        "status": "success",
+        "document_id": doc.id,
+        "chunks": doc.chunk_count,
+        "title": doc.title,
+        "file_type": doc.file_type
+    }
