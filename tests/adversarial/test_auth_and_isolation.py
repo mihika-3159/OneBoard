@@ -698,3 +698,29 @@ class TestDocumentUploadLimits:
         doc = f["db"].query(MemoryDocument).filter(MemoryDocument.id == doc_id).one()
         assert doc.business_id == f["biz_a"].id
         assert doc.raw_content == "Tenant A operational note"
+
+    @pytest.mark.asyncio
+    async def test_mismatched_chunk_cannot_leak_other_tenant_document_title(self, multi_tenant_fixture):
+        from unittest.mock import AsyncMock
+        from apps.api.services.memory_engine import memory_engine
+        f = multi_tenant_fixture
+        db = f["db"]
+        orphan = MemoryChunk(
+            business_id=f["biz_a"].id,
+            document_id=f["doc_b"].id,
+            content="orphan chunk from tenant A",
+            chunk_index=0,
+        )
+        db.add(orphan)
+        db.commit()
+        with patch(
+            "apps.api.services.memory_engine.ollama_gateway.generate_embedding",
+            new_callable=AsyncMock,
+            return_value=[0.0],
+        ):
+            results = await memory_engine.search_semantic_memory(
+                db=db, business_id=f["biz_a"].id, query="orphan", top_k=50
+            )
+        match = next(row for row in results if row["chunk_id"] == orphan.id)
+        assert match["source_title"] == "Business Document"
+        assert match["source_title"] != f["doc_b"].title
