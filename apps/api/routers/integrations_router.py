@@ -107,7 +107,7 @@ def get_email_outbox(current_user: User = Depends(get_current_user)):
     return {
         "is_simulated": True,
         "channel": "sandbox_email_outbox",
-        "outbox": demo_email.outbox
+        "outbox": demo_email.get_outbox(current_user.business_id)
     }
 
 @router.get("/github/status")
