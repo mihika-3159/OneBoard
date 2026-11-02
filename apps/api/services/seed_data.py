@@ -293,13 +293,13 @@ def seed_northstar_studio(db: Session, reset: bool = False):
 
     # 15. Integration Accounts
     integrations = [
-        ("local_files", "Local Files & Storage", "connected", True),
-        ("demo_crm", "Customer CRM & Pipeline", "connected", True),
-        ("demo_finance", "Finance & Invoicing Ledger", "connected", True),
-        ("demo_email", "Email Service (Demo Adapter)", "connected", True),
-        ("demo_calendar", "Executive Calendar", "connected", True),
-        ("github", "GitHub Repository Connector", "connected", True),
-        ("notion", "Notion Workspace Connector", "connected", True),
+        ("local_files", "Local Files & Storage", "sandbox_ready", True),
+        ("demo_crm", "Customer CRM & Pipeline", "sandbox_ready", True),
+        ("demo_finance", "Finance & Invoicing Ledger", "sandbox_ready", True),
+        ("demo_email", "Email Service (Demo Adapter)", "sandbox_ready", True),
+        ("demo_calendar", "Executive Calendar", "sandbox_ready", True),
+        ("github", "GitHub Repository Connector", "sandbox_ready", True),
+        ("notion", "Notion Workspace Connector", "sandbox_ready", True),
         ("google", "Google Workspace (Sheets/Drive)", "auth_required", False)
     ]
     for c_type, name, stat, is_m in integrations:
