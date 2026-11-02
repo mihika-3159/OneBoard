@@ -621,6 +621,27 @@ class TestIntegrationSyncSafety:
         assert "do-not-expose-this-secret" not in listing_b.text
 
 
+    def test_sandbox_email_outbox_is_tenant_isolated(self, multi_tenant_fixture):
+        from apps.api.services.integrations.demo_adapters import demo_email
+        f = multi_tenant_fixture
+        demo_email.send_email(
+            recipient="private-alpha@example.test",
+            subject="Alpha confidential", body="Alpha-only body",
+            business_id=f["biz_a"].id,
+        )
+        headers_a = {"Authorization": f"Bearer {f['token_a']}"}
+        headers_b = {"Authorization": f"Bearer {f['token_b']}"}
+        outbox_a = client.get("/api/integrations/email/outbox", headers=headers_a)
+        outbox_b = client.get("/api/integrations/email/outbox", headers=headers_b)
+        assert outbox_a.status_code == 200
+        assert outbox_b.status_code == 200
+        assert outbox_a.json()["is_simulated"] is True
+        assert any(item["recipient"] == "private-alpha@example.test"
+                   for item in outbox_a.json()["outbox"])
+        assert all(item["recipient"] != "private-alpha@example.test"
+                   for item in outbox_b.json()["outbox"])
+
+
 class TestDocumentUploadLimits:
     def test_oversized_upload_rejected_without_creating_document(self, multi_tenant_fixture):
         f = multi_tenant_fixture
