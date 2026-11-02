@@ -21,9 +21,29 @@ def list_integrations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return db.query(IntegrationAccount).filter(
+    accounts = db.query(IntegrationAccount).filter(
         IntegrationAccount.business_id == current_user.business_id
     ).all()
+    # Never return provider configuration: it may contain credentials.
+    # Legacy seeded mocks were stored as "connected" without live provider access.
+    return [
+        {
+            "id": acc.id,
+            "connector_type": acc.connector_type,
+            "name": acc.name,
+            "status": (
+                "sandbox_ready" if acc.is_mock and acc.status == "connected"
+                else "unavailable" if not acc.is_mock and acc.status == "connected"
+                else acc.status
+            ),
+            "is_mock": bool(acc.is_mock),
+            "granted_scopes": acc.granted_scopes,
+            "last_sync": acc.last_sync,
+            "records_synced": acc.records_synced,
+            "error_message": acc.error_message,
+        }
+        for acc in accounts
+    ]
 
 @router.post("/{integration_id}/sync")
 def sync_integration(
@@ -37,17 +57,26 @@ def sync_integration(
 
     enforce_tenant_boundary(acc.business_id, current_user)
 
+    # This repository currently has only local/demo adapters. There is no
+    # authenticated provider sync implementation for live accounts. Never
+    # fabricate a successful refresh or advance last_sync for one.
+    if not acc.is_mock:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Live provider synchronization is not implemented. No data was synced."
+        )
+
     acc.last_sync = datetime.utcnow()
-    acc.status = "sandbox_synced" if "demo" in acc.provider.lower() or "local" in acc.provider.lower() else "connected"
+    acc.status = "sandbox_synced"
     db.commit()
-    
+
     return {
         "status": acc.status,
         "integration": acc.name,
-        "provider": acc.provider,
+        "provider": acc.connector_type,
         "synced_at": acc.last_sync.isoformat(),
-        "is_simulated": True if "sandbox" in acc.status else False,
-        "note": "Sandbox integration synced from local mock fixtures." if "sandbox" in acc.status else "Live provider connection refreshed."
+        "is_simulated": True,
+        "note": "Sandbox refresh only. No external provider was contacted."
     }
 
 @router.post("/import-chat")
