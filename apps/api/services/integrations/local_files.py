@@ -80,11 +80,11 @@ class LocalFilesAdapter:
                         values_only=True, max_row=MAX_XLSX_ROWS + 1,
                         max_col=MAX_XLSX_COLUMNS + 1
                     ):
-                        if len(rows) >= MAX_XLSX_ROWS:
-                            raise ValueError("Spreadsheet row limit exceeded")
                         if len(row) > MAX_XLSX_COLUMNS and row[MAX_XLSX_COLUMNS] is not None:
                             raise ValueError("Spreadsheet column limit exceeded")
                         if any(cell is not None for cell in row[:MAX_XLSX_COLUMNS]):
+                            if len(rows) >= MAX_XLSX_ROWS:
+                                raise ValueError("Spreadsheet row limit exceeded")
                             rows.append([str(c) if c is not None else "" for c in row[:MAX_XLSX_COLUMNS]])
                 text = _bounded_text("\n".join("\t".join(row) for row in rows[:100]))
                 return {
