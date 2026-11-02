@@ -78,7 +78,7 @@ async def upload_document(
     db: Session = Depends(get_db)
 ):
     # Normalize both POSIX and Windows path separators; reject nameless files.
-    filename = Path((file.filename or "").replace("\\\\", "/")).name
+    filename = Path((file.filename or "").replace("\\", "/")).name
     ext = Path(filename).suffix.lower()
 
     if ext not in ALLOWED_EXTENSIONS:
