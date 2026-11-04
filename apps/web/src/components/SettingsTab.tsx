@@ -9,6 +9,7 @@ export const SettingsTab: React.FC = () => {
   const [benchmarkResult, setBenchmarkResult] = useState<any | null>(null);
   const [isBenchmarking, setIsBenchmarking] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadStatus();
@@ -19,8 +20,9 @@ export const SettingsTab: React.FC = () => {
       const s = await api.getGatewayStatus();
       setGatewayStatus(s);
       setActiveProfile(s.active_profile || 'balanced');
+      setError(null);
     } catch (e) {
-      console.error('Error loading gateway status', e);
+      setError(e instanceof Error ? e.message : 'Could not load model status. Please retry.');
     }
   };
 
@@ -31,7 +33,7 @@ export const SettingsTab: React.FC = () => {
       setActiveProfile(p);
       await loadStatus();
     } catch (e) {
-      console.error('Failed to switch profile', e);
+      setError(e instanceof Error ? e.message : 'Could not update model profile. Please retry.');
     } finally {
       setIsUpdating(false);
     }
@@ -43,8 +45,9 @@ export const SettingsTab: React.FC = () => {
     try {
       const res = await api.benchmarkGateway();
       setBenchmarkResult(res);
+      setError(null);
     } catch (e) {
-      console.error('Benchmark failed', e);
+      setError(e instanceof Error ? e.message : 'Benchmark failed. Please retry.');
     } finally {
       setIsBenchmarking(false);
     }
@@ -73,6 +76,13 @@ export const SettingsTab: React.FC = () => {
         </button>
       </div>
 
+      {error && (
+        <div role="alert" className="p-3 rounded-xl border border-rose-500/40 bg-rose-500/10 text-rose-300 text-xs flex items-center justify-between gap-3">
+          <span>{error}</span>
+          <button onClick={loadStatus} className="underline shrink-0">Retry status</button>
+        </div>
+      )}
+
       {/* Ollama Connection Card */}
       <div className="p-6 rounded-2xl glass-panel space-y-4 text-xs">
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -85,27 +95,34 @@ export const SettingsTab: React.FC = () => {
           </div>
           <span
             className={`px-3 py-1 rounded-full text-xs font-mono font-semibold flex items-center gap-1.5 ${
-              gatewayStatus?.status === 'connected'
+              gatewayStatus?.status === 'connected' && gatewayStatus?.inference_available
                 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                 : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
             }`}
           >
-            {gatewayStatus?.status === 'connected' ? (
+            {gatewayStatus?.status === 'connected' && gatewayStatus?.inference_available ? (
               <>
-                <CheckCircle2 className="w-3.5 h-3.5" /> Connected ({gatewayStatus?.latency_ms}ms)
+                <CheckCircle2 className="w-3.5 h-3.5" /> Ollama ready ({gatewayStatus?.latency_ms}ms)
               </>
             ) : (
               <>
-                <AlertTriangle className="w-3.5 h-3.5" /> Offline Mode (High-Fidelity Simulation Active)
+                <AlertTriangle className="w-3.5 h-3.5" />
+                {gatewayStatus?.status === 'connected' ? 'No models installed (simulation only)' : 'Ollama offline (simulation only)'}
               </>
             )}
           </span>
         </div>
 
+        {gatewayStatus?.status === 'connected' && !gatewayStatus?.inference_available && (
+          <div role="status" className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300">
+            Ollama is reachable, but no models are installed. Install a model before expecting real inference.
+          </div>
+        )}
+
         {gatewayStatus?.offline_mode && (
           <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 leading-relaxed">
             <span className="font-semibold block mb-0.5">Local Daemon Notice:</span>
-            Ollama is not running on port 11434. The application is operating seamlessly using the deterministic local reasoning simulator. To enable real open-weight inference, install and launch Ollama:
+            Ollama is unavailable. Responses may use a labeled deterministic fallback, not real AI inference. To enable real local inference, install and launch Ollama:
             <code className="block mt-2 p-2 rounded-lg bg-slate-900 border border-slate-800 font-mono text-[11px] text-white">
               ollama run qwen2.5:7b
             </code>
@@ -129,11 +146,14 @@ export const SettingsTab: React.FC = () => {
         {benchmarkResult && (
           <div className="p-3.5 rounded-xl bg-slate-900 border border-indigo-500/30 text-slate-300 space-y-1">
             <div className="flex justify-between font-semibold">
-              <span className="text-indigo-300">Benchmark Completed:</span>
-              <span className="font-mono text-emerald-400">{benchmarkResult.total_latency_ms} ms</span>
+              <span className={benchmarkResult.simulated ? 'text-amber-300' : 'text-emerald-300'}>
+                {benchmarkResult.simulated ? 'Real inference unavailable (fallback used)' : 'Real inference benchmark passed'}
+              </span>
+              <span className="font-mono">{benchmarkResult.total_latency_ms} ms</span>
             </div>
             <div className="text-[11px] text-slate-400 font-mono">
               Model: {benchmarkResult.model} • Simulated: {String(benchmarkResult.simulated)}
+              {benchmarkResult.fallback_reason && <span> • Reason: {benchmarkResult.fallback_reason}</span>}
             </div>
           </div>
         )}
