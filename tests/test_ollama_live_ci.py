@@ -3,6 +3,8 @@ import os
 import pytest
 from apps.api.services.ollama_gateway import OllamaGateway
 
+pytestmark = pytest.mark.skipif(os.environ.get("ONEBOARD_LIVE_OLLAMA_TESTS") != "1", reason="Only the dedicated Ollama CI job runs live inference")
+
 MODEL = os.environ.get("ONEBOARD_CI_OLLAMA_MODEL", "qwen2.5:0.5b")
 URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
