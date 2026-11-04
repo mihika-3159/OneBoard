@@ -51,3 +51,41 @@ jobs:
           if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi
       - name: TypeScript and production build
         run: npm run build
+
+  ollama-live:
+    name: Real Ollama inference (small CPU model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: "."
+      ONEBOARD_CI_OLLAMA_MODEL: "qwen2.5:0.5b"
+      OLLAMA_BASE_URL: "http://127.0.0.1:11434"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+      - name: Install Python dependencies
+        run: python -m pip install -r apps/api/requirements.txt
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+      - name: Start Ollama
+        run: |
+          ollama serve > /tmp/oneboard-ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags > /dev/null; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/oneboard-ollama.log
+          exit 1
+      - name: Pull small real inference model
+        run: ollama pull "$ONEBOARD_CI_OLLAMA_MODEL"
+      - name: Run real inference and fallback smoke tests
+        run: python -m pytest -q tests/test_ollama_live_ci.py
+      - name: Ollama diagnostics on failure
+        if: failure()
+        run: |
+          ollama list || true
+          tail -n 100 /tmp/oneboard-ollama.log || true
