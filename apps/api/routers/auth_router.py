@@ -25,6 +25,7 @@ from apps.api.core.auth import (
     reset_login_throttle,
     set_auth_cookies,
     verify_password,
+    verify_csrf_protection,
 )
 from apps.api.core.database import get_db
 from apps.api.models.business import Business, BusinessMembership, User, UserSession
@@ -77,8 +78,7 @@ def register(
         runway_months=0.0
     )
     db.add(business)
-    db.commit()
-    db.refresh(business)
+    db.flush()
 
     hashed_pw = hash_password(req.password)
     user = User(
@@ -91,8 +91,7 @@ def register(
         is_active=True
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    db.flush()
 
     # Link business ownership and membership
     business.owner_id = user.id
@@ -114,7 +113,13 @@ def register(
         is_revoked=False
     )
     db.add(user_session)
-    db.commit()
+    # Commit the business, owner, membership and session as one unit.
+    # Any failure must not leave an orphan workspace or account behind.
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     token = create_access_token(
         user_id=user.id,
@@ -234,6 +239,11 @@ def logout(
         token = auth_header[7:].strip()
     elif "oneboard_session" in request.cookies:
         token = request.cookies["oneboard_session"]
+
+    # Logout is a state-changing request. A third-party site must not be
+    # able to revoke a founder's cookie-backed session without a CSRF token.
+    if not (auth_header and auth_header.lower().startswith("bearer ")):
+        verify_csrf_protection(request)
 
     if token:
         try:
