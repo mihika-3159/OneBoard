@@ -285,14 +285,21 @@ class WorkflowEngine:
 
         if node_type == "trigger":
             return {"triggered": True, "type": "control"}
-        if connector == "demo_finance" or "invoice" in label:
+        # Never choose an executable tool from an untrusted, human-readable
+        # label. A node named "send invoice email" must not silently execute
+        # a different tool because its label contains "invoice".
+        if node_type == "data_fetch" and connector == "demo_finance":
             return ToolRegistry.read_overdue_invoices(db, business_id)
-        if node_type == "calculate" or "calculate" in label:
+        if node_type == "calculate" and connector in ("", "demo_finance"):
             return ToolRegistry.calculate_invoice_totals(db, business_id)
-        if "draft" in label or "email" in label:
-            return ToolRegistry.draft_invoice_reminder_emails(db, business_id)
-        if "commitment" in label:
+        if node_type == "data_fetch" and connector == "demo_commitments":
             return ToolRegistry.check_commitment_deadlines(db, business_id)
+        if node_type == "action" and connector == "demo_email" and (
+            node_data.get("operation") == "draft_invoice_reminders"
+        ):
+            return ToolRegistry.draft_invoice_reminder_emails(db, business_id)
+        # No live send action is implemented. Do not return a fabricated
+        # delivery receipt or call a side-effecting tool by inference.
         raise ValueError("Unsupported workflow tool or node type")
 
     def approve_and_resume_run(
