@@ -215,3 +215,48 @@ def test_reject_approval_terminates_run_and_replay_is_blocked(db):
             app.dependency_overrides.pop(get_db, None)
             app.dependency_overrides.pop(get_current_user, None)
         dispatch.assert_not_called()
+
+
+def test_action_label_cannot_route_to_invoice_read_or_fake_email_send(db):
+    """A model-generated label is not an authorization to invoke a tool."""
+    wf = make_workflow(db, [{
+        "id": "send", "type": "action",
+        "data": {"label": "Send overdue invoice email", "connector": "demo_email"}
+    }])
+    with patch("apps.api.services.workflow_engine.ToolRegistry.read_overdue_invoices") as read, \
+         patch("apps.api.services.workflow_engine.ToolRegistry.draft_invoice_reminder_emails") as draft, \
+         patch("apps.api.services.workflow_engine.ToolRegistry.send_email_action") as send:
+        run = workflow_engine.execute_workflow(db, "tenant-a", wf.id)
+    assert run.status == "failed"
+    assert run.step_results["send"]["status"] == "failed"
+    read.assert_not_called()
+    draft.assert_not_called()
+    send.assert_not_called()
+
+
+def test_explicit_demo_email_draft_only_calls_draft_tool(db):
+    wf = make_workflow(db, [{
+        "id": "draft", "type": "action",
+        "data": {"label": "Draft invoice reminder", "connector": "demo_email",
+                 "operation": "draft_invoice_reminders"}
+    }])
+    with patch("apps.api.services.workflow_engine.ToolRegistry.draft_invoice_reminder_emails",
+               return_value={"drafts_created": 0, "drafts": []}) as draft, \
+         patch("apps.api.services.workflow_engine.ToolRegistry.send_email_action") as send:
+        run = workflow_engine.execute_workflow(db, "tenant-a", wf.id)
+    assert run.status == "completed"
+    assert run.verified_success is False
+    assert run.step_results["draft"]["result"]["drafts_created"] == 0
+    draft.assert_called_once()
+    send.assert_not_called()
+
+
+def test_untrusted_label_cannot_override_explicit_connector(db):
+    wf = make_workflow(db, [{
+        "id": "fetch", "type": "data_fetch",
+        "data": {"label": "Calculate and email invoice", "connector": "unknown_provider"}
+    }])
+    with patch("apps.api.services.workflow_engine.ToolRegistry.read_overdue_invoices") as read:
+        run = workflow_engine.execute_workflow(db, "tenant-a", wf.id)
+    assert run.status == "failed"
+    read.assert_not_called()
