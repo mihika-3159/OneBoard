@@ -17,13 +17,17 @@ class SchedulerService:
         self.active_alerts_by_business: Dict[str, List[Dict[str, Any]]] = {}
 
     def start(self):
+        if self.scheduler.running:
+            return  # Idempotent within this process; do not start duplicate jobs.
         try:
             self.scheduler.add_job(
                 self.run_proactive_checks,
                 "interval",
                 seconds=60,
                 id="proactive_health_check",
-                replace_existing=True
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
             )
             self.scheduler.start()
             logger.info("APScheduler proactive background monitor started.")
@@ -102,15 +106,19 @@ class SchedulerService:
 
                 self.active_alerts_by_business[b_id] = alerts
 
-        except Exception as e:
-            logger.error(f"Error in proactive check run: {e}")
+        except Exception:
+            logger.exception("Error in proactive check run")
+            raise  # Do not silently return stale cached alerts as current.
         finally:
             db.close()
 
     def get_alerts(self, business_id: str) -> List[Dict[str, Any]]:
-        # If no alerts cached for this tenant yet, run check for this business
-        if business_id not in self.active_alerts_by_business:
-            self.run_proactive_checks(business_id=business_id)
-        return self.active_alerts_by_business.get(business_id, [])
+        if not business_id:
+            raise ValueError("An explicit business ID is required")
+        # Alerts are derived from persisted tenant data, not durable jobs. Refresh
+        # on every read so status changes and process restarts cannot leave a
+        # previously cached alert list falsely displayed as current.
+        self.run_proactive_checks(business_id=business_id)
+        return list(self.active_alerts_by_business.get(business_id, []))
 
 scheduler_service = SchedulerService()
