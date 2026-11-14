@@ -149,8 +149,28 @@ export interface GatewayStatus {
   base_url: string;
   latency_ms: number;
   available_models: string[];
+  inference_available?: boolean;
   active_profile: string;
   profile_details: Record<string, any>;
   offline_mode?: boolean;
   message?: string;
 }
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  business_id: string;
+  api_key?: string;
+}
+
+export interface AuthResponse {
+  status: string;
+  user: UserProfile;
+  business: Partial<BusinessProfile>;
+  token?: string;
+  csrf_token?: string;
+  message?: string;
+}
+
