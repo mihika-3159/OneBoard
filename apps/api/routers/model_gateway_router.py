@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import time
 from apps.api.core.database import get_db
@@ -18,7 +18,7 @@ class SwitchProfileRequest(BaseModel):
     profile: str # lightweight, balanced, high_quality
 
 class FounderCommandRequest(BaseModel):
-    command: str
+    command: str = Field(min_length=1, max_length=8000)
 
 def _business_model_profile(db: Session, business_id: str) -> str:
     """Read a tenant's persisted profile, without modifying global gateway state."""
