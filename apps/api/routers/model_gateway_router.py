@@ -104,20 +104,20 @@ async def handle_founder_command(
     commitments = db.query(Commitment).filter(Commitment.business_id == biz_id).all()
     tasks = db.query(Task).filter(Task.business_id == biz_id, Task.status != "done").all()
 
-    total_mrr = sum(c.mrr for c in customers if c.status == "active")
+    financials = calculate_business_financials(db, biz_id)
+    total_mrr = financials["mrr"]
     overdue_invoices = [i for i in invoices if i.status == "overdue"]
     critical_commitments = [c for c in commitments if c.risk_level == "critical"]
 
     biz_name = biz.name if biz else "Your Enterprise"
     cash_val = float(biz.current_cash_balance) if (biz and biz.current_cash_balance is not None) else 0.0
-    financials = calculate_business_financials(db, biz_id)
     runway_val = financials['runway_months']
     runway_description = f'{runway_val} months' if runway_val is not None else financials['runway_status']
 
     context = (
         f"You are the Executive AI Operating System for {biz_name}.\n"
         f"Real Business Context:\n"
-        f"- MRR: ${total_mrr:,.2f} across {len(customers)} customers\n"
+        f"- MRR: ${total_mrr:,.2f} across {financials["active_customers_count"]} active customers\n"
         f"- Cash Runway: {runway_description} (Balance: ${cash_val:,.2f})\n"
         f"- Overdue Invoices: {len(overdue_invoices)} totaling ${sum(i.amount for i in overdue_invoices):,.2f}\n"
         f"- Critical Commitments: {len(critical_commitments)} (e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
