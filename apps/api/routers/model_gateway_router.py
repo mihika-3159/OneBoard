@@ -117,7 +117,7 @@ async def handle_founder_command(
     context = (
         f"You are the Executive AI Operating System for {biz_name}.\n"
         f"Real Business Context:\n"
-        f"- MRR: ${total_mrr:,.2f} across {financials["active_customers_count"]} active customers\n"
+        f"- MRR: ${total_mrr:,.2f} across {financials['active_customers_count']} active customers\n"
         f"- Cash Runway: {runway_description} (Balance: ${cash_val:,.2f})\n"
         f"- Overdue Invoices: {len(overdue_invoices)} totaling ${sum(i.amount for i in overdue_invoices):,.2f}\n"
         f"- Critical Commitments: {len(critical_commitments)} (e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
