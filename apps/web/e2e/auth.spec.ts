@@ -66,7 +66,7 @@ test('tenant B cannot execute tenant A workflow or see its definition', async ({
     const headersB = { Authorization: `Bearer ${userB.token}` };
     const created = await a.request.post(base + '/api/workflows', {
       headers: headersA,
-      data: { name: 'Tenant A private workflow', nodes: [], edges: [] }
+      data: { name: 'Tenant A private workflow', nodes: [{ id: 'start', type: 'trigger', data: { label: 'Start' } }], edges: [] }
     });
     expect(created.status(), await created.text()).toBe(200);
     const workflow = await created.json();
