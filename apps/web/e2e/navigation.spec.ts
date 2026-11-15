@@ -23,7 +23,8 @@ test('new founder can open all eleven navigation tabs without a fatal UI error',
   ];
   const sidebar = page.getByRole('complementary');
   for (const label of tabs) {
-    await sidebar.getByRole('button', { name: label, exact: true }).click();
+    // Boardroom's accessible name includes its visible "9 Agents" badge.
+    await sidebar.getByRole('button', { name: label, exact: label !== 'Boardroom' }).click();
     await expect(page.locator('header')).toContainText(label);
     await expect(page.locator('main')).toBeVisible();
     await page.screenshot({ path: `test-results/tab-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`, fullPage: false });
