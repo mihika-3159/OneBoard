@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Literal
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 from apps.api.core.database import get_db
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
@@ -22,11 +25,11 @@ class WorkflowCreateRequest(BaseModel):
     edges: List[Dict[str, Any]]
 
 class PromptGenerationRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1, max_length=8000)
 
 class TeachProcessRequest(BaseModel):
-    description: str
-    examples: Optional[str] = None
+    description: str = Field(min_length=1, max_length=8000)
+    examples: Optional[str] = Field(default=None, max_length=16000)
 
 class ApprovalActionRequest(BaseModel):
     action: Literal["approve", "reject"]
@@ -89,8 +92,9 @@ def execute_workflow(
         return run
     except (PermissionError, ValueError) as pe:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN if isinstance(pe, PermissionError) else status.HTTP_400_BAD_REQUEST, detail=str(pe))
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        logger.exception("Unexpected workflow execution error")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Workflow execution failed; inspect server logs")
 
 @router.get("/runs")
 def list_runs(
