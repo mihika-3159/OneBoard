@@ -38,8 +38,9 @@ def runway_from_records(cash: float, monthly_burn: float, mrr: float) -> tuple[f
         return None, "breakeven", net_burn
     if cash <= 0:
         return 0.0, "critical_depleted", net_burn
-    months = round(cash / net_burn, 1)
-    return months, ("healthy" if months >= 12 else "warning" if months >= 6 else "critical"), net_burn
+    exact_months = cash / net_burn
+    months = round(exact_months, 1)
+    return months, ("healthy" if exact_months >= 12 else "warning" if exact_months >= 6 else "critical"), net_burn
 
 
 def calculate_business_financials(db: Session, business_id: str) -> Dict[str, Any]:
