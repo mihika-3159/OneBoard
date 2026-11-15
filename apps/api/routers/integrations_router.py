@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from apps.api.core.database import get_db
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary
@@ -14,7 +14,7 @@ from apps.api.services.integrations.demo_adapters import (
 router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
 
 class ChatImportRequest(BaseModel):
-    conversation_text: str
+    conversation_text: str = Field(min_length=1, max_length=1_000_000)
 
 @router.get("")
 def list_integrations(
