@@ -6,6 +6,8 @@ from apps.api.services.workflow_engine import WorkflowEngine
 @pytest.mark.parametrize("definition,error", [
     ({"nodes": [], "edges": []}, "at least one"),
     (None, "object"),
+    ({"nodes": [{"id": "a"}], "edges": [{"source": [], "target": "a"}]}, "endpoints"),
+    ({"nodes": [{"id": "a"}], "edges": [{"source": "a", "target": {}}]}, "endpoints"),
     ({"nodes": [{"id": "a"}, {"id": "a"}], "edges": []}, "Duplicate"),
     ({"nodes": [{"id": "a"}], "edges": [{"source": "a", "target": "missing"}]}, "Dangling"),
     ({"nodes": [{"id": "a"}, {"id": "b"}], "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}]}, "Cycle"),
