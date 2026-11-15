@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 // A real browser journey through every sidebar view, using an isolated fresh founder.
 // This deliberately avoids demo resets, outbound integrations, and real payments.
 test('new founder can open all eleven navigation tabs without a fatal UI error', async ({ page }) => {
+  // Eleven mounted views and screenshots exceed Playwright's default 30s on CI.
+  test.setTimeout(120_000);
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
@@ -27,7 +29,7 @@ test('new founder can open all eleven navigation tabs without a fatal UI error',
     // which can also include a badge (Boardroom) or other visible metadata.
     await sidebar.locator('nav button').filter({ has: page.locator('span').getByText(label, { exact: true }) }).click();
     await expect(page.locator('header')).toContainText(label);
-    await expect(page.locator('main')).toBeVisible();
+    await expect(page.locator('main'), `Main content missing on ${label}; URL: ${page.url()}; errors: ${errors.join(' | ')}`).toBeVisible();
     await page.screenshot({ path: `test-results/tab-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`, fullPage: false });
   }
   expect(errors).toEqual([]);
