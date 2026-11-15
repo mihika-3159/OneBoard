@@ -119,6 +119,8 @@ class WorkflowEngine:
                 raise ValueError("Duplicate workflow node ID")
             if not isinstance(node.get("data", {}), dict):
                 raise ValueError("Workflow node data must be an object")
+            if not isinstance(node.get("type"), str) or not node["type"].strip():
+                raise ValueError("Workflow node type must be a nonempty string")
             by_id[node_id] = node
 
         indegree = {node_id: 0 for node_id in by_id}
