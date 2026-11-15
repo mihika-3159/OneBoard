@@ -10,6 +10,7 @@ from apps.api.models.business import User, Business
 from apps.api.services.ollama_gateway import ollama_gateway
 from apps.api.models.entities import Customer, Invoice, Commitment
 from apps.api.models.goals_tasks import Task
+from apps.api.services.financial_metrics import calculate_business_financials
 
 router = APIRouter(prefix="/api/ai", tags=["Centralized Model Gateway"])
 
@@ -109,13 +110,15 @@ async def handle_founder_command(
 
     biz_name = biz.name if biz else "Your Enterprise"
     cash_val = float(biz.current_cash_balance) if (biz and biz.current_cash_balance is not None) else 0.0
-    runway_val = float(biz.runway_months) if (biz and biz.runway_months is not None) else 0.0
+    financials = calculate_business_financials(db, biz_id)
+    runway_val = financials['runway_months']
+    runway_description = f'{runway_val} months' if runway_val is not None else financials['runway_status']
 
     context = (
         f"You are the Executive AI Operating System for {biz_name}.\n"
         f"Real Business Context:\n"
         f"- MRR: ${total_mrr:,.2f} across {len(customers)} customers\n"
-        f"- Cash Runway: {runway_val} months (Balance: ${cash_val:,.2f})\n"
+        f"- Cash Runway: {runway_description} (Balance: ${cash_val:,.2f})\n"
         f"- Overdue Invoices: {len(overdue_invoices)} totaling ${sum(i.amount for i in overdue_invoices):,.2f}\n"
         f"- Critical Commitments: {len(critical_commitments)} (e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
         f"- Pending Tasks: {len(tasks)}\n"
