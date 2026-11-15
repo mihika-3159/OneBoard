@@ -13,6 +13,7 @@ from apps.api.services.workflow_engine import WorkflowEngine
     ({"nodes": [{"id": "a"}, {"id": "b"}], "edges": [{"source": "a", "target": "b"}, {"source": "b", "target": "a"}]}, "Cycle"),
     ({"nodes": [{"id": "a"}, {"id": "b"}], "edges": [{"source": "a", "target": "b"}, {"source": "a", "target": "b"}]}, "duplicate edge"),
     ({"nodes": [{"id": ""}], "edges": []}, "nonempty"),
+    ({"nodes": [{"id": " a ", "type": "trigger"}], "edges": []}, "whitespace"),
     ({"nodes": [{"id": "a", "data": []}], "edges": []}, "data"),
 ])
 def test_rejects_invalid_workflow_graphs(definition, error):
