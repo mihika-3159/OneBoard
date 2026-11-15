@@ -53,9 +53,10 @@ class ToolRegistry:
 
     @staticmethod
     def send_email_action(db: Session, business_id: str, recipient: str, subject: str, body: str, **kwargs) -> Dict[str, Any]:
-        # Demo email adapter simulation
+        # The demo adapter never sends an email. Do not claim delivery.
         return {
-            "delivered": True,
+            "delivered": False,
+            "status": "simulated",
             "channel": "demo_email",
             "recipient": recipient,
             "subject": subject,
