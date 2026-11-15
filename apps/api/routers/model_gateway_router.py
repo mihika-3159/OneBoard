@@ -8,7 +8,7 @@ from apps.api.core.config import settings
 from apps.api.core.auth import get_current_user
 from apps.api.models.business import User, Business
 from apps.api.services.ollama_gateway import ollama_gateway
-from apps.api.models.entities import Customer, Invoice, Commitment
+from apps.api.models.entities import Commitment
 from apps.api.models.goals_tasks import Task
 from apps.api.services.financial_metrics import calculate_business_financials
 
@@ -99,18 +99,15 @@ async def handle_founder_command(
     """Founder Command Center: Direct conversational interaction backed by structured business facts."""
     biz_id = current_user.business_id
     biz = db.query(Business).filter(Business.id == biz_id).first()
-    customers = db.query(Customer).filter(Customer.business_id == biz_id).all()
-    invoices = db.query(Invoice).filter(Invoice.business_id == biz_id).all()
     commitments = db.query(Commitment).filter(Commitment.business_id == biz_id).all()
     tasks = db.query(Task).filter(Task.business_id == biz_id, Task.status != "done").all()
 
     financials = calculate_business_financials(db, biz_id)
     total_mrr = financials["mrr"]
-    overdue_invoices = [i for i in invoices if i.status == "overdue"]
     critical_commitments = [c for c in commitments if c.risk_level == "critical"]
 
     biz_name = biz.name if biz else "Your Enterprise"
-    cash_val = float(biz.current_cash_balance) if (biz and biz.current_cash_balance is not None) else 0.0
+    cash_val = financials["cash_balance"]
     runway_val = financials['runway_months']
     runway_description = f'{runway_val} months' if runway_val is not None else financials['runway_status']
 
@@ -119,7 +116,7 @@ async def handle_founder_command(
         f"Real Business Context:\n"
         f"- MRR: ${total_mrr:,.2f} across {financials['active_customers_count']} active customers\n"
         f"- Cash Runway: {runway_description} (Balance: ${cash_val:,.2f})\n"
-        f"- Overdue Invoices: {len(overdue_invoices)} totaling ${sum(i.amount for i in overdue_invoices):,.2f}\n"
+        f"- Overdue Invoices: {financials['overdue_invoices_count']} totaling ${financials['overdue_receivables_amount']:,.2f}\n"
         f"- Critical Commitments: {len(critical_commitments)} (e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
         f"- Pending Tasks: {len(tasks)}\n"
         f"Founder Question: {req.command}\n"
@@ -143,7 +140,7 @@ async def handle_founder_command(
         "inference_engine": "offline_simulated" if is_simulated else "local_ollama",
         "business_state_summary": {
             "mrr": total_mrr,
-            "overdue_receivables": sum(i.amount for i in overdue_invoices),
+            "overdue_receivables": financials["overdue_receivables_amount"],
             "pending_commitments": len(critical_commitments)
         }
     }
