@@ -97,10 +97,14 @@ class WorkflowEngine:
         """Return a stable topological order or fail before any step is executed."""
         import heapq
 
+        if not isinstance(definition, dict):
+            raise ValueError("Workflow definition must be an object")
         nodes = definition.get("nodes", [])
         edges = definition.get("edges", [])
         if not isinstance(nodes, list) or not isinstance(edges, list):
             raise ValueError("Workflow nodes and edges must be lists")
+        if not nodes:
+            raise ValueError("Workflow must contain at least one node")
         if len(nodes) > self.MAX_NODES or len(edges) > self.MAX_EDGES:
             raise ValueError("Workflow exceeds node or edge limits")
 
