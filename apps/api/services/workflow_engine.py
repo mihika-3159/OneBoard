@@ -128,6 +128,8 @@ class WorkflowEngine:
             if not isinstance(edge, dict):
                 raise ValueError("Workflow edge must be an object")
             source, target = edge.get("source"), edge.get("target")
+            if not isinstance(source, str) or not isinstance(target, str):
+                raise ValueError("Workflow edge endpoints must be strings")
             if source not in by_id or target not in by_id:
                 raise ValueError("Dangling edge in workflow graph")
             if (source, target) in seen_edges:
