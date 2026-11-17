@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from apps.api.core.config import settings
+from apps.api.core.config import settings, validate_production_configuration
 from apps.api.core.database import init_db, SessionLocal
 from apps.api.services.seed_data import seed_northstar_studio
 from apps.api.services.scheduler_service import scheduler_service
@@ -25,6 +25,7 @@ logger = logging.getLogger("oneboard")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_production_configuration(settings)
     logger.info("Initializing OneBoard Database Schema...")
     init_db()
     
