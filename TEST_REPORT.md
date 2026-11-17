@@ -2,7 +2,7 @@
 
 **Scope:** draft [PR #8](https://github.com/mihika-3159/OneBoard/pull/8), isolated CI databases, GitHub-hosted Linux runners. **Not a production certification.** The report distinguishes previously completed CI from tests introduced on 15 November.
 
-## Last fully verified head before release-review edits
+## Earlier verified head before release-review edits
 
 Commit `4b2a707ed2a3960f6d7e15f2a0bf8aaa7f104b5b`, 14 November 2026:
 
@@ -20,14 +20,14 @@ Commit `4b2a707ed2a3960f6d7e15f2a0bf8aaa7f104b5b`, 14 November 2026:
 
 - Added `apps/web/e2e/navigation.spec.ts`: fresh founder registration, all **11** sidebar views, main view visibility, browser JavaScript error check, screenshots, logout. This is a browser smoke test, **not** proof that every action inside every tab works.
 - Updated `README.md` to label the product a prototype, correct setup commands, disclose non-implemented live integrations/cloud fallback and clarify the limitations of offline simulation, audit logging and background scheduling.
-- **New final-commit CI must be inspected before marking these changes passing.** Browser screenshots are generated inside the test runner; unless uploaded as CI artifacts they are not independently reviewable outside that runner.
+- **Final release-review commit verified:** `8bab508ce187b47ce063d02981524a8e95f5c84b` (15 November). [Verification run 43718507615](https://github.com/mihika-3159/OneBoard/actions/runs/43718507615): Python tests, SQLite Alembic upgrade/downgrade/upgrade, frontend build and four live Ollama smoke tests passed. [Browser E2E run 43718507596](https://github.com/mihika-3159/OneBoard/actions/runs/43718507596): 4 Playwright tests passed in 10.1 seconds, including the new 11-tab navigation smoke test. I inspected the individual job logs on 17 November. Screenshots were not uploaded because artifact upload is configured for failure only.
 
 ## Unverified / blocked release criteria
 
 | Area | Status and required evidence |
 |---|---|
 | End-to-end founder workflow: create, execute, approve/reject, retry, agent test, council decision, memory and finance | PARTIAL. Existing browser tests verify authentication and isolation; the new navigation smoke test checks tab mounting only. Full actions, failure cases and persisted results need dedicated browser tests |
-| All sidebar tabs | NEW TEST PENDING. Test visits all 11 tabs but does not exercise every control |
+| All sidebar tabs | PASS for 11-tab navigation smoke test at commit `8bab508`; does not exercise every control |
 | Fresh database and demo seed | PARTIAL. Browser CI starts with disposable SQLite; explicit seeded-demo reset and seeded-data correctness not tested |
 | Real Ollama | PARTIAL. Four small CPU-model gateway tests pass; qwen2.5:7b / llama3.1:8b / 14b profiles, latency, concurrent users, memory consumption and business-quality outputs not verified |
 | External provider sync, cloud LLM fallback | NOT IMPLEMENTED / NOT VERIFIED. Demo adapters must never be presented as actual third-party sync |
@@ -57,4 +57,13 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 
 ## Release decision
 
-**NOT CERTIFIED FOR PRODUCTION.** The application has meaningful CI coverage and a working small-model inference smoke test, but full real-provider, Windows, production, concurrency, crash-recovery and founder-action verification remain outstanding. Keep PR #8 draft and unmerged until its **final head** passes and remaining release risks are explicitly accepted. Never use real customer data or live payments for these checks.
+**NOT CERTIFIED FOR PRODUCTION.** The application has meaningful CI coverage and a working small-model inference smoke test, but full real-provider, Windows, production, concurrency, crash-recovery and founder-action verification remain outstanding. Final-head CI passed on 15 November, but keep PR #8 draft and unmerged until remaining release risks are explicitly accepted. Never use real customer data or live payments for these checks.
+
+## Independent final-head log review (17 November 2026)
+
+- Reviewed GitHub Actions job logs, not just green check summaries, for commit `8bab508`.
+- API job passed pytest and disposable SQLite migration upgrade/downgrade/upgrade. Frontend build passed with a non-fatal Vite chunk-size warning (827.59 kB JS bundle, 235.02 kB gzip).
+- Live Ollama job downloaded and exercised the small `qwen2.5:0.5b` model: **4 passed in 2.00s**. This is not a quality benchmark or proof of larger model performance.
+- Browser job: **4 passed in 10.1s**. Ollama was unavailable to the browser job, so full browser-to-live-model behavior remains blocked.
+- GitHub Actions reported Node.js 20 deprecation warnings for some actions. These did not fail the jobs but warrant maintenance.
+- No failing final-head CI job was observed. No additional application code fix was justified by these logs alone. Outstanding functional and deployment gaps above remain open; this is not a production sign-off.
