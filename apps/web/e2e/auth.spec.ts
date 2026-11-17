@@ -85,3 +85,72 @@ test('tenant B cannot execute tenant A workflow or see its definition', async ({
     await b.close();
   }
 });
+
+
+test('founder workflow dry-run is simulated and approval rejection prevents downstream execution', async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const base = 'http://127.0.0.1:4173';
+  try {
+    const registered = await ctx.request.post(base + '/api/auth/register', {
+      data: {
+        name: 'Workflow Safety Tester',
+        email: `workflow-safety-${randomUUID()}@example.test`,
+        password: 'TestPassword123!',
+        business_name: 'Workflow Safety Test Workspace',
+      },
+    });
+    expect(registered.status(), await registered.text()).toBe(201);
+    const founder = await registered.json();
+    const headers = { Authorization: `Bearer ${founder.token}` };
+    const created = await ctx.request.post(base + '/api/workflows', {
+      headers,
+      data: {
+        name: 'Approval gate regression',
+        nodes: [
+          { id: 'after', type: 'calculate', data: { label: 'After approval', connector: 'demo_finance' } },
+          { id: 'gate', type: 'approval', data: { label: 'Founder must approve' } },
+          { id: 'start', type: 'trigger', data: { label: 'Start' } },
+        ],
+        edges: [{ source: 'start', target: 'gate' }, { source: 'gate', target: 'after' }],
+      },
+    });
+    expect(created.status(), await created.text()).toBe(200);
+    const workflow = await created.json();
+
+    const simulated = await ctx.request.post(base + `/api/workflows/${workflow.id}/execute?dry_run=true`, { headers });
+    expect(simulated.status(), await simulated.text()).toBe(200);
+    const dryRun = await simulated.json();
+    expect(dryRun.status).toBe('completed');
+    expect(dryRun.verification_details.dry_run).toBe(true);
+    expect(dryRun.verification_details.node_order).toEqual(['start', 'gate', 'after']);
+    expect(dryRun.verified_success).toBe(false);
+    expect(dryRun.step_results.gate.status).toBe('simulated');
+    expect(dryRun.step_results.after.status).toBe('simulated');
+    expect((await (await ctx.request.get(base + '/api/workflows/approvals', { headers })).json())).toHaveLength(0);
+
+    const started = await ctx.request.post(base + `/api/workflows/${workflow.id}/execute`, { headers });
+    expect(started.status(), await started.text()).toBe(200);
+    const run = await started.json();
+    expect(run.status).toBe('awaiting_approval');
+    expect(run.step_results.after).toBeUndefined();
+    const approvals = await (await ctx.request.get(base + '/api/workflows/approvals', { headers })).json();
+    expect(approvals).toHaveLength(1);
+    const rejected = await ctx.request.post(base + `/api/workflows/approvals/${approvals[0].id}/action`, {
+      headers,
+      data: { action: 'reject', notes: 'Automated isolated safety test' },
+    });
+    expect(rejected.status(), await rejected.text()).toBe(200);
+    expect((await rejected.json()).status).toBe('rejected');
+    const runs = await (await ctx.request.get(base + '/api/workflows/runs', { headers })).json();
+    const stopped = runs.find((item: { id: string }) => item.id === run.id);
+    expect(stopped.status).toBe('failed');
+    expect(stopped.step_results.after).toBeUndefined();
+    const replay = await ctx.request.post(base + `/api/workflows/approvals/${approvals[0].id}/action`, {
+      headers,
+      data: { action: 'approve' },
+    });
+    expect(replay.status()).toBe(409);
+  } finally {
+    await ctx.close();
+  }
+});
