@@ -43,3 +43,21 @@ def test_local_development_configuration_is_not_affected():
         DATABASE_URL="sqlite:///local.db",
         COOKIE_SECURE=False,
     ))
+
+
+def test_api_security_headers_and_auth_cache_controls():
+    from fastapi.testclient import TestClient
+    from apps.api.main import app
+
+    with TestClient(app) as client:
+        public = client.get("/health")
+        assert public.status_code == 200
+        assert public.headers["x-content-type-options"] == "nosniff"
+        assert public.headers["x-frame-options"] == "DENY"
+        assert public.headers["referrer-policy"] == "no-referrer"
+        assert "camera=()" in public.headers["permissions-policy"]
+
+        private = client.get("/api/auth/me")
+        assert private.status_code == 401
+        assert private.headers["cache-control"] == "no-store"
+        assert private.headers["x-content-type-options"] == "nosniff"
