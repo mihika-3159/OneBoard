@@ -61,3 +61,38 @@ def test_api_security_headers_and_auth_cache_controls():
         assert private.status_code == 401
         assert private.headers["cache-control"] == "no-store"
         assert private.headers["x-content-type-options"] == "nosniff"
+
+
+def test_production_startup_rejects_unmigrated_database(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+    from apps.api.core import database
+
+    isolated = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    monkeypatch.setattr(database, "engine", isolated)
+    monkeypatch.setattr(database.settings, "ONEBOARD_PRODUCTION_MODE", True)
+    with pytest.raises(RuntimeError, match="migration revision mismatch"):
+        database.init_db()
+    from sqlalchemy import inspect
+    assert not inspect(isolated).has_table("businesses")
+
+
+def test_production_startup_accepts_stamped_schema_without_create_all(monkeypatch):
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import StaticPool
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from apps.api.core import database
+
+    isolated = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    monkeypatch.setattr(database, "engine", isolated)
+    monkeypatch.setattr(database.settings, "ONEBOARD_PRODUCTION_MODE", True)
+    heads = ScriptDirectory.from_config(Config(str(database.settings.BASE_DIR / "alembic.ini"))).get_heads()
+    assert len(heads) == 1
+    with isolated.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version (version_num) VALUES (:head)"), {"head": heads[0]})
+    # This checks revision enforcement only, not that a stamped schema is complete.
+    # It must never call Base.metadata.create_all as a side effect.
+    monkeypatch.setattr(database.Base.metadata, "create_all", lambda **kwargs: pytest.fail("create_all called"))
+    database.init_db()
