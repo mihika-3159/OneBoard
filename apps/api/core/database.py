@@ -6,10 +6,14 @@ import os
 # Ensure data directory exists
 os.makedirs(settings.DATA_DIR, exist_ok=True)
 
-engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False}
-)
+def engine_options(database_url: str) -> dict:
+    """SQLite needs a thread override; PostgreSQL must not receive SQLite-only options."""
+    if database_url.startswith("sqlite:"):
+        return {"connect_args": {"check_same_thread": False}}
+    return {"pool_pre_ping": True}
+
+
+engine = create_engine(settings.DATABASE_URL, **engine_options(settings.DATABASE_URL))
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
