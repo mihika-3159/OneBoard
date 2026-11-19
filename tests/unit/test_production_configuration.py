@@ -74,7 +74,7 @@ def test_production_startup_rejects_unmigrated_database(monkeypatch):
     with pytest.raises(RuntimeError, match="migration revision mismatch"):
         database.init_db()
     from sqlalchemy import inspect
-    assert not inspect(isolated).has_table("businesses")
+    assert inspect(isolated).get_table_names() == []
 
 
 def test_production_startup_accepts_stamped_schema_without_create_all(monkeypatch):
