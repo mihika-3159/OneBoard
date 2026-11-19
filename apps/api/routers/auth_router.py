@@ -138,7 +138,6 @@ def register(
             "name": user.name,
             "role": user.role,
             "business_id": user.business_id,
-            "api_key": user.api_key
         },
         "business": {
             "id": business.id,
@@ -213,7 +212,6 @@ def login(
             "name": user.name,
             "role": user.role,
             "business_id": user.business_id,
-            "api_key": user.api_key
         },
         "business": {
             "id": business.id if business else user.business_id,
@@ -275,7 +273,6 @@ def get_current_user_profile(
             "name": current_user.name,
             "role": current_user.role,
             "business_id": current_user.business_id,
-            "api_key": current_user.api_key,
         },
         "business": {
             "id": business.id if business else current_user.business_id,
