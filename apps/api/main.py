@@ -68,6 +68,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Security response headers apply to every API response, including errors.
+@app.middleware("http")
+async def security_response_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if request.url.path.startswith("/api/auth/"):
+        response.headers["Cache-Control"] = "no-store"
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 # Minimal public health endpoint
 @app.get("/health", tags=["Health"])
 def health_check():
