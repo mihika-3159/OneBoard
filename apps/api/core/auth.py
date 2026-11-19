@@ -144,6 +144,9 @@ def create_access_token(
 def decode_access_token(token: str) -> Dict[str, Any]:
     """Decode and cryptographically verify an access token."""
     try:
+        # Bound attacker-controlled bearer/cookie input before signature and JSON work.
+        if not isinstance(token, str) or len(token) > 4096:
+            raise ValueError("Invalid token size")
         parts = token.split(".")
         if len(parts) != 2:
             raise ValueError("Malformed token structure")
@@ -164,7 +167,7 @@ def decode_access_token(token: str) -> Dict[str, Any]:
 
         return payload
     except Exception as exc:
-        raise ValueError(f"Invalid access token: {exc}") from exc
+        raise ValueError("Invalid access token") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +317,7 @@ def get_current_user(
         except ValueError as err:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid or expired authentication credentials: {err}",
+                detail="Invalid or expired authentication credentials.",
                 headers={"WWW-Authenticate": "Bearer"}
             )
 
