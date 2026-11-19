@@ -26,6 +26,25 @@ def get_db():
         db.close()
 
 def init_db():
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        # Never create an unversioned production schema. Operators must apply
+        # and verify Alembic migrations before exposing the service.
+        from alembic.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+        from alembic.config import Config
+        from pathlib import Path
+
+        alembic_cfg = Config(str(settings.BASE_DIR / 'alembic.ini'))
+        script = ScriptDirectory.from_config(alembic_cfg)
+        expected_heads = set(script.get_heads())
+        with engine.connect() as connection:
+            actual_heads = set(MigrationContext.configure(connection).get_current_heads())
+        if not actual_heads or actual_heads != expected_heads:
+            raise RuntimeError(
+                'Production database migration revision mismatch; run alembic upgrade head before startup'
+            )
+        return
+
     import apps.api.models.business
     import apps.api.models.goals_tasks
     import apps.api.models.entities
