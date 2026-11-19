@@ -186,3 +186,73 @@ test('routine auth responses never expose persistent API keys', async ({ browser
     await ctx.close();
   }
 });
+
+
+test('founder approval resumes only the remaining DAG steps and cannot be replayed', async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const base = 'http://127.0.0.1:4173';
+  try {
+    const registration = await ctx.request.post(base + '/api/auth/register', {
+      data: {
+        name: 'Approval Resume Tester',
+        email: `approval-resume-${randomUUID()}@example.test`,
+        password: 'TestPassword123!',
+        business_name: 'Approval Resume Workspace',
+      },
+    });
+    expect(registration.status(), await registration.text()).toBe(201);
+    const founder = await registration.json();
+    const headers = { Authorization: `Bearer ${founder.token}` };
+    const creation = await ctx.request.post(base + '/api/workflows', {
+      headers,
+      data: {
+        name: 'Resumable founder approval',
+        nodes: [
+          { id: 'after', type: 'calculate', data: { label: 'Calculate overdue totals', connector: 'demo_finance' } },
+          { id: 'gate', type: 'approval', data: { label: 'Founder approval' } },
+          { id: 'start', type: 'trigger', data: { label: 'Start' } },
+        ],
+        edges: [{ source: 'start', target: 'gate' }, { source: 'gate', target: 'after' }],
+      },
+    });
+    expect(creation.status(), await creation.text()).toBe(200);
+    const workflow = await creation.json();
+    const start = await ctx.request.post(base + `/api/workflows/${workflow.id}/execute`, { headers });
+    expect(start.status(), await start.text()).toBe(200);
+    const pending = await start.json();
+    expect(pending.status).toBe('awaiting_approval');
+    expect(pending.step_results.start.status).toBe('success');
+    expect(pending.step_results.after).toBeUndefined();
+
+    const approvalsResponse = await ctx.request.get(base + '/api/workflows/approvals', { headers });
+    expect(approvalsResponse.status()).toBe(200);
+    const approvals = await approvalsResponse.json();
+    expect(approvals).toHaveLength(1);
+    const approvalId = approvals[0].id;
+    const approved = await ctx.request.post(base + `/api/workflows/approvals/${approvalId}/action`, {
+      headers,
+      data: { action: 'approve' },
+    });
+    expect(approved.status(), await approved.text()).toBe(200);
+    const result = await approved.json();
+    expect(result.status).toBe('approved');
+    expect(result.run.id).toBe(pending.id);
+    expect(result.run.status).toBe('completed');
+    expect(result.run.step_results.start.status).toBe('success');
+    expect(result.run.step_results.gate.status).toBe('approved');
+    expect(result.run.step_results.after.status).toBe('success');
+    expect(result.run.verification_details.node_order).toEqual(['start', 'gate', 'after']);
+    expect(result.run.verified_success).toBe(false);
+
+    const replay = await ctx.request.post(base + `/api/workflows/approvals/${approvalId}/action`, {
+      headers,
+      data: { action: 'approve' },
+    });
+    expect(replay.status()).toBe(409);
+    const runs = await (await ctx.request.get(base + '/api/workflows/runs', { headers })).json();
+    expect(runs.filter((item: { id: string }) => item.id === pending.id)).toHaveLength(1);
+    expect(runs.find((item: { id: string }) => item.id === pending.id).step_results.after.status).toBe('success');
+  } finally {
+    await ctx.close();
+  }
+});
