@@ -154,3 +154,35 @@ test('founder workflow dry-run is simulated and approval rejection prevents down
     await ctx.close();
   }
 });
+
+
+test('routine auth responses never expose persistent API keys', async ({ browser }) => {
+  const ctx = await browser.newContext();
+  const base = 'http://127.0.0.1:4173';
+  const email = `secret-redaction-${randomUUID()}@example.test`;
+  try {
+    const registered = await ctx.request.post(base + '/api/auth/register', {
+      data: { name: 'Secret Redaction', email, password: 'TestPassword123!', business_name: 'Secret Redaction Workspace' },
+    });
+    expect(registered.status(), await registered.text()).toBe(201);
+    const registration = await registered.json();
+    expect(registration.user).not.toHaveProperty('api_key');
+    const headers = { Authorization: `Bearer ${registration.token}` };
+    const me = await ctx.request.get(base + '/api/auth/me', { headers });
+    expect(me.status()).toBe(200);
+    expect((await me.json()).user).not.toHaveProperty('api_key');
+
+    const login = await ctx.request.post(base + '/api/auth/login', {
+      data: { email, password: 'TestPassword123!' },
+    });
+    expect(login.status(), await login.text()).toBe(200);
+    expect((await login.json()).user).not.toHaveProperty('api_key');
+
+    // The explicit key rotation endpoint remains the only intentional reveal.
+    const rotation = await ctx.request.post(base + '/api/auth/regenerate-api-key', { headers });
+    expect(rotation.status(), await rotation.text()).toBe(200);
+    expect((await rotation.json()).api_key).toMatch(/^obk_[a-f0-9]+$/);
+  } finally {
+    await ctx.close();
+  }
+});
