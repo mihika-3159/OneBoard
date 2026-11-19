@@ -256,3 +256,77 @@ test('founder approval resumes only the remaining DAG steps and cannot be replay
     await ctx.close();
   }
 });
+
+
+test('a second founder cannot approve or reject another business workflow', async ({ browser }) => {
+  const owner = await browser.newContext();
+  const intruder = await browser.newContext();
+  const base = 'http://127.0.0.1:4173';
+  try {
+    const register = async (ctx: typeof owner, label: string) => {
+      const response = await ctx.request.post(base + '/api/auth/register', {
+        data: {
+          name: label,
+          email: `approval-isolation-${randomUUID()}@example.test`,
+          password: 'TestPassword123!',
+          business_name: label + ' Workspace',
+        },
+      });
+      expect(response.status(), await response.text()).toBe(201);
+      return response.json();
+    };
+    const a = await register(owner, 'Approval Owner');
+    const b = await register(intruder, 'Approval Intruder');
+    const ownerHeaders = { Authorization: `Bearer ${a.token}` };
+    const intruderHeaders = { Authorization: `Bearer ${b.token}` };
+    const created = await owner.request.post(base + '/api/workflows', {
+      headers: ownerHeaders,
+      data: {
+        name: 'Private approval gate',
+        nodes: [
+          { id: 'start', type: 'trigger', data: { label: 'Start' } },
+          { id: 'gate', type: 'approval', data: { label: 'Founder approval' } },
+          { id: 'after', type: 'calculate', data: { connector: 'demo_finance' } },
+        ],
+        edges: [{ source: 'start', target: 'gate' }, { source: 'gate', target: 'after' }],
+      },
+    });
+    expect(created.status(), await created.text()).toBe(200);
+    const workflow = await created.json();
+    const started = await owner.request.post(base + `/api/workflows/${workflow.id}/execute`, {
+      headers: ownerHeaders,
+    });
+    expect(started.status(), await started.text()).toBe(200);
+    const pendingRun = await started.json();
+    expect(pendingRun.status).toBe('awaiting_approval');
+    const ownerApprovals = await (await owner.request.get(base + '/api/workflows/approvals', { headers: ownerHeaders })).json();
+    expect(ownerApprovals).toHaveLength(1);
+    const approvalId = ownerApprovals[0].id;
+    const intruderApprovals = await intruder.request.get(base + '/api/workflows/approvals', { headers: intruderHeaders });
+    expect(intruderApprovals.status()).toBe(200);
+    expect((await intruderApprovals.json())).toHaveLength(0);
+
+    for (const action of ['approve', 'reject']) {
+      const unauthorized = await intruder.request.post(base + `/api/workflows/approvals/${approvalId}/action`, {
+        headers: intruderHeaders,
+        data: { action },
+      });
+      expect(unauthorized.status()).toBe(403);
+    }
+
+    const stillPending = await (await owner.request.get(base + '/api/workflows/approvals', { headers: ownerHeaders })).json();
+    expect(stillPending).toHaveLength(1);
+    expect(stillPending[0].id).toBe(approvalId);
+    const approved = await owner.request.post(base + `/api/workflows/approvals/${approvalId}/action`, {
+      headers: ownerHeaders,
+      data: { action: 'approve' },
+    });
+    expect(approved.status(), await approved.text()).toBe(200);
+    const result = await approved.json();
+    expect(result.run.status).toBe('completed');
+    expect(result.run.step_results.after.status).toBe('success');
+  } finally {
+    await owner.close();
+    await intruder.close();
+  }
+});
