@@ -79,7 +79,7 @@ async def security_response_headers(request, call_next):
     if request.url.path.startswith("/api/auth/"):
         response.headers["Cache-Control"] = "no-store"
     if settings.ONEBOARD_PRODUCTION_MODE:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
 
 # Minimal public health endpoint
