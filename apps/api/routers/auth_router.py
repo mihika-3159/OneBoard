@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from apps.api.core.auth import (
@@ -34,16 +34,16 @@ router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 
 class RegisterRequest(BaseModel):
-    name: str
-    email: str
-    password: str
-    business_name: Optional[str] = None
-    industry: Optional[str] = "B2B SaaS"
+    name: str = Field(min_length=1, max_length=255)
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=8, max_length=1024)
+    business_name: Optional[str] = Field(default=None, max_length=255)
+    industry: Optional[str] = Field(default="B2B SaaS", max_length=100)
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=1, max_length=1024)
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -69,6 +69,8 @@ def register(
         )
 
     biz_name = (req.business_name or f"{req.name}'s Studio").strip()
+    if not biz_name or len(biz_name) > 255:
+        raise HTTPException(status_code=422, detail="Business name must be between 1 and 255 characters")
     business = Business(
         name=biz_name,
         industry=req.industry or "B2B SaaS",
