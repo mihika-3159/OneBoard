@@ -74,3 +74,12 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - [Browser E2E run 44684655382](https://github.com/mihika-3159/OneBoard/actions/runs/44684655382) passed on the failing API head; this does not override the failed security test.
 - **Corrective commit:** `ae5356f1cd58a160b1f877213b831d75d60e4386` changes malformed Referer handling to an explicit HTTP 403 in all modes. Existing regression test remains unchanged and should now pass. **New-head CI pending; do not claim verified until it completes.**
 - **Still blocked:** shared cross-worker login throttling, production PostgreSQL migration/concurrency checks, durable workflow execution across crashes, real external integration synchronization, full end-to-end founder action testing and independent production deployment review. No production certification.
+
+
+## 20 November 2026, 12:04 Dubai: workflow approval definition integrity
+
+- **Prior head verified:** `94f16c9bd521fca50b3b9c1ab1d19d5f1778823e`. [Verification 44692053463](https://github.com/mihika-3159/OneBoard/actions/runs/44692053463) and [browser E2E 44692053300](https://github.com/mihika-3159/OneBoard/actions/runs/44692053300) both completed successfully. Workflow summaries only; individual job logs not inspected this run.
+- **New fix:** `b056e42758e78c4ea3c5959274ff8e6152377ae8` pins a SHA-256 digest of the complete executable workflow nodes and edges in run verification details, and rejects approval/resume if the definition changes while approval is pending. Previously only node IDs and order were checked, permitting a changed connector, operation, or action payload under the same node IDs.
+- **Regression tests:** `6ee66cd4c5d5ecd083fca9ae5649acc357075207` adds adversarial tests for connector, operation, and label changes, asserting no commit on rejected resume, plus stable key-order hashing.
+- **Verification:** CI for the new test commit was not yet available when checked. The tests are committed, **not yet claimed passed**. Existing pending approvals created before this change lack a digest and deliberately fail closed; operators must start a fresh run.
+- **Remaining blocker:** This prevents changed workflow definitions from being approved, but does not establish durable exactly-once execution after a worker crash or across multiple workers. Production PostgreSQL concurrency, crash recovery and browser action coverage remain unverified.
