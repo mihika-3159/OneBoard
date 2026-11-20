@@ -382,11 +382,44 @@ class WorkflowEngine:
         db.refresh(run)
 
         step_results = dict(run.step_results or {})
-        step_results[checkpoint] = {
-            "status": "approved",
-            "request_id": request_id,
-            "timestamp": now.isoformat(),
-        }
+        # Approval nodes are control checkpoints. A high-risk executable node,
+        # however, must actually run after authorization; previously it was
+        # silently skipped and reported only as "approved".
+        approved_node = ordered_nodes[checkpoint_index]
+        if approved_node.get("type") == "approval":
+            step_results[checkpoint] = {
+                "status": "approved",
+                "request_id": request_id,
+                "timestamp": now.isoformat(),
+            }
+        else:
+            try:
+                result = self._dispatch_node_tool(
+                    db, business_id, approved_node.get("type"),
+                    approved_node.get("data") or {},
+                )
+                if isinstance(result, dict) and result.get("success") is False:
+                    raise ValueError("Approved workflow tool reported failure")
+            except Exception as exc:
+                logger.warning("Approved workflow action %s failed: %s", checkpoint, exc)
+                step_results[checkpoint] = {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+                run.status = "failed"
+                run.error_message = f"Approved step '{checkpoint}' failed; inspect server logs"
+                run.completed_at = datetime.utcnow()
+                run.step_results = dict(step_results)
+                db.commit()
+                db.refresh(run)
+                return run
+            step_results[checkpoint] = {
+                "status": "success",
+                "approval_request_id": request_id,
+                "result": result,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
         return self._execute_steps(
             db, run, wf, ordered_nodes, checkpoint_index + 1, step_results
         )
