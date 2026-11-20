@@ -67,3 +67,10 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - Browser job: **4 passed in 10.1s**. Ollama was unavailable to the browser job, so full browser-to-live-model behavior remains blocked.
 - GitHub Actions reported Node.js 20 deprecation warnings for some actions. These did not fail the jobs but warrant maintenance.
 - No failing final-head CI job was observed. No additional application code fix was justified by these logs alone. Outstanding functional and deployment gaps above remain open; this is not a production sign-off.
+
+## 20 November 2026, 11:02 Dubai: CSRF CI failure and corrective commit
+
+- **Observed failing head:** `89b5dcb8064c986af491806c1d620c2d0cb91e40`. [Verification run 44684655423](https://github.com/mihika-3159/OneBoard/actions/runs/44684655423) failed its `api-tests` job. Inspected job 136116017855 logs: **203 passed, 1 failed, 21 skipped**. The failing case was `tests/adversarial/test_cookie_origin_validation.py::test_rejects_cross_site_cookie_mutations[None-not-a-url]`: a malformed Referer without an Origin was incorrectly treated as absent in development mode. SQLite migration smoke was skipped after pytest failed. Frontend build and real Ollama inference jobs passed.
+- [Browser E2E run 44684655382](https://github.com/mihika-3159/OneBoard/actions/runs/44684655382) passed on the failing API head; this does not override the failed security test.
+- **Corrective commit:** `ae5356f1cd58a160b1f877213b831d75d60e4386` changes malformed Referer handling to an explicit HTTP 403 in all modes. Existing regression test remains unchanged and should now pass. **New-head CI pending; do not claim verified until it completes.**
+- **Still blocked:** shared cross-worker login throttling, production PostgreSQL migration/concurrency checks, durable workflow execution across crashes, real external integration synchronization, full end-to-end founder action testing and independent production deployment review. No production certification.
