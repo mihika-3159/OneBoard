@@ -33,7 +33,7 @@ def test_executable_changes_invalidate_approval(changed):
 
     request = SimpleNamespace(status="pending", payload={"step_id": "b"})
     run = SimpleNamespace(
-        status="awaiting_approval", current_step_id="b",
+        status="awaiting_approval", current_step_id="b", workflow_id="workflow-1",
         verification_details={"node_order": ["a", "b", "c"], "definition_digest": digest},
     )
     db = MagicMock()
