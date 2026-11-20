@@ -218,7 +218,7 @@ class CouncilEngine:
             messages=[{"role": "user", "content": (
                 f"Topic: {topic}\nRecorded facts: {facts}\n"
                 f"Actual adviser positions:\n{visible_positions}\n"
-                f"Challenge: {transcript[-1]['content'] if len(challengers) >= 2 else 'Not performed'}\n"
+                f"Challenges: {'; '.join(challenge_summaries) if challenge_summaries else 'Not performed'}\n"
                 "Summarize only supported advice and trade-offs. "
                 "Do not invent evidence, numeric targets or consensus."
             )}],
