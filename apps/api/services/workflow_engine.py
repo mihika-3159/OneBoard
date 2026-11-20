@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import json
 import logging
+import hashlib
 from apps.api.models.workflow import WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog
 from apps.api.models.entities import Invoice, Customer, Commitment
 from apps.api.models.goals_tasks import Task
@@ -92,6 +93,15 @@ class WorkflowEngine:
 
     MAX_NODES = 100
     MAX_EDGES = 300
+
+    @staticmethod
+    def _definition_digest(wf: WorkflowDefinition) -> str:
+        """Pin the full executable DAG, not only its node IDs, at approval time."""
+        canonical = json.dumps(
+            {"nodes": wf.nodes or [], "edges": wf.edges or []},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _ordered_nodes(self, definition: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Return a stable topological order or fail before any step is executed."""
@@ -244,6 +254,7 @@ class WorkflowEngine:
             "verified": False,
             "dry_run": dry_run,
             "node_order": [node["id"] for node in ordered_nodes],
+            "definition_digest": self._definition_digest(wf),
             "reason": "Dry run only" if dry_run else "No independent outcome verification configured",
         }
         db.add(AuditLog(
@@ -342,7 +353,8 @@ class WorkflowEngine:
             raise ValueError("Workflow definition is unavailable")
         ordered_nodes = self._ordered_nodes({"nodes": wf.nodes or [], "edges": wf.edges or []})
         order_ids = [node["id"] for node in ordered_nodes]
-        if order_ids != (run.verification_details or {}).get("node_order"):
+        if (order_ids != (run.verification_details or {}).get("node_order") or
+                self._definition_digest(wf) != (run.verification_details or {}).get("definition_digest")):
             raise ValueError("Workflow definition changed since approval was requested")
         try:
             checkpoint_index = order_ids.index(checkpoint)
