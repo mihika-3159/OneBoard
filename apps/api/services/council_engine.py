@@ -149,13 +149,16 @@ class CouncilEngine:
 
         disagreements = []
         challengers = [n for n in selected_advisers if n != "Chief of Staff"]
-        if len(challengers) >= 2:
-            first, second = challengers[:2]
+        # Compare adjacent specialist positions so no selected adviser is silently
+        # excluded from the challenge round. Bound LLM calls for demo latency.
+        challenge_pairs = list(zip(challengers, challengers[1:]))[:4]
+        challenge_summaries = []
+        for first, second in challenge_pairs:
             challenge = await ollama_gateway.chat_complete(
                 messages=[{"role": "user", "content": (
-                    f"Topic: {topic}\nRecorded facts: {facts}\n"
-                    f"{first} position: {positions[first][:1500]}\n"
-                    f"{second} position: {positions[second][:1500]}\n"
+                    f"Topic: {topic}\\nRecorded facts: {facts}\\n"
+                    f"{first} position: {positions[first][:1500]}\\n"
+                    f"{second} position: {positions[second][:1500]}\\n"
                     "Identify a specific tension only if the positions support one; "
                     "otherwise say there is no demonstrated disagreement. "
                     "Do not invent a quote, source or target."
@@ -176,6 +179,7 @@ class CouncilEngine:
                 "compared_advisers": [first, second],
                 "timestamp": datetime.utcnow().isoformat()
             })
+            challenge_summaries.append(f"{first} / {second}: {comparison[:800]}")
             if not simulated and comparison.strip():
                 disagreements.append(
                     f"Unverified comparison ({first} / {second}): {comparison[:800]}"
