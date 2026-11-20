@@ -245,7 +245,10 @@ def verify_csrf_protection(request: Request) -> None:
                 raise ValueError("Malformed referer")
             request_origin = f"{parsed.scheme}://{parsed.netloc}"
         except ValueError:
-            request_origin = None
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="CSRF origin check failed: untrusted origin."
+            ) from None
     else:
         request_origin = None
 
