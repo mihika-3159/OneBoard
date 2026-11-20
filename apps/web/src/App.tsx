@@ -54,7 +54,7 @@ export const App: React.FC = () => {
 
   // Form fields
   const [authEmail, setAuthEmail] = useState<string>('founder@northstar.studio');
-  const [authPassword, setAuthPassword] = useState<string>('oneboard2026');
+  const [authPassword, setAuthPassword] = useState<string>('');
   const [authName, setAuthName] = useState<string>('');
   const [authBizName, setAuthBizName] = useState<string>('');
 
