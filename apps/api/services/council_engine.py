@@ -57,6 +57,12 @@ COUNCIL_ROLES = {
     }
 }
 
+def specialist_challenge_pairs(selected_advisers: List[str]) -> List[tuple[str, str]]:
+    """Compare every selected specialist in a bounded chain of challenges."""
+    specialists = [name for name in selected_advisers if name != "Chief of Staff"]
+    return list(zip(specialists, specialists[1:]))[:4]
+
+
 class CouncilEngine:
     """
     Orchestrates the 9-Role Multi-Agent Executive Deliberation Protocol.
@@ -151,7 +157,7 @@ class CouncilEngine:
         challengers = [n for n in selected_advisers if n != "Chief of Staff"]
         # Compare adjacent specialist positions so no selected adviser is silently
         # excluded from the challenge round. Bound LLM calls for demo latency.
-        challenge_pairs = list(zip(challengers, challengers[1:]))[:4]
+        challenge_pairs = specialist_challenge_pairs(selected_advisers)
         challenge_summaries = []
         for first, second in challenge_pairs:
             challenge = await ollama_gateway.chat_complete(
