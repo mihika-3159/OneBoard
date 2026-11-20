@@ -485,12 +485,13 @@ export const App: React.FC = () => {
               <button
                 onClick={() => {
                   setAuthEmail('founder@northstar.studio');
-                  setAuthPassword('oneboard2026');
+                  setAuthPassword('');
+                  setAuthError('Enter the password configured for the local demo account. Demo credentials are not bundled in the browser.');
                   setIsRegisterMode(false);
                 }}
                 className="text-slate-500 hover:text-slate-300 transition font-mono text-[11px]"
               >
-                Use Demo Login
+                Use Demo Email
               </button>
             </div>
           </div>
