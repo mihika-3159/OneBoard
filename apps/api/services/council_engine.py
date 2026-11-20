@@ -58,9 +58,9 @@ COUNCIL_ROLES = {
 }
 
 def specialist_challenge_pairs(selected_advisers: List[str]) -> List[tuple[str, str]]:
-    """Compare every selected specialist in a bounded chain of challenges."""
+    """Compare every selected specialist; nine known roles bound the chain."""
     specialists = [name for name in selected_advisers if name != "Chief of Staff"]
-    return list(zip(specialists, specialists[1:]))[:4]
+    return list(zip(specialists, specialists[1:]))
 
 
 class CouncilEngine:
@@ -156,7 +156,7 @@ class CouncilEngine:
         disagreements = []
         challengers = [n for n in selected_advisers if n != "Chief of Staff"]
         # Compare adjacent specialist positions so no selected adviser is silently
-        # excluded from the challenge round. Bound LLM calls for demo latency.
+        # excluded from the challenge round. Adviser validation bounds calls.
         challenge_pairs = specialist_challenge_pairs(selected_advisers)
         challenge_summaries = []
         for first, second in challenge_pairs:
