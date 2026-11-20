@@ -22,6 +22,7 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 from typing import Any, Dict, List, Optional
 
 from argon2 import PasswordHasher
@@ -233,12 +234,28 @@ def verify_csrf_protection(request: Request) -> None:
     referer = request.headers.get("referer")
     allowed_origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 
-    if origin and allowed_origins:
-        if origin not in allowed_origins and "*" not in allowed_origins:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="CSRF origin check failed: untrusted origin."
-            )
+    # Check the exact origin. If Origin is absent, use the Referer origin;
+    # in production, a cookie-authenticated mutation must provide one.
+    if origin:
+        request_origin = origin
+    elif referer:
+        try:
+            parsed = urlsplit(referer)
+            if not parsed.scheme or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("Malformed referer")
+            request_origin = f"{parsed.scheme}://{parsed.netloc}"
+        except ValueError:
+            request_origin = None
+    else:
+        request_origin = None
+
+    if (request_origin and request_origin not in allowed_origins) or (
+        settings.ONEBOARD_PRODUCTION_MODE and not request_origin
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="CSRF origin check failed: untrusted origin."
+        )
 
     # Double submit cookie check if csrf cookie or header is provided
     if not csrf_cookie or not csrf_header or not hmac.compare_digest(csrf_cookie, csrf_header):
