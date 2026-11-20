@@ -14,6 +14,7 @@ from apps.api.models.memory import MemoryDocument, MemoryConflict
 router = APIRouter(prefix="/api/memory", tags=["Business Memory"])
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB limit
+MAX_EXTRACTED_CHARS = 2_000_000  # Bound text persisted after compressed document parsing
 ALLOWED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".xlsx", ".pdf"}  # openpyxl cannot parse legacy .xls
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,15 @@ async def upload_document(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Document could not be parsed as the declared file type."
         ) from None
+
+    # Compressed PDFs/XLSX can expand far beyond their upload byte size.
+    # Reject extracted content before chunking, embedding or persistence.
+    text = extracted.get("text")
+    if not isinstance(text, str) or len(text) > MAX_EXTRACTED_CHARS:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Extracted document text exceeds the processing limit."
+        )
 
     try:
         doc = memory_engine.add_document_with_chunks(
