@@ -51,3 +51,22 @@ jobs:
       - name: Probe WebGPU in a real browser
         working-directory: experiments/browser-ai
         run: node webgpu-capability.mjs
+  browser-wasm-inference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install browser model runtime and harness
+        working-directory: experiments/browser-ai
+        run: npm install --no-audit --no-fund --no-save vite playwright
+      - name: Install Chromium
+        working-directory: experiments/browser-ai
+        run: npx playwright install --with-deps chromium
+      - name: Run real Qwen3 model inside Chromium with CPU/WASM
+        working-directory: experiments/browser-ai
+        run: node browser-wasm-smoke.mjs
