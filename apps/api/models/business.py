@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean, Float, ForeignKey
+from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean, Float, Integer, ForeignKey
 from datetime import datetime
 import uuid
 from apps.api.core.database import Base
@@ -69,3 +69,12 @@ class UserSession(Base):
     expires_at = Column(DateTime, nullable=False)
     is_revoked = Column(Boolean, default=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LoginThrottleState(Base):
+    """Shared failed-login counters keyed only by a SHA-256 identifier digest."""
+    __tablename__ = "login_throttle_states"
+
+    identifier_hash = Column(String(64), primary_key=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    window_started_at = Column(Float, nullable=False)

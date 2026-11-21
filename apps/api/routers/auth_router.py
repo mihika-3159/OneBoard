@@ -162,13 +162,13 @@ def login(
     """Authenticate founder credentials with Argon2id and issue session cookie and token."""
     client_ip = request.client.host if request.client else "unknown"
     throttle_key = f"{client_ip}:{req.email.strip().lower()}"
-    check_login_throttle(throttle_key)
+    check_login_throttle(throttle_key, db)
 
     clean_email = req.email.strip().lower()
     user = db.query(User).filter(User.email == clean_email).first()
 
     if not user or not verify_password(req.password, user.hashed_password):
-        record_failed_login(throttle_key)
+        record_failed_login(throttle_key, db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
@@ -181,7 +181,7 @@ def login(
             detail="User account is deactivated. Please contact support."
         )
 
-    reset_login_throttle(throttle_key)
+    reset_login_throttle(throttle_key, db)
 
     business = db.query(Business).filter(Business.id == user.business_id).first()
 

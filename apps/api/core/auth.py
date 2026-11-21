@@ -30,10 +30,11 @@ from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHas
 from fastapi import Depends, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from apps.api.core.config import settings
 from apps.api.core.database import get_db
-from apps.api.models.business import Business, BusinessMembership, User, UserSession
+from apps.api.models.business import Business, BusinessMembership, LoginThrottleState, User, UserSession
 
 logger = logging.getLogger(__name__)
 
@@ -174,38 +175,106 @@ def decode_access_token(token: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Login Throttling / Rate Limiting
 # ---------------------------------------------------------------------------
-# Sliding window: { identifier: [timestamp, ...] }
+# Development/test-only legacy helper for unit tests without a DB session.
+# Real login endpoints ALWAYS pass their DB session. Production fails closed if
+# a caller attempts to use this process-local fallback.
 _LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
 
 
-def check_login_throttle(identifier: str) -> None:
-    """Enforce login attempt rate limiting to mitigate password brute-forcing."""
+def _throttle_key(identifier: str) -> str:
+    # Do not store raw client IP addresses or email addresses in the throttle table.
+    return hashlib.sha256(identifier.encode("utf-8")).hexdigest()
+
+
+def _lock_shared_throttle(db: Session, identifier: str) -> None:
+    """Serialize updates for this identifier across PostgreSQL API workers.
+
+    The caller's transaction must remain open from check through record/reset.
+    For PostgreSQL this is a transaction-scoped advisory lock, including the
+    previously missing-row case. SQLite is supported only for isolated tests.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        lock_id = int.from_bytes(
+            hashlib.sha256(identifier.encode("utf-8")).digest()[:8],
+            byteorder="big", signed=True,
+        )
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_id})
+
+
+def check_login_throttle(identifier: str, db: Optional[Session] = None) -> None:
+    """Reject another attempt after too many recent failures.
+
+    When a DB session is supplied, the advisory lock is intentionally kept
+    until record_failed_login/reset_login_throttle commits the transaction.
+    This avoids a check-then-insert race across PostgreSQL workers.
+    """
     now = time.time()
     window = settings.LOGIN_LOCKOUT_SECONDS
     max_attempts = settings.LOGIN_MAX_ATTEMPTS
 
-    attempts = [t for t in _LOGIN_ATTEMPTS.get(identifier, []) if now - t < window]
-    _LOGIN_ATTEMPTS[identifier] = attempts
+    if db is not None:
+        _lock_shared_throttle(db, identifier)
+        state = db.query(LoginThrottleState).filter(
+            LoginThrottleState.identifier_hash == _throttle_key(identifier)
+        ).first()
+        if state is None or now - state.window_started_at >= window:
+            return
+        attempts_count = state.attempt_count
+        first_attempt = state.window_started_at
+    else:
+        if settings.ONEBOARD_PRODUCTION_MODE:
+            raise RuntimeError("Production login throttling requires a shared DB session")
+        attempts = [t for t in _LOGIN_ATTEMPTS.get(identifier, []) if now - t < window]
+        _LOGIN_ATTEMPTS[identifier] = attempts
+        attempts_count = len(attempts)
+        first_attempt = attempts[0] if attempts else now
 
-    if len(attempts) >= max_attempts:
-        retry_after = int(window - (now - attempts[0]))
+    if attempts_count >= max_attempts:
+        retry_after = max(int(window - (now - first_attempt)), 1)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Too many failed login attempts. Please try again in {max(retry_after, 1)} seconds.",
-            headers={"Retry-After": str(max(retry_after, 1))}
+            detail=f"Too many failed login attempts. Please try again in {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)}
         )
 
 
-def record_failed_login(identifier: str) -> None:
-    """Record a failed login attempt for the given identifier."""
+def record_failed_login(identifier: str, db: Optional[Session] = None) -> None:
+    """Persist a failed attempt. This must close the shared-check transaction."""
     now = time.time()
-    attempts = _LOGIN_ATTEMPTS.setdefault(identifier, [])
-    attempts.append(now)
+    if db is None:
+        if settings.ONEBOARD_PRODUCTION_MODE:
+            raise RuntimeError("Production login throttling requires a shared DB session")
+        _LOGIN_ATTEMPTS.setdefault(identifier, []).append(now)
+        return
+
+    _lock_shared_throttle(db, identifier)
+    key = _throttle_key(identifier)
+    state = db.query(LoginThrottleState).filter(
+        LoginThrottleState.identifier_hash == key
+    ).first()
+    if state is None:
+        state = LoginThrottleState(identifier_hash=key, window_started_at=now, attempt_count=1)
+        db.add(state)
+    elif now - state.window_started_at >= settings.LOGIN_LOCKOUT_SECONDS:
+        state.window_started_at = now
+        state.attempt_count = 1
+    else:
+        state.attempt_count += 1
+    db.commit()
 
 
-def reset_login_throttle(identifier: str) -> None:
-    """Reset failed login attempts upon successful authentication."""
-    _LOGIN_ATTEMPTS.pop(identifier, None)
+def reset_login_throttle(identifier: str, db: Optional[Session] = None) -> None:
+    """Clear the counter after valid login, across every server process."""
+    if db is None:
+        if settings.ONEBOARD_PRODUCTION_MODE:
+            raise RuntimeError("Production login throttling requires a shared DB session")
+        _LOGIN_ATTEMPTS.pop(identifier, None)
+        return
+    _lock_shared_throttle(db, identifier)
+    db.query(LoginThrottleState).filter(
+        LoginThrottleState.identifier_hash == _throttle_key(identifier)
+    ).delete(synchronize_session=False)
+    db.commit()
 
 
 # ---------------------------------------------------------------------------
