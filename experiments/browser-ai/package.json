@@ -1,0 +1,7 @@
+{
+  "name": "oneboard-browser-ai-spike",
+  "private": true,
+  "type": "module",
+  "scripts": { "benchmark": "node benchmark.mjs" },
+  "dependencies": { "@huggingface/transformers": "^4.0.0" }
+}
