@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OneBoard browser CPU inference smoke</title></head>
+<body><div id="status">Running isolated test with synthetic input</div>
+<script type="module">
+import { pipeline } from '@huggingface/transformers';
+window.__inference = { status: 'loading' };
+try {
+  const loadStart = performance.now();
+  // Default browser backend uses WASM/CPU when no WebGPU device is selected.
+  const generator = await pipeline('text-generation', 'onnx-community/Qwen3-0.6B-ONNX', { dtype: 'q4' });
+  const loadSeconds = Math.round(performance.now() - loadStart) / 1000;
+  const prompt = generator.tokenizer.apply_chat_template([
+    { role: 'user', content: 'A promised client delivery is blocked. Give one practical next step in one sentence.' }
+  ], { tokenize: false, add_generation_prompt: true, enable_thinking: false });
+  const start = performance.now();
+  const output = await generator(prompt, { max_new_tokens: 48, do_sample: false, return_full_text: false });
+  const answer = output?.[0]?.generated_text;
+  if (typeof answer !== 'string' || !answer.trim() || answer.includes('<think>')) throw new Error('No usable final answer');
+  window.__inference = {
+    status: 'passed', runtime: 'browser_wasm_cpu', model: 'Qwen3-0.6B-ONNX', dtype: 'q4',
+    load_seconds: loadSeconds, generation_seconds: Math.round(performance.now() - start) / 1000,
+    response: answer.slice(0, 400),
+  };
+} catch (error) {
+  window.__inference = { status: 'failed', reason: String(error) };
+}
+document.querySelector('#status').textContent = window.__inference.status;
+</script></body></html>

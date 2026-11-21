@@ -20,12 +20,18 @@ class OllamaGateway:
                 res = await client.get(f"{self.base_url}/api/tags")
                 latency_ms = int((time.time() - start) * 1000)
                 if res.status_code == 200:
-                    models = res.json().get("models", [])
+                    payload = res.json()
+                    models = payload.get("models", []) if isinstance(payload, dict) else []
+                    models = models if isinstance(models, list) else []
+                    available = [m.get("name") for m in models if isinstance(m, dict) and isinstance(m.get("name"), str) and m.get("name")]
                     return {
                         "status": "connected",
                         "base_url": self.base_url,
                         "latency_ms": latency_ms,
-                        "available_models": [m.get("name") for m in models],
+                        "available_models": available,
+                        "inference_available": bool(available),
+                        "offline_mode": False,
+                        "message": None if available else "Ollama is reachable but no models are installed. Inference will use a clearly labeled fallback.",
                         "active_profile": self.active_profile,
                         "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {})
                     }
@@ -37,19 +43,22 @@ class OllamaGateway:
             "base_url": self.base_url,
             "latency_ms": 0,
             "available_models": [],
+            "inference_available": False,
             "active_profile": self.active_profile,
             "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {}),
             "offline_mode": True,
             "message": "Local Ollama daemon is offline or not installed. High-fidelity local simulation adapter is active."
         }
 
-    def get_model_for_task(self, task_type: str = "chat") -> str:
-        profile = settings.MODEL_PROFILES.get(self.active_profile, settings.MODEL_PROFILES["balanced"])
+    def get_model_for_task(self, task_type: str = "chat", profile: Optional[str] = None) -> str:
+        # Request-scoped profiles prevent one tenant from changing another's model.
+        selected = profile or settings.DEFAULT_MODEL_PROFILE
+        profile_config = settings.MODEL_PROFILES.get(selected, settings.MODEL_PROFILES["balanced"])
         if task_type == "reasoning":
-            return profile.get("reasoning_model", "llama3.1:8b")
+            return profile_config.get("reasoning_model", "llama3.1:8b")
         elif task_type == "embedding":
-            return profile.get("embedding_model", "nomic-embed-text")
-        return profile.get("chat_model", "qwen2.5:7b")
+            return profile_config.get("embedding_model", "nomic-embed-text")
+        return profile_config.get("chat_model", "qwen2.5:7b")
 
     async def chat_complete(
         self,
@@ -76,21 +85,42 @@ class OllamaGateway:
             payload["format"] = "json"
 
         start_time = time.time()
+        fallback_reason = "provider_unavailable"
         try:
             async with httpx.AsyncClient(timeout=45.0) as client:
                 res = await client.post(f"{self.base_url}/api/chat", json=payload)
                 if res.status_code == 200:
-                    data = res.json()
-                    content = data.get("message", {}).get("content", "")
-                    duration_ms = int((time.time() - start_time) * 1000)
-                    return {
-                        "content": content,
-                        "model": target_model,
-                        "simulated": False,
-                        "duration_ms": duration_ms
-                    }
-        except Exception as e:
-            logger.warning(f"Ollama chat call failed ({e}). Engaging deterministic local business reasoning adapter.")
+                    try:
+                        data = res.json()
+                        message = data.get("message") if isinstance(data, dict) else None
+                        content = message.get("content") if isinstance(message, dict) else None
+                        if not isinstance(content, str) or not content.strip():
+                            raise ValueError("Missing model response content")
+                        if format_json:
+                            json.loads(content)  # Invalid structured output is not a successful completion.
+                    except (ValueError, TypeError, AttributeError):
+                        fallback_reason = "invalid_model_response"
+                    else:
+                        duration_ms = int((time.time() - start_time) * 1000)
+                        return {
+                            "content": content,
+                            "model": target_model,
+                            "simulated": False,
+                            "duration_ms": duration_ms
+                        }
+                elif res.status_code == 404:
+                    fallback_reason = "model_unavailable"
+                else:
+                    fallback_reason = "provider_http_error"
+        except httpx.TimeoutException:
+            fallback_reason = "timeout"
+        except Exception:
+            # Invalid URL/port and transport ExceptionGroup must fail safely too.
+            # asyncio cancellation is BaseException and is not swallowed here.
+            fallback_reason = "provider_unavailable"
+
+        # Never log prompts, response bodies or credentials on inference failure.
+        logger.warning("Ollama inference unavailable (reason=%s); using labeled fallback.", fallback_reason)
 
         # Deterministic simulation fallback
         duration_ms = int((time.time() - start_time) * 1000)
@@ -99,6 +129,7 @@ class OllamaGateway:
             "content": simulated_response,
             "model": f"{target_model} (local simulated fallback)",
             "simulated": True,
+            "fallback_reason": fallback_reason,
             "duration_ms": max(duration_ms, 85)
         }
 
@@ -174,31 +205,31 @@ class OllamaGateway:
                 })
             elif "deliberation" in lower_prompt or "boardroom" in lower_prompt:
                 return json.dumps({
-                    "recommendation": "Maintain core Growth tier pricing at $59/mo while offering annual prepay discounts to stabilize cash runway.",
-                    "reasoning": "Current runway stands at 7.2 months. A sudden price hike risks churn on accounts with bespoke quotes, whereas upfront billing bolsters working capital.",
-                    "assumptions": ["Churn remains below 4% monthly", "Annual upfront conversion reaches 18%"],
-                    "risks": ["Price sensitivity among SMB cohort", "Sales cycle may lengthen by 1.5 weeks"],
-                    "expected_impact": {"metric": "Cash Runway", "target": "+3.5 months", "timeframe": "60 days"},
-                    "dissenting_adviser": "Marketing Adviser",
-                    "dissenting_reason": "Aggressive annual lock-in could dampen top-of-funnel conversion without strong self-serve onboarding."
+                    "recommendation": None,
+                    "reasoning": "Inference unavailable; no business evidence was evaluated.",
+                    "assumptions": [],
+                    "risks": [],
+                    "expected_impact": None,
+                    "dissenting_adviser": None,
+                    "dissenting_reason": None,
+                    "simulated": True,
+                    "status": "unavailable"
                 })
             else:
                 return json.dumps({
-                    "status": "success",
-                    "analysis": "Analyzed query against structured business state.",
-                    "findings": ["Cash runway is healthy at 7.2 months.", "1 customer commitment pending delivery."],
-                    "recommended_action": "Review overdue commitment for Sarah Chen before Friday."
+                    "status": "unavailable",
+                    "simulated": True,
+                    "analysis": "No model inference or structured business analysis occurred.",
+                    "findings": [],
+                    "recommended_action": None
                 })
-                
-        # Default conversational response
+
+        # No inference occurred. Never fabricate tenant-specific financial facts.
         return (
-            "I have examined Northstar Studio's current operational state across your financial ledger, "
-            "CRM, and active commitments. Our Monthly Recurring Revenue (MRR) is $18,450 across 38 active customers, "
-            "with a net cash runway of 7.2 months. \n\n"
-            "Key priorities requiring founder attention today:\n"
-            "1. **Critical Commitment**: Custom webhook exporter promised to Sarah Chen (Acme Corp) is due in 3 days.\n"
-            "2. **Pricing Discrepancy**: Proposal document references $49/mo while published tier is $59/mo.\n"
-            "3. **Boardroom Deliberation**: The Executive Council is prepared for the Q2 Growth & Pricing Review."
+            "Offline simulated response: Ollama inference was unavailable. "
+            "No business facts were independently verified and no recommendation "
+            "was generated by an AI model. Review the structured dashboard and "
+            "source records for current figures, or retry when Ollama is online."
         )
 
 ollama_gateway = OllamaGateway()

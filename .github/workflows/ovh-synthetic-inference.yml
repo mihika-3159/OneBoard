@@ -1,0 +1,27 @@
+name: OneBoard OVH synthetic inference probe
+# Deliberately manual-only: do not consume anonymous third-party quota
+# during unrelated PR updates. This is a synthetic vendor evaluation, not a
+# production dependency or release certification.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Probe anonymous OVH endpoint with synthetic scenarios only
+        run: python experiments/ovh-ai/synthetic_probe.py
+      - name: Upload synthetic response observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ovh-synthetic-inference-observations
+          path: test-results/ovh-anonymous-synthetic.json
+          if-no-files-found: warn
+          retention-days: 7

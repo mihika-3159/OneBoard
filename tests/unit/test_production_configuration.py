@@ -1,0 +1,98 @@
+import pytest
+
+from apps.api.core.config import Settings, validate_production_configuration
+
+
+def production_settings(**overrides):
+    values = {
+        "ONEBOARD_PRODUCTION_MODE": True,
+        "ONEBOARD_DEMO_MODE": False,
+        "DEBUG": False,
+        "COOKIE_SECURE": True,
+        "AUTH_SECRET_KEY": "a" * 64,
+        "DATABASE_URL": "postgresql://oneboard:placeholder@localhost/oneboard",
+        "CORS_ORIGINS": "https://app.example.test",
+    }
+    values.update(overrides)
+    return Settings(**values)
+
+
+def test_secure_production_configuration_passes():
+    validate_production_configuration(production_settings())
+
+
+@pytest.mark.parametrize("unsafe", [
+    {"ONEBOARD_DEMO_MODE": True},
+    {"DEBUG": True},
+    {"COOKIE_SECURE": False},
+    {"AUTH_SECRET_KEY": "short"},
+    {"DATABASE_URL": "sqlite:///data/oneboard.db"},
+    {"CORS_ORIGINS": "*"},
+    {"CORS_ORIGINS": "http://localhost:5173"},
+    {"CORS_ORIGINS": ""},
+])
+def test_unsafe_production_configuration_fails_closed(unsafe):
+    with pytest.raises(RuntimeError, match="Unsafe OneBoard production configuration"):
+        validate_production_configuration(production_settings(**unsafe))
+
+
+def test_local_development_configuration_is_not_affected():
+    validate_production_configuration(Settings(
+        ONEBOARD_PRODUCTION_MODE=False,
+        AUTH_SECRET_KEY="",
+        DATABASE_URL="sqlite:///local.db",
+        COOKIE_SECURE=False,
+    ))
+
+
+def test_api_security_headers_and_auth_cache_controls():
+    from fastapi.testclient import TestClient
+    from apps.api.main import app
+
+    with TestClient(app) as client:
+        public = client.get("/health")
+        assert public.status_code == 200
+        assert public.headers["x-content-type-options"] == "nosniff"
+        assert public.headers["x-frame-options"] == "DENY"
+        assert public.headers["referrer-policy"] == "no-referrer"
+        assert "camera=()" in public.headers["permissions-policy"]
+
+        private = client.get("/api/auth/me")
+        assert private.status_code == 401
+        assert private.headers["cache-control"] == "no-store"
+        assert private.headers["x-content-type-options"] == "nosniff"
+
+
+def test_production_startup_rejects_unmigrated_database(monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+    from apps.api.core import database
+
+    isolated = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    monkeypatch.setattr(database, "engine", isolated)
+    monkeypatch.setattr(database.settings, "ONEBOARD_PRODUCTION_MODE", True)
+    with pytest.raises(RuntimeError, match="migration revision mismatch"):
+        database.init_db()
+    from sqlalchemy import inspect
+    assert inspect(isolated).get_table_names() == []
+
+
+def test_production_startup_accepts_stamped_schema_without_create_all(monkeypatch):
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.pool import StaticPool
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from apps.api.core import database
+
+    isolated = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    monkeypatch.setattr(database, "engine", isolated)
+    monkeypatch.setattr(database.settings, "ONEBOARD_PRODUCTION_MODE", True)
+    heads = ScriptDirectory.from_config(Config(str(database.settings.BASE_DIR / "alembic.ini"))).get_heads()
+    assert len(heads) == 1
+    with isolated.begin() as connection:
+        connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+        connection.execute(text("INSERT INTO alembic_version (version_num) VALUES (:head)"), {"head": heads[0]})
+    # This checks revision enforcement only, not that a stamped schema is complete.
+    # It must never call Base.metadata.create_all as a side effect.
+    monkeypatch.setattr(database.Base.metadata, "create_all", lambda **kwargs: pytest.fail("create_all called"))
+    database.init_db()

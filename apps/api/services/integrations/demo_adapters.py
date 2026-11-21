@@ -25,21 +25,29 @@ class DemoFinanceAdapter:
         }
 
 class DemoEmailAdapter:
-    """Simulated local email service for drafts and outbox."""
+    """Tenant-isolated, in-memory sandbox outbox. Never delivers real email."""
     def __init__(self):
-        self.outbox = []
+        self._outbox_by_business: Dict[str, List[Dict[str, Any]]] = {}
 
-    def send_email(self, recipient: str, subject: str, body: str) -> Dict[str, Any]:
+    def send_email(self, recipient: str, subject: str, body: str, *, business_id: str) -> Dict[str, Any]:
+        if not business_id:
+            raise ValueError("Sandbox email requires an explicit business ID")
+        outbox = self._outbox_by_business.setdefault(business_id, [])
         record = {
-            "id": f"mail_{len(self.outbox) + 1}",
+            "id": f"mail_{len(outbox) + 1}",
             "recipient": recipient,
             "subject": subject,
             "body": body,
-            "status": "delivered",
+            "status": "simulated",
             "timestamp": datetime.utcnow().isoformat()
         }
-        self.outbox.append(record)
+        outbox.append(record)
         return record
+
+    def get_outbox(self, business_id: str) -> List[Dict[str, Any]]:
+        if not business_id:
+            raise ValueError("Sandbox email requires an explicit business ID")
+        return list(self._outbox_by_business.get(business_id, []))
 
 class DemoCalendarAdapter:
     """Local calendar adapter for executive schedules and reviews."""

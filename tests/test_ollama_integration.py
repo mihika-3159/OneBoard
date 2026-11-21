@@ -166,10 +166,14 @@ class TestOfflineSimulationFallback:
             messages=[{"role": "user", "content": "Run deliberation in the boardroom — should we raise prices?"}],
             format_json=True
         )
+        assert result["simulated"] is True
         data = json.loads(result["content"])
-        assert "recommendation" in data
+        assert data["simulated"] is True
+        assert data["status"] == "unavailable"
+        assert data["recommendation"] is None
         assert "reasoning" in data
-        print(f"\n[Simulation/JSON/Boardroom] recommendation={data['recommendation'][:60]}...")
+        assert not data.get("findings"), "Offline boardroom must not invent findings"
+        print("\n[Simulation/JSON/Boardroom] unavailable; no fabricated recommendation")
 
     @pytest.mark.asyncio
     async def test_embedding_offline_returns_valid_vector(self):

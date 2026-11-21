@@ -25,12 +25,16 @@ def test_prompt_injection_containment():
     assert "execute_shell" not in available_tools
 
 def test_path_traversal_protection():
-    """Attempting path traversal in filename extraction."""
-    malicious_filename = "../../../../etc/passwd"
-    extracted = local_files_adapter.extract_text(b"sample text", malicious_filename)
-    # Adapter extracts text cleanly without reading external file path
+    """Traversal paths never access local files; extensionless paths are rejected."""
+    with pytest.raises(ValueError, match="Unsupported file extension"):
+        local_files_adapter.extract_text(b"sample text", "../../../../etc/passwd")
+
+    extracted = local_files_adapter.extract_text(
+        b"sample text", "../../../../etc/report.txt"
+    )
     assert extracted["text"] == "sample text"
-    assert extracted["file_type"] == "passwd" or extracted["file_type"] == ""
+    assert extracted["file_type"] == "txt"
+    assert extracted["metadata"]["filename"] == "report.txt"
 
 def test_invalid_workflow_dangling_edge():
     """Adversarial workflow containing dangling edges and unpermitted nodes."""

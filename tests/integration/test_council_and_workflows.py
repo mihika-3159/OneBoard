@@ -26,7 +26,12 @@ async def test_council_deliberation_and_approval(db):
     )
     assert meeting.id is not None
     assert len(meeting.deliberation_transcript) > 0
-    assert len(meeting.areas_of_agreement) > 0
+    assert "Evaluate annual prepay incentives" in meeting.synthesis_summary
+    assert meeting.recommended_actions
+    assert all(action.get("source") in ("meeting_topic", "tenant_financial_snapshot")
+               for action in meeting.recommended_actions)
+    # Do not fabricate consensus when the offline model cannot establish it.
+    assert not meeting.areas_of_agreement
 
     decision = council_engine.approve_meeting_decision(
         db=db,
@@ -35,7 +40,8 @@ async def test_council_deliberation_and_approval(db):
         decision_notes="Approved in integration test."
     )
     assert decision.founder_decision == "approved"
-    assert len(decision.expected_outcomes) > 0
+    assert decision.expected_outcomes == []  # No invented financial forecasts.
+    assert decision.planned_actions == meeting.recommended_actions
 
 def test_workflow_execution_and_approval_gate(db):
     wf = db.query(WorkflowDefinition).filter(WorkflowDefinition.business_id == DEMO_BUSINESS_ID).first()

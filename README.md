@@ -11,7 +11,7 @@
 
 ---
 
-## Executive Summary
+> **Release status (15 November 2026):** This repository is a local-first prototype, not a production-certified autonomous operating system. The architecture and feature descriptions below include intended capabilities, not all independently demonstrated behavior. Real third-party provider synchronization and cloud-model fallback are not implemented; integrations are explicitly labeled as sandbox/demo where applicable. Offline simulated AI outputs are not real model inference. Council recommendations and evidence links should not be treated as independently verified financial or legal advice. The audit log is database-backed but not cryptographically immutable. Scheduler jobs are not coordinated across multiple server processes. Consult [TEST_REPORT.md](TEST_REPORT.md) for exact CI evidence and unverified areas.\n\n## Executive Summary
 
 Solopreneurs, boutique agency owners, and technical consultants operate at a structural disadvantage: they are forced to juggle strategy, cash flow, marketing, client delivery, operations, and compliance simultaneously. Conventional tools offer either generic chat windows (which hallucinate business math and forget context) or static automation tools (which lack contextual judgment).
 
@@ -113,8 +113,8 @@ OneBoard ships with a turnkey, realistic creative & software agency pre-seeded i
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/oneboard.git
-cd oneboard
+git clone https://github.com/mihika-3159/OneBoard.git
+cd OneBoard
 
 # Create and activate virtual environment
 python -m venv .venv
@@ -129,16 +129,15 @@ pip install -r apps/api/requirements.txt
 
 ### 2. Configure Environment
 
-Create a `.env` file in `apps/api/`:
+Create a `.env` file at the repository root (the application reads the root working-directory environment). In non-demo mode, a strong `AUTH_SECRET_KEY` is mandatory:
 ```env
 APP_NAME=OneBoard
-ENVIRONMENT=development
+AUTH_SECRET_KEY=replace-with-a-long-cryptographically-random-secret
+ONEBOARD_DEMO_MODE=false
 DATABASE_URL=sqlite:///./data/oneboard.db
 OLLAMA_BASE_URL=http://localhost:11434
-# Optional cloud provider keys (fallback only):
-# GEMINI_API_KEY=your_key_here
-# OPENAI_API_KEY=your_key_here
-# ANTHROPIC_API_KEY=your_key_here
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+# Set COOKIE_SECURE=true when deployed behind HTTPS.
 ```
 
 ### 3. Initialize Database & Seed Demo Data
@@ -157,8 +156,7 @@ python scripts/seed_database.py
 **Option B — Manual Start**:
 ```bash
 # Terminal 1: Backend API
-cd apps/api
-uvicorn main:app --reload --port 8000
+python -m uvicorn apps.api.main:app --reload --port 8000
 
 # Terminal 2: Frontend Web App
 cd apps/web
@@ -185,7 +183,8 @@ pytest tests/integration -v
 pytest tests/adversarial -v
 
 # Run full Ollama integration test suite
-pytest tests/test_ollama_integration.py -v
+ONEBOARD_LIVE_OLLAMA_TESTS=1 ONEBOARD_CI_OLLAMA_MODEL=qwen2.5:0.5b python -m pytest tests/test_ollama_live_ci.py -v
+# Requires a running Ollama server and downloaded model
 ```
 
 ---
@@ -203,4 +202,4 @@ pytest tests/test_ollama_integration.py -v
 - **Event**: Dubai AI Agents Championship
 - **Category**: AI Agents for Business Operations & Solo Founders
 - **Creator**: Mihika Singh
-- **Contact**: [GitHub Issues / Discussion](https://github.com/your-username/oneboard)
+- **Contact**: [GitHub Issues / Discussion](https://github.com/mihika-3159/OneBoard)

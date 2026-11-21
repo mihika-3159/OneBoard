@@ -1,6 +1,7 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 import json
 import logging
+from fastapi import HTTPException
 from apps.api.services.ollama_gateway import ollama_gateway
 
 logger = logging.getLogger(__name__)
@@ -27,34 +28,24 @@ class NaturalLanguageBuilder:
             format_json=True
         )
         
+        if res.get("simulated"):
+            raise HTTPException(status_code=503, detail="Workflow generation requires a working AI model; no workflow was created.")
         try:
-            parsed = json.loads(res.get("content", "{}"))
-            if "nodes" in parsed and "edges" in parsed:
-                return parsed
-        except Exception:
-            pass
-            
-        # Robust default fallback for invoice reminder workflow if parsing variance occurs
-        return {
-            "name": "Automated Invoice Audit & Outreach",
-            "description": f"Generated from prompt: '{user_prompt}'",
-            "trigger_type": "schedule",
-            "trigger_config": {"cron": "0 9 * * 5", "frequency": "Weekly on Friday 9 AM"},
-            "nodes": [
-                {"id": "node_1", "type": "trigger", "position": {"x": 100, "y": 150}, "data": {"label": "Friday 9 AM Trigger", "connector": "scheduler"}},
-                {"id": "node_2", "type": "data_fetch", "position": {"x": 350, "y": 150}, "data": {"label": "Audit Overdue Invoices", "connector": "demo_finance"}},
-                {"id": "node_3", "type": "calculate", "position": {"x": 600, "y": 150}, "data": {"label": "Calculate Total Receivables", "formula": "sum"}},
-                {"id": "node_4", "type": "approval", "position": {"x": 850, "y": 150}, "data": {"label": "Founder Approval Gate", "risk": "high"}},
-                {"id": "node_5", "type": "action", "position": {"x": 1100, "y": 150}, "data": {"label": "Send Friendly Email Reminders", "connector": "demo_email"}}
-            ],
-            "edges": [
-                {"id": "e1-2", "source": "node_1", "target": "node_2"},
-                {"id": "e2-3", "source": "node_2", "target": "node_3"},
-                {"id": "e3-4", "source": "node_3", "target": "node_4"},
-                {"id": "e4-5", "source": "node_4", "target": "node_5"}
-            ],
-            "validation": {"is_valid": True}
-        }
+            parsed = json.loads(res["content"])
+            nodes, edges = parsed["nodes"], parsed["edges"]
+            if not isinstance(parsed.get("name"), str) or not parsed["name"].strip():
+                raise ValueError("Missing workflow name")
+            if not isinstance(nodes, list) or not isinstance(edges, list):
+                raise ValueError("Workflow nodes and edges must be arrays")
+            from apps.api.services.workflow_engine import workflow_engine
+            validation = workflow_engine.validate_workflow({"nodes": nodes, "edges": edges})
+            if not validation.get("is_valid"):
+                raise ValueError(validation.get("error") or "Invalid workflow graph")
+            parsed["simulated"] = False
+            return parsed
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("AI returned an invalid workflow schema: %s", type(exc).__name__)
+            raise HTTPException(status_code=422, detail="AI returned an invalid workflow. Please revise the prompt and retry.") from exc
 
     async def generate_agent_from_prompt(self, user_prompt: str) -> Dict[str, Any]:
         system_prompt = (
@@ -69,23 +60,26 @@ class NaturalLanguageBuilder:
             format_json=True
         )
         
+        if res.get("simulated"):
+            raise HTTPException(status_code=503, detail="Agent generation requires a working AI model; no agent was created.")
         try:
-            parsed = json.loads(res.get("content", "{}"))
-            if "name" in parsed and "system_prompt" in parsed:
-                return parsed
-        except Exception:
-            pass
-
-        return {
-            "name": "Customer Onboarding Specialist",
-            "role_title": "Onboarding & Retention Agent",
-            "department": "Customer Success",
-            "description": f"Tailored agent generated from request: '{user_prompt}'",
-            "system_prompt": "You are the Onboarding Specialist for Northstar Studio. Track newly activated customers, audit completion of core setup steps, and draft personalized guidance.",
-            "allowed_tools": ["read_crm", "check_product_telemetry", "draft_email"],
-            "requires_approval_for": ["send_email"],
-            "max_steps": 4
-        }
+            parsed = json.loads(res["content"])
+            required = ("name", "role_title", "system_prompt")
+            if not isinstance(parsed, dict) or any(
+                not isinstance(parsed.get(key), str) or not parsed[key].strip() for key in required
+            ):
+                raise ValueError("Missing required agent fields")
+            for key in ("allowed_tools", "requires_approval_for"):
+                if not isinstance(parsed.get(key), list) or not all(isinstance(v, str) for v in parsed[key]):
+                    raise ValueError("Invalid agent tool list")
+            steps = parsed.get("max_steps")
+            if type(steps) is not int or not 1 <= steps <= 25:
+                raise ValueError("Invalid agent step limit")
+            parsed["simulated"] = False
+            return parsed
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("AI returned an invalid agent schema: %s", type(exc).__name__)
+            raise HTTPException(status_code=422, detail="AI returned an invalid agent configuration. Please revise the prompt and retry.") from exc
 
     async def teach_a_process(self, process_description: str, example_inputs_outputs: Optional[str] = None) -> Dict[str, Any]:
         """

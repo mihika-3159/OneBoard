@@ -32,8 +32,9 @@ export const IntegrationsTab: React.FC = () => {
   const loadData = async () => {
     try {
       const [ints, ob] = await Promise.all([api.getIntegrations(), api.getEmailOutbox()]);
-      setIntegrations(ints);
-      setOutbox(ob);
+      // The API returns an envelope { is_simulated, channel, outbox }, not an array.
+      setIntegrations(Array.isArray(ints) ? ints : []);
+      setOutbox(Array.isArray(ob?.outbox) ? ob.outbox : []);
     } catch (e) {
       console.error('Error loading integrations', e);
     }
