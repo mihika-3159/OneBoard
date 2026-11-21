@@ -29,19 +29,11 @@ for (const scenario of scenarios) {
   const formattedPrompt = generator.tokenizer.apply_chat_template(messages, {
     tokenize: false, add_generation_prompt: true, enable_thinking: false,
   });
-  const generated = await generator(formattedPrompt, { max_new_tokens: maxTokens, do_sample: false });
-  const raw = generated?.[0]?.generated_text;
-  const matches = typeof raw === 'string' && raw.startsWith(formattedPrompt);
-  // Print only synthetic data to diagnose tokenizer/template behavior.
-  console.log(JSON.stringify({
-    stage: 'template_diagnostics',
-    prompt_tail: String(formattedPrompt).slice(-180),
-    generated_prefix: typeof raw === 'string' ? raw.slice(0, 180) : typeof raw,
-    generated_starts_with_prompt: matches,
-  }));
-  const response = matches ? raw.slice(formattedPrompt.length) : raw;
-  // Do not mark a thinking-only output as usable advice. Collect the first
-  // result for diagnosis before assessing if this model is ready for founders.
+  const generated = await generator(formattedPrompt, { max_new_tokens: maxTokens, do_sample: false, return_full_text: false });
+  const response = generated?.[0]?.generated_text;
+  if (typeof response === 'string' && response.includes('<think>')) {
+    throw new Error('Non-thinking mode unexpectedly emitted reasoning tokens');
+  }
   if (typeof response !== 'string' || !response.trim()) {
     throw new Error('Real inference returned no text for ' + scenario.id);
   }
@@ -50,7 +42,7 @@ for (const scenario of scenarios) {
   console.log(JSON.stringify({ stage: 'response', model: modelId, dtype, ...result }));
 }
 console.log(JSON.stringify({
-  stage: 'summary', execution: 'real_onnx_wasm_inference', model: modelId, dtype, load_seconds: loadSeconds,
+  stage: 'summary', execution: 'real_onnx_cpu_inference', model: modelId, dtype, load_seconds: loadSeconds,
   prompts_executed: outputs.length, outputs_differ: new Set(outputs.map(x => x.output)).size > 1,
   note: 'Neither quality nor WebGPU availability is proven by CPU inference',
 }));
