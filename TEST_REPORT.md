@@ -131,3 +131,10 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - **Fix:** commit `20aaa200` rejects extracted text above 2,000,000 characters or non-string parser output before calling document persistence. Commit `4d7d546` adds two isolated regression tests asserting HTTP 413 and zero persistence calls.
 - **Verification:** New-head CI must run before these tests can be reported as passing. The bound limits post-extraction work, **not** parser CPU/memory consumed during decompression; compressed archive expansion limits and parser isolation remain necessary for hostile files.
 - **Release:** issue #6 remains open because live provider sync, durable scheduled jobs, and parser resource isolation are not fully verified. All seven issues remain open; production certification remains blocked.
+
+## 21 November 2026: offline AI financial-claim correction
+
+- **Baseline:** head `6da08ea` passed [verification 44750056706](https://github.com/mihika-3159/OneBoard/actions/runs/44750056706) and [browser E2E 44750056629](https://github.com/mihika-3159/OneBoard/actions/runs/44750056629). These results predate this fix.
+- **Finding:** `apps/api/services/ollama_gateway.py::_generate_simulated_response` produced a canned offline conversational response claiming Northstar Studio revenue, 38 customers, 7.2 months runway and a named commitment regardless of the authenticated business. This could mislead founders and leak demo-specific narrative across tenant contexts.
+- **Fix:** commit `4d4b75a` replaces that fallback with an explicit no-inference/no-verified-facts notice. Commit `9f9497f` adds two regression tests for fabricated financial values and prompt independence. **New-head CI has not been confirmed.**
+- **Scope limitation:** JSON structured fallbacks still include seeded demo-specific claims and require separate hardening; do not treat them as real analysis. Shared login throttling, PostgreSQL multiworker testing, workflow crash recovery, live integrations and complete founder browser flows remain unverified. No production certification.
