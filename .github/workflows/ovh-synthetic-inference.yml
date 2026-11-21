@@ -1,10 +1,8 @@
 name: OneBoard OVH synthetic inference probe
+# Deliberately manual-only: do not consume anonymous third-party quota
+# during unrelated PR updates. This is a synthetic vendor evaluation, not a
+# production dependency or release certification.
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "experiments/ovh-ai/**"
-      - ".github/workflows/ovh-synthetic-inference.yml"
   workflow_dispatch:
 permissions:
   contents: read
