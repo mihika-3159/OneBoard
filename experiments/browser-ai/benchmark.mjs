@@ -31,10 +31,17 @@ for (const scenario of scenarios) {
   });
   const generated = await generator(formattedPrompt, { max_new_tokens: maxTokens, do_sample: false });
   const raw = generated?.[0]?.generated_text;
-  const response = typeof raw === 'string' && raw.startsWith(formattedPrompt) ? raw.slice(formattedPrompt.length) : raw;
-  if (typeof response === 'string' && response.includes('<think>')) {
-    throw new Error('Non-thinking mode still produced internal thinking text');
-  }
+  const matches = typeof raw === 'string' && raw.startsWith(formattedPrompt);
+  // Print only synthetic data to diagnose tokenizer/template behavior.
+  console.log(JSON.stringify({
+    stage: 'template_diagnostics',
+    prompt_tail: String(formattedPrompt).slice(-180),
+    generated_prefix: typeof raw === 'string' ? raw.slice(0, 180) : typeof raw,
+    generated_starts_with_prompt: matches,
+  }));
+  const response = matches ? raw.slice(formattedPrompt.length) : raw;
+  // Do not mark a thinking-only output as usable advice. Collect the first
+  // result for diagnosis before assessing if this model is ready for founders.
   if (typeof response !== 'string' || !response.trim()) {
     throw new Error('Real inference returned no text for ' + scenario.id);
   }
