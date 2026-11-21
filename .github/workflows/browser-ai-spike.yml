@@ -12,9 +12,15 @@ jobs:
   real-model-cpu-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - { label: qwen3-0.6b, id: 'onnx-community/Qwen3-0.6B-ONNX' }
+          - { label: qwen3-1.7b, id: 'onnx-community/Qwen3-1.7B-ONNX' }
     env:
       NODE_OPTIONS: --max-old-space-size=6144
-      ONEBOARD_BROWSER_AI_MODEL: onnx-community/Qwen3-0.6B-ONNX
+      ONEBOARD_BROWSER_AI_MODEL: ${{ matrix.model.id }}
       ONEBOARD_BROWSER_AI_DTYPE: q4
       ONEBOARD_BROWSER_AI_MAX_TOKENS: '64'
     steps:
