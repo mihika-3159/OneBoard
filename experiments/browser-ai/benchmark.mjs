@@ -14,7 +14,7 @@ const loadStart = performance.now();
 console.log(JSON.stringify({ stage: 'loading_model', at: new Date().toISOString(), model: modelId, dtype }));
 const { pipeline, env } = await import('@huggingface/transformers');
 env.allowRemoteModels = true;
-const generator = await pipeline('text-generation', modelId, { device: 'wasm', dtype });
+const generator = await pipeline('text-generation', modelId, { device: 'cpu', dtype });
 const loadSeconds = Number(((performance.now() - loadStart) / 1000).toFixed(2));
 console.log(JSON.stringify({ stage: 'loaded', load_seconds: loadSeconds, model: modelId, dtype }));
 const outputs = [];
