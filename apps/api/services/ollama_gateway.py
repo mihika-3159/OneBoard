@@ -205,22 +205,25 @@ class OllamaGateway:
                 })
             elif "deliberation" in lower_prompt or "boardroom" in lower_prompt:
                 return json.dumps({
-                    "recommendation": "Maintain core Growth tier pricing at $59/mo while offering annual prepay discounts to stabilize cash runway.",
-                    "reasoning": "Current runway stands at 7.2 months. A sudden price hike risks churn on accounts with bespoke quotes, whereas upfront billing bolsters working capital.",
-                    "assumptions": ["Churn remains below 4% monthly", "Annual upfront conversion reaches 18%"],
-                    "risks": ["Price sensitivity among SMB cohort", "Sales cycle may lengthen by 1.5 weeks"],
-                    "expected_impact": {"metric": "Cash Runway", "target": "+3.5 months", "timeframe": "60 days"},
-                    "dissenting_adviser": "Marketing Adviser",
-                    "dissenting_reason": "Aggressive annual lock-in could dampen top-of-funnel conversion without strong self-serve onboarding."
+                    "recommendation": None,
+                    "reasoning": "Inference unavailable; no business evidence was evaluated.",
+                    "assumptions": [],
+                    "risks": [],
+                    "expected_impact": None,
+                    "dissenting_adviser": None,
+                    "dissenting_reason": None,
+                    "simulated": True,
+                    "status": "unavailable"
                 })
             else:
                 return json.dumps({
-                    "status": "success",
-                    "analysis": "Analyzed query against structured business state.",
-                    "findings": ["Cash runway is healthy at 7.2 months.", "1 customer commitment pending delivery."],
-                    "recommended_action": "Review overdue commitment for Sarah Chen before Friday."
+                    "status": "unavailable",
+                    "simulated": True,
+                    "analysis": "No model inference or structured business analysis occurred.",
+                    "findings": [],
+                    "recommended_action": None
                 })
-                
+
         # No inference occurred. Never fabricate tenant-specific financial facts.
         return (
             "Offline simulated response: Ollama inference was unavailable. "
