@@ -20,12 +20,21 @@ console.log(JSON.stringify({ stage: 'loaded', load_seconds: loadSeconds, model: 
 const outputs = [];
 for (const scenario of scenarios) {
   const start = performance.now();
-  const generated = await generator([
-    { role: 'system', content: 'You are a founder adviser. Answer directly, not with a thinking transcript. Treat inputs as hypothetical. Do not invent company records. Answer concisely.' },
+  const messages = [
+    { role: 'system', content: 'You are a founder adviser. Give concise advice from supplied hypothetical data. Never invent business records.' },
     { role: 'user', content: scenario.prompt },
-  ], { max_new_tokens: maxTokens, do_sample: false });
+  ];
+  // Qwen3 defaults to thought tokens, which can consume the whole response budget.
+  // Format with its documented hard switch so only a user-facing answer is generated.
+  const formattedPrompt = generator.tokenizer.apply_chat_template(messages, {
+    tokenize: false, add_generation_prompt: true, enable_thinking: false,
+  });
+  const generated = await generator(formattedPrompt, { max_new_tokens: maxTokens, do_sample: false });
   const raw = generated?.[0]?.generated_text;
-  const response = Array.isArray(raw) ? raw.at(-1)?.content : raw;
+  const response = typeof raw === 'string' && raw.startsWith(formattedPrompt) ? raw.slice(formattedPrompt.length) : raw;
+  if (typeof response === 'string' && response.includes('<think>')) {
+    throw new Error('Non-thinking mode still produced internal thinking text');
+  }
   if (typeof response !== 'string' || !response.trim()) {
     throw new Error('Real inference returned no text for ' + scenario.id);
   }
