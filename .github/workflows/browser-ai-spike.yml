@@ -1,0 +1,47 @@
+name: OneBoard browser inference feasibility
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/browser-ai/**'
+      - '.github/workflows/browser-ai-spike.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  real-model-cpu-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+      ONEBOARD_BROWSER_AI_MODEL: onnx-community/Qwen3-0.6B-ONNX
+      ONEBOARD_BROWSER_AI_DTYPE: q4
+      ONEBOARD_BROWSER_AI_MAX_TOKENS: '64'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated model runtime
+        working-directory: experiments/browser-ai
+        run: npm install --no-audit --no-fund
+      - name: Run real model on synthetic founder scenarios
+        working-directory: experiments/browser-ai
+        run: node benchmark.mjs
+  browser-webgpu-capability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated browser probe
+        working-directory: experiments/browser-ai
+        run: npm install --no-audit --no-fund --no-save playwright
+      - name: Install Chromium
+        working-directory: experiments/browser-ai
+        run: npx playwright install --with-deps chromium
+      - name: Probe WebGPU in a real browser
+        working-directory: experiments/browser-ai
+        run: node webgpu-capability.mjs
