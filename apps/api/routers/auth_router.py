@@ -177,9 +177,13 @@ def login(
         )
 
     if not user.is_active:
+        # Do not reveal that an account exists but has been disabled. Count
+        # attempts against the same shared throttle as invalid credentials.
+        record_failed_login(throttle_key, db)
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is deactivated. Please contact support."
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password.",
+            headers={"WWW-Authenticate": "Bearer"}
         )
 
     reset_login_throttle(throttle_key, db)
