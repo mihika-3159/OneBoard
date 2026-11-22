@@ -173,3 +173,12 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - On querying workflow runs for `4512e1a5cc3a65ad9b8d984c69d3665a8f86443d`, the API returned **no associated PR workflow runs yet**. This is **UNVERIFIED/PENDING**, not green. CI on an older head does not validate these commits.
 - Reproduction: run `pytest -q tests/test_auth_token_claims.py` in the configured API test environment, then verify every applicable PR GitHub Actions workflow against the latest commit SHA.
 - Outstanding: full authentication/tenant/migration batch and concurrency tests; do not proceed to workflow/financial batch until latest-head checks are all green and batch acceptance criteria are met.
+
+
+## 22 November 2026, security batch: account-scoped throttling and logout ownership
+
+- Prior head `21e87ace6ed4bb04d15610b87404a69b93557d9a`: all three applicable PR workflows completed successfully: [verification 45000673684](https://github.com/mihika-3159/OneBoard/actions/runs/45000673684), [browser E2E 45000673658](https://github.com/mihika-3159/OneBoard/actions/runs/45000673658), [browser inference feasibility 45000673702](https://github.com/mihika-3159/OneBoard/actions/runs/45000673702). This is **prior-head evidence only**.
+- Production fix `053dcdb4159369c63ac0f17572ea6f1a708d39a0`: failed-login throttle identifier is now account-wide rather than source-IP-plus-account, preventing simple IP rotation from evading the persistent per-account lockout. Logout now checks both stored session user and tenant against the signed token before revocation.
+- Adversarial tests `1ab513be3b52d07ced63b4390ce880aaebab3ddc`: verify three IP addresses share the same account throttle key, and mismatched session user/tenant cannot be revoked by another signed identity.
+- **Current-head CI: pending/unverified at authoring.** The GitHub PR workflow query returned no runs yet for `1ab513be3b52d07ced63b4390ce880aaebab3ddc`. Run `pytest -q tests/adversarial/test_account_throttle_logout_scope.py` and all applicable PR workflows on the latest commit; do not move to the next batch until all checks pass.
+- Security limitations: account lockout can be used for targeted denial of service; per-source/IP and account-level rate limits need a carefully ordered dual-key transaction, real PostgreSQL concurrent-worker verification, and operational review. Production migration concurrency and tenant access review remain outstanding. PR #8 remains draft; no release or Level 3 certification.
