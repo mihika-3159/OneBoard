@@ -209,3 +209,11 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - Root cause from both failing job logs: `SyntaxError: unexpected character after line continuation character`, `apps/api/core/auth.py:180`. The lifetime validation expression contained literal `\\n` characters instead of Python newlines, introduced by the prior session-lifetime change.
 - Repair commit `2b29f6563b666da136a46aa51776a3ed5f776ca5` replaces the escaped sequences with actual Python line breaks without weakening token checks. New-head CI remains **UNVERIFIED** at the time of writing; wait for all applicable checks on this exact SHA, inspect any failures and keep Batch 1 open.
 - Reproduction: `python -m compileall -q apps/api` followed by `python -m pytest -q tests/adversarial/test_account_throttle_logout_scope.py` and the complete PR verification and browser E2E workflows. No claim of local execution or production readiness.
+
+## 22 November 2026, 17:00 Dubai: production CORS origin hardening
+
+- Prior head `592839c6b7f37ab746299aea0b6419aee1656f0f` **PASS** on all three PR-triggered workflows: verification [45019905740](https://github.com/mihika-3159/OneBoard/actions/runs/45019905740), browser E2E [45019905717](https://github.com/mihika-3159/OneBoard/actions/runs/45019905717), browser inference feasibility [45019905741](https://github.com/mihika-3159/OneBoard/actions/runs/45019905741). These are previous-head checks only.
+- Code commit `6eaa6d3e59809e38c5f50b96acdb6a03b3f793f4` tightens production CORS configuration validation to reject missing host, userinfo, URL path/query/fragment, malformed port and noncanonical origins. Prefix-only HTTPS checks were insufficient.
+- Test commit `0933623b1af7683b28b8090dc8f7b78fd4053d98` adds parameterized adversarial cases and valid HTTPS origins.
+- Reproduce: `python -m pytest -q tests/adversarial/test_production_cors_origins.py` and `python -m compileall -q apps/api`. **New-head CI is not yet verified** at report-writing time; this report commit itself will create a newer SHA and must be checked separately.
+- Batch 1 remains open pending exact-head CI and PostgreSQL multi-worker concurrency, migration locking, account-lockout abuse, tenant authorization and production HTTPS integration evidence. No production deployment or independent audit.
