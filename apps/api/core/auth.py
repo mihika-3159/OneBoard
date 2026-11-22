@@ -85,8 +85,9 @@ _DEMO_MODE: bool = (
 
 if _ENV_SECRET:
     SECRET_KEY: str = _ENV_SECRET
-elif _DEMO_MODE:
-    # Explicit demo mode: allow local-only development sentinel
+elif _DEMO_MODE and not settings.ONEBOARD_PRODUCTION_MODE:
+    # Explicit local demo only. Never permit the predictable sentinel when
+    # production mode is enabled, even if a demo flag was also set.
     SECRET_KEY = "oneboard-LOCAL-DEMO-ONLY-NOT-FOR-PRODUCTION"
 else:
     raise RuntimeError(
