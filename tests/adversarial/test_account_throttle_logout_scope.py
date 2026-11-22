@@ -82,3 +82,47 @@ def test_logout_invalid_signed_token_does_not_touch_database(monkeypatch):
     assert result["status"] == "success"
     db.query.assert_not_called()
     db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("password_ok,active", [
+    (True, False),
+    (False, False),
+    (False, True),
+])
+def test_disabled_and_invalid_accounts_share_unauthorized_response_and_throttle(
+    monkeypatch, password_ok, active
+):
+    checked, failed, resets = [], [], []
+    monkeypatch.setattr(auth_router, "check_login_throttle", lambda key, db: checked.append(key))
+    monkeypatch.setattr(auth_router, "record_failed_login", lambda key, db: failed.append(key))
+    monkeypatch.setattr(auth_router, "reset_login_throttle", lambda key, db: resets.append(key))
+    monkeypatch.setattr(auth_router, "verify_password", lambda password, hashed: password_ok)
+    db = Mock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        is_active=active, hashed_password="hash"
+    )
+    with pytest.raises(HTTPException) as exc:
+        auth_router.login(
+            auth_router.LoginRequest(email="Founder@Example.test", password="guess"),
+            Response(), _request(), db
+        )
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Invalid email or password."
+    assert checked == failed == ["account:founder@example.test"]
+    assert resets == []
+
+
+def test_disabled_account_never_creates_session_even_with_correct_password(monkeypatch):
+    monkeypatch.setattr(auth_router, "check_login_throttle", lambda key, db: None)
+    monkeypatch.setattr(auth_router, "record_failed_login", lambda key, db: None)
+    monkeypatch.setattr(auth_router, "verify_password", lambda password, hashed: True)
+    db = Mock()
+    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(
+        is_active=False, hashed_password="hash"
+    )
+    with pytest.raises(HTTPException) as exc:
+        auth_router.login(auth_router.LoginRequest(email="blocked@test.invalid", password="correct"),
+                          Response(), _request(), db)
+    assert exc.value.status_code == 401
+    db.add.assert_not_called()
+    db.commit.assert_not_called()
