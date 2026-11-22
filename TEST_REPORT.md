@@ -192,3 +192,12 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - **Verification of these changes: PENDING.** No PR-triggered workflow runs were returned for head `f0c2cb837f752c8f3efec4cc144323369a445d9b` at inspection time. All applicable workflows must be verified on the eventual exact final head before advancing beyond the security batch.
 - Reproduce targeted tests: `python -m pytest -q tests/adversarial/test_account_throttle_logout_scope.py`.
 - Remaining security evidence: PostgreSQL multi-worker throttle concurrency and migration locking, deliberate account-lockout abuse resistance, production cookie/HTTPS deployment and cross-tenant integration tests. No external security audit has been performed.
+
+
+## 22 November 2026, 14:55 Dubai: signed session lifetime boundary
+
+- **Prior verified PR head:** `162ca6139cb89b502137b236e981277caaafddbd`. GitHub Actions completed successfully on this exact head: [browser E2E 45010539726](https://github.com/mihika-3159/OneBoard/actions/runs/45010539726), [verification 45010539771](https://github.com/mihika-3159/OneBoard/actions/runs/45010539771), and [browser inference feasibility 45010539727](https://github.com/mihika-3159/OneBoard/actions/runs/45010539727). These green results **do not verify the new commits**.
+- **Code commit:** `0681f3b0f9a66b66a364f1afc13c8d12f5ba6997` rejects signed sessions whose `exp - iat` exceeds the configured session lifetime, uses an inclusive database expiry cutoff, and suppresses demo-user fallback when production mode is enabled.
+- **Adversarial test commit:** `3612df3e63befa24f00f0b041067e9c240ca1e19` adds tests for overlong signed sessions, exact-limit valid sessions, and old issue times paired with excessive future expirations.
+- **New-head verification:** pending at the time of this report. No claim of passing tests on `3612df3` or this report's later head. Recheck the exact PR head and every applicable workflow before starting Batch 2.
+- **Remaining Batch 1 gaps:** multi-worker PostgreSQL throttle and migration concurrency evidence, account-lockout abuse resistance, tenant authorization across all endpoints, and production HTTPS security validation. This is not a production certification.
