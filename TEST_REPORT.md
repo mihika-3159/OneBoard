@@ -201,3 +201,11 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - **Adversarial test commit:** `3612df3e63befa24f00f0b041067e9c240ca1e19` adds tests for overlong signed sessions, exact-limit valid sessions, and old issue times paired with excessive future expirations.
 - **New-head verification:** pending at the time of this report. No claim of passing tests on `3612df3` or this report's later head. Recheck the exact PR head and every applicable workflow before starting Batch 2.
 - **Remaining Batch 1 gaps:** multi-worker PostgreSQL throttle and migration concurrency evidence, account-lockout abuse resistance, tenant authorization across all endpoints, and production HTTPS security validation. This is not a production certification.
+
+
+## 22 November 2026, 15:57 Dubai: CI blocker diagnosis and repair
+
+- Exact failing PR head `c64284efe9c7cf9355c3c76094b236dcb7a3b18c`: verification workflow [45014821920](https://github.com/mihika-3159/OneBoard/actions/runs/45014821920) **FAILED** at `api-tests / Python syntax`; browser E2E [45014821878](https://github.com/mihika-3159/OneBoard/actions/runs/45014821878) **FAILED** because the API could not start; browser inference feasibility [45014821803](https://github.com/mihika-3159/OneBoard/actions/runs/45014821803) **PASSED**. These are results for the old head only.
+- Root cause from both failing job logs: `SyntaxError: unexpected character after line continuation character`, `apps/api/core/auth.py:180`. The lifetime validation expression contained literal `\\n` characters instead of Python newlines, introduced by the prior session-lifetime change.
+- Repair commit `2b29f6563b666da136a46aa51776a3ed5f776ca5` replaces the escaped sequences with actual Python line breaks without weakening token checks. New-head CI remains **UNVERIFIED** at the time of writing; wait for all applicable checks on this exact SHA, inspect any failures and keep Batch 1 open.
+- Reproduction: `python -m compileall -q apps/api` followed by `python -m pytest -q tests/adversarial/test_account_throttle_logout_scope.py` and the complete PR verification and browser E2E workflows. No claim of local execution or production readiness.
