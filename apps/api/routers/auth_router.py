@@ -160,8 +160,9 @@ def login(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """Authenticate founder credentials with Argon2id and issue session cookie and token."""
-    client_ip = request.client.host if request.client else "unknown"
-    throttle_key = f"{client_ip}:{req.email.strip().lower()}"
+    # Account-scoped throttling cannot be bypassed by rotating source IPs.
+    # The shared DB advisory lock serializes attempts across API workers.
+    throttle_key = f"account:{req.email.strip().lower()}"
     check_login_throttle(throttle_key, db)
 
     clean_email = req.email.strip().lower()
@@ -251,7 +252,13 @@ def logout(
             jti = payload.get("jti")
             if jti:
                 session_record = db.query(UserSession).filter(UserSession.id == jti).first()
-                if session_record:
+                # A signed token is not authority to revoke an unrelated session.
+                # Check the persisted owner and tenant before changing state.
+                if (
+                    session_record
+                    and session_record.user_id == payload.get("sub")
+                    and session_record.business_id == payload.get("biz")
+                ):
                     session_record.is_revoked = True
                     db.commit()
         except Exception:
