@@ -182,3 +182,13 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - Adversarial tests `1ab513be3b52d07ced63b4390ce880aaebab3ddc`: verify three IP addresses share the same account throttle key, and mismatched session user/tenant cannot be revoked by another signed identity.
 - **Current-head CI: pending/unverified at authoring.** The GitHub PR workflow query returned no runs yet for `1ab513be3b52d07ced63b4390ce880aaebab3ddc`. Run `pytest -q tests/adversarial/test_account_throttle_logout_scope.py` and all applicable PR workflows on the latest commit; do not move to the next batch until all checks pass.
 - Security limitations: account lockout can be used for targeted denial of service; per-source/IP and account-level rate limits need a carefully ordered dual-key transaction, real PostgreSQL concurrent-worker verification, and operational review. Production migration concurrency and tenant access review remain outstanding. PR #8 remains draft; no release or Level 3 certification.
+
+
+## November 22: logout revocation persistence hardening
+
+- Baseline head `c1f262db5b73d4490cd38ad344cf3ed24c9404e8`: verification workflow `45005231822` **PASS**; browser E2E `45005231839` **PASS**. Browser inference feasibility workflow `45005231757` was **CANCELLED** during the qwen3-1.7b CPU smoke job, despite its other jobs passing. A retry of that cancelled job was requested; the workflow was still in progress at last inspection. This experimental workflow is not evidence of approved production browser inference.
+- Commit `4ff7980eef6957ed7254bbbeb2e4cda4eac74bb3`: logout no longer swallows database query or commit failures. On a failed revocation commit, it rolls back and propagates the error rather than returning a false success.
+- Commit `f0c2cb837f752c8f3efec4cc144323369a445d9b`: added adversarial tests for revocation commit failure and malformed bearer credentials.
+- **Verification of these changes: PENDING.** No PR-triggered workflow runs were returned for head `f0c2cb837f752c8f3efec4cc144323369a445d9b` at inspection time. All applicable workflows must be verified on the eventual exact final head before advancing beyond the security batch.
+- Reproduce targeted tests: `python -m pytest -q tests/adversarial/test_account_throttle_logout_scope.py`.
+- Remaining security evidence: PostgreSQL multi-worker throttle concurrency and migration locking, deliberate account-lockout abuse resistance, production cookie/HTTPS deployment and cross-tenant integration tests. No external security audit has been performed.
