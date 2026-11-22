@@ -177,7 +177,7 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             if type(value) is not int or value < 0:
                 raise ValueError("Invalid token time claim")
         now = int(time.time())
-        if payload["exp"] <= now or payload["iat"] > now + 60 or payload["iat"] > payload["exp"]:
+        if (payload["exp"] <= now or payload["iat"] > now + 60\n                or payload["iat"] > payload["exp"]\n                or payload["exp"] - payload["iat"] > TOKEN_EXPIRY_SECONDS):
             raise ValueError("Expired or invalid token lifetime")
 
         return payload
@@ -438,7 +438,7 @@ def get_current_user(
                         detail="Session has been revoked. Please log in again.",
                         headers={"WWW-Authenticate": "Bearer"}
                     )
-                if session_record.expires_at < datetime.utcnow():
+                if session_record.expires_at <= datetime.utcnow():
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
                         detail="Session has expired. Please log in again.",
@@ -469,7 +469,7 @@ def get_current_user(
         )
 
     # 3. Demo / Local Dev Fallback (Opt-in only, never synthesised on the fly)
-    if _DEMO_MODE:
+    if _DEMO_MODE and not settings.ONEBOARD_PRODUCTION_MODE:
         from apps.api.services.seed_data import DEMO_BUSINESS_ID
         demo_user = (
             db.query(User)
