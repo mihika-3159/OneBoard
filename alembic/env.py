@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from apps.api.core.config import settings
 from apps.api.core.database import Base
+from apps.api.core.migration_lock import acquire_migration_lock
 import apps.api.models.business
 import apps.api.models.goals_tasks
 import apps.api.models.entities
@@ -51,12 +52,19 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
-
-        with context.begin_transaction():
-            context.run_migrations()
+        # Lock before Alembic reads the current revision, not merely before
+        # executing DDL. Otherwise concurrent deploys can both observe the
+        # same old revision and race to apply the same migration.
+        #
+        # PostgreSQL advisory xact locks are released on commit/rollback.
+        # Alembic joins this outer transaction for transactional DDL.
+        with connection.begin():
+            acquire_migration_lock(connection)
+            context.configure(
+                connection=connection, target_metadata=target_metadata
+            )
+            with context.begin_transaction():
+                context.run_migrations()
 
 
 if context.is_offline_mode():
