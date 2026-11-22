@@ -227,3 +227,10 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - **Regression tests:** `a4507e3ddebaccef3c10f0d28d63dd39e5afaa3f` adds tests for lock acquisition, transaction requirement, dialect isolation, and database failure propagation. **Not yet verified by CI** at the time of this entry.
 - **Reproduce:** `python -m pytest -q tests/adversarial/test_migration_lock.py` and `python -m alembic upgrade head` against a disposable database. A real PostgreSQL parallel-process migration test remains **NOT TESTED**; mocked unit tests cannot prove inter-process serialization or operational permissions.
 - **Release gate:** Remain on security/auth/tenant-isolation/migrations batch until all applicable workflows on the exact latest PR head are green and remaining batch acceptance criteria are proven. Do not merge, deploy, or certify.
+
+## 22 November 2026, 19:00 Dubai: production/demo secret fail-closed correction
+
+- **Previous verified PR head:** `982f310527a6504f1c51f67c7315733e86bc4e02`. GitHub Actions returned successful completion for OneBoard verification (run 45030924320), browser E2E (45030924390), and browser inference feasibility (45030924312), all on that exact SHA. Workflow summaries were checked; this does not establish real PostgreSQL multi-worker migration correctness.
+- **Code commit:** `b94284604e5005a3d4b38178798bf69141bc4d1e`. Authentication previously accepted a fixed, publicly predictable signing key whenever demo mode was enabled, even if production mode was also enabled. Startup now rejects the no-secret combination when production mode is true.
+- **Regression commit:** `576d9ced0d165c91cc0d73cd15acec02b81fd18e`. Four fresh-interpreter tests cover conflicting flags, missing secret in production, local demo sentinel, and explicitly configured secret. Run: `python -m pytest -q tests/adversarial/test_production_demo_secret.py`.
+- **New-head CI:** Pending verification after this report update. Do not reuse previous-head green results as evidence for these changes. Batch 1 stays open; real concurrent PostgreSQL migration tests, shared throttle contention and tenant authorization remain unverified.
