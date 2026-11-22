@@ -49,3 +49,36 @@ def test_logout_only_revokes_session_owned_by_signed_identity(
     auth_router.logout(_request(headers={"authorization": "Bearer signed-token"}), response, db)
     assert session.is_revoked is expected_revoked
     assert db.commit.call_count == int(expected_revoked)
+
+
+def test_logout_database_commit_failure_is_not_reported_as_success(monkeypatch):
+    """A database outage must not silently turn a failed revocation into success."""
+    session = SimpleNamespace(id="target", user_id="attacker",
+                              business_id="tenant-a", is_revoked=False)
+    db = Mock()
+    db.query.return_value.filter.return_value.first.return_value = session
+    db.commit.side_effect = RuntimeError("database write failed")
+    monkeypatch.setattr(auth_router, "decode_access_token", lambda token: {
+        "jti": "target", "sub": "attacker", "biz": "tenant-a"
+    })
+    with pytest.raises(RuntimeError, match="database write failed"):
+        auth_router.logout(
+            _request(headers={"authorization": "Bearer signed-token"}),
+            Response(), db
+        )
+    db.rollback.assert_called_once()
+
+
+def test_logout_invalid_signed_token_does_not_touch_database(monkeypatch):
+    """Malformed credentials cannot revoke an unrelated persisted session."""
+    db = Mock()
+    def invalid_token(token):
+        raise ValueError("Invalid access token")
+    monkeypatch.setattr(auth_router, "decode_access_token", invalid_token)
+    result = auth_router.logout(
+        _request(headers={"authorization": "Bearer malformed"}),
+        Response(), db
+    )
+    assert result["status"] == "success"
+    db.query.assert_not_called()
+    db.commit.assert_not_called()
