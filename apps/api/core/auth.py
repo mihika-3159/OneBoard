@@ -164,8 +164,21 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             base64.urlsafe_b64decode((payload_b64 + padding).encode("utf-8")).decode("utf-8")
         )
 
-        if payload.get("exp", 0) < int(time.time()):
-            raise ValueError("Token expired")
+        # A valid HMAC alone does not make the signed claims well-formed.
+        # Reject missing, malformed, or non-expiring identity/time claims.
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid token payload")
+        for field in ("jti", "sub", "biz"):
+            value = payload.get(field)
+            if not isinstance(value, str) or not value or len(value) > 255:
+                raise ValueError("Invalid token identity claim")
+        for field in ("exp", "iat"):
+            value = payload.get(field)
+            if type(value) is not int or value < 0:
+                raise ValueError("Invalid token time claim")
+        now = int(time.time())
+        if payload["exp"] <= now or payload["iat"] > now + 60 or payload["iat"] > payload["exp"]:
+            raise ValueError("Expired or invalid token lifetime")
 
         return payload
     except Exception as exc:
