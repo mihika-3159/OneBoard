@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 from pathlib import Path
 from typing import Dict, Any
+from urllib.parse import urlsplit
 
 class Settings(BaseSettings):
     model_config = ConfigDict(env_file=".env", extra="allow")
@@ -79,7 +80,21 @@ def validate_production_configuration(config: Settings) -> None:
     if not config.DATABASE_URL.startswith(("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")):
         errors.append("Production multi-tenant mode requires PostgreSQL; SQLite is development-only")
     origins = [origin.strip() for origin in config.CORS_ORIGINS.split(",") if origin.strip()]
-    if not origins or any(origin == "*" or not origin.startswith("https://") for origin in origins):
-        errors.append("CORS_ORIGINS must contain only explicit HTTPS origins")
+    def valid_https_origin(origin: str) -> bool:
+        """Allow only a complete HTTPS origin, not an arbitrary URL prefix."""
+        try:
+            parsed = urlsplit(origin)
+            if (parsed.scheme != "https" or not parsed.hostname
+                    or parsed.username is not None or parsed.password is not None
+                    or parsed.path or parsed.query or parsed.fragment
+                    or parsed.netloc != parsed.netloc.lower()):
+                return False
+            parsed.port  # Validate port range and syntax.
+            return origin == f"https://{parsed.netloc}"
+        except ValueError:
+            return False
+
+    if not origins or any(not valid_https_origin(origin) for origin in origins):
+        errors.append("CORS_ORIGINS must contain only canonical explicit HTTPS origins")
     if errors:
         raise RuntimeError("Unsafe OneBoard production configuration: " + "; ".join(errors))
