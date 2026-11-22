@@ -162,3 +162,14 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - **Regression:** `tests/adversarial/test_offline_structured_truthfulness.py` on the branch asserts that structured fallback is unavailable/simulated and does not invent tenant financial claims. Test-file commit SHA should be confirmed from Git history before attributing it.
 - **Latest inspected PR head:** `96fbe61b5d71715677069e117b85c804adc697d6`. No associated CI runs returned during this inspection. **New-head tests PENDING / NOT VERIFIED.** Reproduction: `python -m pytest -q tests/adversarial/test_offline_structured_truthfulness.py`; full verification: `python -m pytest -v`, `python -m alembic upgrade head`, `python -m alembic downgrade base`, `python -m alembic upgrade head`, and `cd apps/web && npm ci && npm run build`. Browser E2E requires Playwright Chromium and a disposable backend DB.
 - **Release blockers:** PostgreSQL multiworker rate-limit and migration concurrency, crash-safe workflow recovery and idempotency, full founder-action browser journey, tenant-isolated persistent alerts, actual deployed HTTPS and backup/restore, and independently verified no-card/minor-eligible zero-cost hosting/inference. No external provider approved or enabled. No Level 3 certification, no issue closure.
+
+
+## 22 November 2026: signed-token claim validation (verification pending)
+
+- Draft PR #8, branch `fix/p0-auth-tenant-isolation` only. No merge or deployment.
+- Prior head `7c831e8838a56c7807465f70d8f2f9fec3109337`: GitHub Actions verification, browser E2E, and browser inference feasibility all reported success for **that earlier SHA only**.
+- Code commit `85d723c06f115e496616c1510fd818e67f6275cd`: reject malformed signed JWT-like payload identities, missing session IDs, invalid time claim types, tokens expiring exactly now, and future-issued tokens.
+- Regression test commit `4512e1a5cc3a65ad9b8d984c69d3665a8f86443d`: adversarial valid-HMAC malformed-claim cases plus legitimate round-trip.
+- On querying workflow runs for `4512e1a5cc3a65ad9b8d984c69d3665a8f86443d`, the API returned **no associated PR workflow runs yet**. This is **UNVERIFIED/PENDING**, not green. CI on an older head does not validate these commits.
+- Reproduction: run `pytest -q tests/test_auth_token_claims.py` in the configured API test environment, then verify every applicable PR GitHub Actions workflow against the latest commit SHA.
+- Outstanding: full authentication/tenant/migration batch and concurrency tests; do not proceed to workflow/financial batch until latest-head checks are all green and batch acceptance criteria are met.
