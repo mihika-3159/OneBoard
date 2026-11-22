@@ -177,7 +177,9 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             if type(value) is not int or value < 0:
                 raise ValueError("Invalid token time claim")
         now = int(time.time())
-        if (payload["exp"] <= now or payload["iat"] > now + 60\n                or payload["iat"] > payload["exp"]\n                or payload["exp"] - payload["iat"] > TOKEN_EXPIRY_SECONDS):
+        if (payload["exp"] <= now or payload["iat"] > now + 60
+                or payload["iat"] > payload["exp"]
+                or payload["exp"] - payload["iat"] > TOKEN_EXPIRY_SECONDS):
             raise ValueError("Expired or invalid token lifetime")
 
         return payload
