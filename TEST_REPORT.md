@@ -217,3 +217,13 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - Test commit `0933623b1af7683b28b8090dc8f7b78fd4053d98` adds parameterized adversarial cases and valid HTTPS origins.
 - Reproduce: `python -m pytest -q tests/adversarial/test_production_cors_origins.py` and `python -m compileall -q apps/api`. **New-head CI is not yet verified** at report-writing time; this report commit itself will create a newer SHA and must be checked separately.
 - Batch 1 remains open pending exact-head CI and PostgreSQL multi-worker concurrency, migration locking, account-lockout abuse, tenant authorization and production HTTPS integration evidence. No production deployment or independent audit.
+
+
+## 22 November 2026, 18:04 Dubai: PostgreSQL concurrent migration serialization
+
+- **Verified baseline:** `1d688a4bc95bb785084e8a079846b7e3b41b9848` had three successful pull-request workflow runs: [verification 45025460708](https://github.com/mihika-3159/OneBoard/actions/runs/45025460708), [browser E2E 45025460638](https://github.com/mihika-3159/OneBoard/actions/runs/45025460638), and [browser inference feasibility 45025460643](https://github.com/mihika-3159/OneBoard/actions/runs/45025460643). These green results **do not verify** the new commits.
+- **Finding:** `alembic/env.py` previously ran migrations without serializing concurrent PostgreSQL deploys. Two workers could inspect the same old `alembic_version` and both attempt DDL.
+- **Code:** `84e52d7146e6e31412a3fb4d04ef13cb187acc96` adds a transaction-scoped PostgreSQL advisory-lock helper. `b2192854affaebebb3d8581d2798c2991d1e6b2f` acquires that lock **before** Alembic's version inspection and keeps the same connection/transaction through migration DDL.
+- **Regression tests:** `a4507e3ddebaccef3c10f0d28d63dd39e5afaa3f` adds tests for lock acquisition, transaction requirement, dialect isolation, and database failure propagation. **Not yet verified by CI** at the time of this entry.
+- **Reproduce:** `python -m pytest -q tests/adversarial/test_migration_lock.py` and `python -m alembic upgrade head` against a disposable database. A real PostgreSQL parallel-process migration test remains **NOT TESTED**; mocked unit tests cannot prove inter-process serialization or operational permissions.
+- **Release gate:** Remain on security/auth/tenant-isolation/migrations batch until all applicable workflows on the exact latest PR head are green and remaining batch acceptance criteria are proven. Do not merge, deploy, or certify.
