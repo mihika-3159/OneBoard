@@ -249,6 +249,10 @@ def logout(
     if token:
         try:
             payload = decode_access_token(token)
+        except ValueError:
+            # An expired or malformed token cannot identify a live session.
+            payload = None
+        if payload:
             jti = payload.get("jti")
             if jti:
                 session_record = db.query(UserSession).filter(UserSession.id == jti).first()
@@ -260,9 +264,13 @@ def logout(
                     and session_record.business_id == payload.get("biz")
                 ):
                     session_record.is_revoked = True
-                    db.commit()
-        except Exception:
-            pass
+                    try:
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                        # Do not falsely report a successful logout when the
+                        # revocation write was not persisted.
+                        raise
 
     clear_auth_cookies(response)
     return {"status": "success", "message": "Logged out successfully."}
