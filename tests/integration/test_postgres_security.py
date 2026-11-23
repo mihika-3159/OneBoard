@@ -133,3 +133,35 @@ def test_03_production_schema_guard_accepts_fully_migrated_postgres(monkeypatch)
     from apps.api.core.database import init_db
     monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
     init_db()
+
+
+def test_04_postgres_schema_constraints_and_indexes_match_models():
+    """A stamped schema with missing unique constraints or indexes is not safe."""
+    engine = _engine()
+    try:
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            for table_name, model in Base.metadata.tables.items():
+                actual_indexes = {index["name"] for index in inspector.get_indexes(table_name)}
+                actual_unique = {
+                    tuple(sorted(item["column_names"]))
+                    for item in inspector.get_unique_constraints(table_name)
+                }
+                actual_unique.update(
+                    tuple(sorted(index["column_names"]))
+                    for index in inspector.get_indexes(table_name)
+                    if index.get("unique")
+                )
+                for index in model.indexes:
+                    assert index.name in actual_indexes, (
+                        f"Missing PostgreSQL index {table_name}.{index.name}"
+                    )
+                for constraint in model.constraints:
+                    from sqlalchemy import UniqueConstraint
+                    if isinstance(constraint, UniqueConstraint):
+                        cols = tuple(sorted(column.name for column in constraint.columns))
+                        assert cols in actual_unique, (
+                            f"Missing PostgreSQL unique constraint on {table_name}: {cols}"
+                        )
+    finally:
+        engine.dispose()
