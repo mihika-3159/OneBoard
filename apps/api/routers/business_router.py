@@ -69,10 +69,10 @@ def reset_demo(
         os.environ.get("ONEBOARD_DEMO_MODE", "").lower() in ("1", "true", "yes")
         or settings.ONEBOARD_DEMO_MODE
     )
-    if not is_demo_mode:
+    if settings.ONEBOARD_PRODUCTION_MODE or not is_demo_mode:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Demo reset is disabled in production mode. Set ONEBOARD_DEMO_MODE=true for local development only."
+            detail="Demo reset is restricted to explicit non-production local demo mode."
         )
 
     if current_user.business_id != DEMO_BUSINESS_ID or current_user.role != "founder":
