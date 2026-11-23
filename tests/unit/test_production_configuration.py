@@ -77,7 +77,7 @@ def test_production_startup_rejects_unmigrated_database(monkeypatch):
     assert inspect(isolated).get_table_names() == []
 
 
-def test_production_startup_accepts_stamped_schema_without_create_all(monkeypatch):
+def test_production_startup_rejects_stamped_but_incomplete_schema(monkeypatch):
     from sqlalchemy import create_engine, text
     from sqlalchemy.pool import StaticPool
     from alembic.config import Config
@@ -92,7 +92,8 @@ def test_production_startup_accepts_stamped_schema_without_create_all(monkeypatc
     with isolated.begin() as connection:
         connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
         connection.execute(text("INSERT INTO alembic_version (version_num) VALUES (:head)"), {"head": heads[0]})
-    # This checks revision enforcement only, not that a stamped schema is complete.
-    # It must never call Base.metadata.create_all as a side effect.
+    # An Alembic version stamp alone is not evidence of a complete schema.
+    # Startup must fail closed and must not create any missing tables.
     monkeypatch.setattr(database.Base.metadata, "create_all", lambda **kwargs: pytest.fail("create_all called"))
-    database.init_db()
+    with pytest.raises(RuntimeError, match="missing required application tables"):
+        database.init_db()
