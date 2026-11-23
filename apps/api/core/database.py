@@ -71,6 +71,42 @@ def init_db():
                     "Production database missing required application columns: "
                     + ", ".join(sorted(missing_columns))
                 )
+            # A stamped schema may still be missing security-critical lookup
+            # indexes or uniqueness guarantees after a partial/manual migration.
+            from sqlalchemy import UniqueConstraint
+            missing_indexes = []
+            missing_uniques = []
+            for name, table in Base.metadata.tables.items():
+                actual_indexes = inspector.get_indexes(name)
+                indexed = {
+                    (tuple(item["column_names"]), bool(item.get("unique")))
+                    for item in actual_indexes
+                }
+                unique_columns = {
+                    tuple(sorted(item["column_names"]))
+                    for item in inspector.get_unique_constraints(name)
+                }
+                unique_columns.update(
+                    tuple(sorted(item["column_names"]))
+                    for item in actual_indexes if item.get("unique")
+                )
+                for index in table.indexes:
+                    signature = (
+                        tuple(column.name for column in index.columns),
+                        bool(index.unique),
+                    )
+                    if signature not in indexed:
+                        missing_indexes.append(f"{name}:{signature}")
+                for constraint in table.constraints:
+                    if isinstance(constraint, UniqueConstraint):
+                        columns = tuple(sorted(c.name for c in constraint.columns))
+                        if columns not in unique_columns:
+                            missing_uniques.append(f"{name}:{columns}")
+            if missing_indexes or missing_uniques:
+                raise RuntimeError(
+                    "Production database missing required indexes/unique constraints: "
+                    + ", ".join(sorted(missing_indexes + missing_uniques))
+                )
         return
 
     Base.metadata.create_all(bind=engine)
