@@ -27,7 +27,10 @@ def test_failed_login_uses_same_account_throttle_across_source_ips(monkeypatch, 
     with pytest.raises(HTTPException) as exc:
         auth_router.login(req, Response(), _request(ip), db)
     assert exc.value.status_code == 401
-    assert checked == failed == ["account:founder@example.test"]
+    assert checked == failed == [
+        f"source-account:{ip}:founder@example.test",
+        "account:founder@example.test",
+    ]
 
 
 @pytest.mark.parametrize("session_user,session_tenant,expected_revoked", [
@@ -108,7 +111,10 @@ def test_disabled_and_invalid_accounts_share_unauthorized_response_and_throttle(
         )
     assert exc.value.status_code == 401
     assert exc.value.detail == "Invalid email or password."
-    assert checked == failed == ["account:founder@example.test"]
+    assert checked == failed == [
+        "source-account:198.51.100.7:founder@example.test",
+        "account:founder@example.test",
+    ]
     assert resets == []
 
 
@@ -126,3 +132,73 @@ def test_disabled_account_never_creates_session_even_with_correct_password(monke
     assert exc.value.status_code == 401
     db.add.assert_not_called()
     db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize("ip", ["198.51.100.7", "203.0.113.22"])
+def test_correct_password_bypasses_account_global_lockout_not_source_limit(monkeypatch, ip):
+    checked, reset, failed = [], [], []
+    monkeypatch.setattr(auth_router, "check_login_throttle", lambda key, db: checked.append(key))
+    monkeypatch.setattr(auth_router, "reset_login_throttle", lambda key, db: reset.append(key))
+    monkeypatch.setattr(auth_router, "record_failed_login", lambda key, db: failed.append(key))
+    monkeypatch.setattr(auth_router, "verify_password", lambda password, hashed: True)
+    db = Mock()
+    user = SimpleNamespace(id="founder", business_id="tenant", role="founder",
+                           is_active=True, hashed_password="hash", email="founder@example.test", name="Founder")
+    business = SimpleNamespace(id="tenant", name="Tenant", industry="SaaS", current_cash_balance=0.0)
+    db.query.return_value.filter.return_value.first.side_effect = [user, business]
+    with pytest.MonkeyPatch.context() as local:
+        local.setattr(auth_router, "generate_api_key", lambda: "not-used")
+        result = auth_router.login(
+            auth_router.LoginRequest(email="Founder@Example.test", password="correct"),
+            Response(), _request(ip), db,
+        )
+    assert result["status"] == "success"
+    assert checked == [f"source-account:{ip}:founder@example.test"]
+    assert reset == [f"source-account:{ip}:founder@example.test", "account:founder@example.test"]
+    assert failed == []
+    db.commit.assert_called_once()
+
+
+def test_invalid_password_still_reaches_shared_account_throttle(monkeypatch):
+    keys = []
+    monkeypatch.setattr(auth_router, "check_login_throttle", lambda key, db: keys.append(key))
+    monkeypatch.setattr(auth_router, "record_failed_login", lambda key, db: None)
+    db = Mock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        auth_router.login(auth_router.LoginRequest(email="victim@example.test", password="guess"),
+                          Response(), _request("192.0.2.10"), db)
+    assert exc.value.status_code == 401
+    assert keys == [
+        "source-account:192.0.2.10:victim@example.test",
+        "account:victim@example.test",
+    ]
+
+
+def test_source_lockout_aborts_before_password_hash_and_account_lookup(monkeypatch):
+    def deny_source(key, db):
+        raise HTTPException(status_code=429, detail="rate limited")
+    monkeypatch.setattr(auth_router, "check_login_throttle", deny_source)
+    verify = Mock(side_effect=AssertionError("password should not be hashed"))
+    monkeypatch.setattr(auth_router, "verify_password", verify)
+    db = Mock()
+    with pytest.raises(HTTPException) as exc:
+        auth_router.login(auth_router.LoginRequest(email="victim@example.test", password="guess"),
+                          Response(), _request(), db)
+    assert exc.value.status_code == 429
+    verify.assert_not_called()
+    db.query.assert_not_called()
+
+
+def test_forwarded_for_header_does_not_override_untrusted_transport_source(monkeypatch):
+    checked = []
+    monkeypatch.setattr(auth_router, "check_login_throttle", lambda key, db: checked.append(key))
+    monkeypatch.setattr(auth_router, "record_failed_login", lambda key, db: None)
+    db = Mock()
+    db.query.return_value.filter.return_value.first.return_value = None
+    with pytest.raises(HTTPException):
+        auth_router.login(
+            auth_router.LoginRequest(email="victim@example.test", password="wrong"),
+            Response(), _request("192.0.2.10", {"x-forwarded-for": "8.8.8.8"}), db
+        )
+    assert checked[0] == "source-account:192.0.2.10:victim@example.test"
