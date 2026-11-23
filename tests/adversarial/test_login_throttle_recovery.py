@@ -41,6 +41,8 @@ def test_legitimate_password_recovers_from_remote_account_lockout():
                     role="founder", business_id=business.id, is_active=True)
         db.add(user)
         db.commit()
+        user_id = user.id
+        business_id = business.id
     finally:
         db.close()
 
@@ -70,8 +72,8 @@ def test_legitimate_password_recovers_from_remote_account_lockout():
             result = login(LoginRequest(email=email, password=correct),
                            response, _request("198.51.100.89"), genuine)
             assert result["status"] == "success"
-            assert result["user"]["business_id"] == business.id
-            assert genuine.query(UserSession).filter(UserSession.user_id == user.id).count() == 1
+            assert result["user"]["business_id"] == business_id
+            assert genuine.query(UserSession).filter(UserSession.user_id == user_id).count() == 1
             assert genuine.query(LoginThrottleState).count() >= 1
             # Global account counter must be cleared after verified login.
             from apps.api.core.auth import _throttle_key
