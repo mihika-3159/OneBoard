@@ -252,3 +252,45 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - **Regression commit:** `132e4bed3789ae4d3d0dc268c130ae52df6653bd` adds parameterized tests for disabled accounts with correct/incorrect passwords, active accounts with incorrect passwords, and denial of session creation for disabled users.
 - **Verification:** No workflow runs were returned for the regression commit when queried. This report commit will create a newer head. **Do not claim the new changes passed until every applicable workflow is green on that exact final head.** Reproduce with `python -m pytest -q tests/adversarial/test_account_throttle_logout_scope.py`, followed by complete verification and browser workflows.
 - **Remaining Batch 1 blockers:** real PostgreSQL parallel migration and cross-worker throttle contention tests, account-lockout abuse resistance, full endpoint-wide tenant authorization matrix, and production HTTPS integration. No production certification or issue closure. PR remains draft.
+
+
+## 23 November 2026, 06:xx Dubai: consolidated security/auth/schema engineering batch
+
+**PR:** draft #8, branch `fix/p0-auth-tenant-isolation` only. This report is not a certification of a production multi-tenant deployment. No provider signups, external API calls, real data, spending, merging or deployment were performed.
+
+### Exact prior-head evidence
+
+Commit `8f31fd389fc7ac10a0a8b060e72e28d5635ddb87` completed all three PR workflows successfully:
+- Verification: https://github.com/mihika-3159/OneBoard/actions/runs/45047416260
+- Browser E2E: https://github.com/mihika-3159/OneBoard/actions/runs/45047416302
+- Isolated browser inference feasibility: https://github.com/mihika-3159/OneBoard/actions/runs/45047416613
+
+Those results **do not verify the current batch**.
+
+### Engineering and regression commits
+
+- `713f5fb6b543b8e2f1b4de92511c4c54cad2bda8`: Alembic revision `003_app_schema` provisions missing model tables on a fresh database, using a migration-scoped creation registry to avoid deleting previously existing tables on downgrade. The earlier revisions provisioned auth/throttle only. The initial bootstrap derives tables from current SQLAlchemy metadata, so future schema changes need explicit immutable revisions.
+- `2d816c4bcf8e98c5563daeb204b89bfd737e1729`: production startup checks **every expected table and column** after confirming Alembic head, and rejects stamped-but-incomplete databases without creating tables.
+- `0fb18910f537e635e98e6304eb05245e4e3f060e`: adds PostgreSQL Python driver dependency.
+- `8b56abb0748102121f4be5db0affa896dfd28ee1`: disposable PostgreSQL tests for simultaneous Alembic upgrades, actual model table/column presence, ten-worker shared throttle race, and production schema check. These are **SKIPPED** unless `ONEBOARD_TEST_POSTGRES_URL` is explicitly configured against disposable Postgres.
+- `6c98e31674acabd7c7050c1fae4c8e62500e330c`: account+source shared throttling prevents a remote account-wide failed-login flood from permanently denying a founder who presents the correct password from a clean source. A correct password clears the global counter. Failed password attempts still count account-wide across rotating sources.
+- `77ab1309e9fc0682d4430948a258facc84e3ae64`: adversarial unit tests for blocked/disabled credentials, source-identity spoofing, lockout and valid-password recovery.
+- `cbfd5fc3397ec8d71376a36c63b2553e05bd9ca7`: rejects demo reset if production mode is active, even when a conflicting demo flag is set.
+- `0ae7634fda0445dc8a7962bd45018fed6f69925f`: runtime anonymous GET route security matrix and foreign-tenant workflow, agent, approval and integration mutation denial.
+- `9459c62f98ec2aca8446d8d13c65380d1e1e676a`, `5f04295aa794514b3b4c646a6eacc5cc20b4e6b3`: SQLite-backed integration regression of five distributed wrong-password guesses, account throttle and a succeeding verified founder login from another source.
+- `b8514d4fd0098289da49089ec19ac9311cf5f9aa`: rejects incomplete production schema even when manually stamped at Alembic head.
+- `bf9b9b8e3632556a60868abd8caf311c9babcdc9`, `86f1f643e0dfdee32729491d10163899ab36bfdf`: production config now rejects zero/unbounded login windows, attempt counts and session expiration, with boundary tests.
+
+### Observed CI regression and correction
+
+Earlier batch head `0ae7634fda0445dc8a7962bd45018fed6f69925f`: verification workflow https://github.com/mihika-3159/OneBoard/actions/runs/45099407721 **FAILED** in api-tests (**1 failed, 306 passed, 24 skipped**); web-build and real Ollama jobs passed. Browser E2E and browser feasibility both passed on that earlier head. The failure was `tests/unit/test_production_configuration.py::test_production_startup_accepts_stamped_schema_without_create_all`, which assumed a database containing **only an Alembic version stamp and no application tables** was safe to start. This obsolete expectation directly contradicted the new fail-closed schema contract. Commit `e35d4759fccd0a55ffd7ee8716f3eae7f2edeb35` corrected the test to demand rejection, rather than weakening production validation. Its exact-head CI must be verified.
+
+### Critical unfinished evidence and restrictions
+
+1. Real PostgreSQL concurrency tests are committed but not yet wired into an applicable CI job. An attempted GitHub Actions workflow-file modification was blocked by tool safety checks; **do not claim PostgreSQL testing passed**. An authorized workflow edit must configure a disposable PostgreSQL 16 service and run `python -m pytest -v tests/integration/test_postgres_security.py` with `DATABASE_URL` and `ONEBOARD_TEST_POSTGRES_URL` both pointing to that dedicated database. No shared or production database may be used.
+2. All applicable workflows on the **exact final report head** still require review. Older green runs cannot satisfy the strict gate; new-head CI pending or unavailable means remain in Batch 1.
+3. Source+account throttling reduces remote lockout abuse, but shared NAT/source lockouts and distributed Argon2 CPU exhaustion remain. Trusted reverse proxy source configuration and rate-limit load tests remain unverified.
+4. The Alembic 003 bootstrap uses SQLAlchemy metadata to provision previously missing tables. Real PostgreSQL initial upgrade, parallel upgrade, rollback behavior, constraints and index parity require verification before declaring migrations production-safe.
+5. Endpoint-wide tenant isolation, role changes, HTTPS/cookie behavior behind a real reverse proxy, signup abuse, production backup/restore and external audit are not fully demonstrated. Keep seven tracked issues open. **Do not advance to Batch 2 or merge PR #8.**
+
+Reproduction in isolated local/test environments: `python -m compileall -q apps/api tests alembic`, `python -m pytest -q tests/adversarial/test_login_throttle_recovery.py tests/adversarial/test_account_throttle_logout_scope.py tests/adversarial/test_security_route_matrix.py tests/adversarial/test_production_schema_guard.py tests/unit/test_production_configuration.py`, full `python -m pytest -v`, disposable Alembic upgrade/downgrade/upgrade, web build, browser E2E, and the explicitly opt-in disposable PostgreSQL suite.
