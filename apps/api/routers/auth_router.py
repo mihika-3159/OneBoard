@@ -160,33 +160,43 @@ def login(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """Authenticate founder credentials with Argon2id and issue session cookie and token."""
-    # Account-scoped throttling cannot be bypassed by rotating source IPs.
-    # The shared DB advisory lock serializes attempts across API workers.
-    throttle_key = f"account:{req.email.strip().lower()}"
-    check_login_throttle(throttle_key, db)
-
+    # The source+account key stops repeated guesses from one address without
+    # allowing a different account at that address to clear the counter.
+    # Never trust a client-supplied X-Forwarded-For header here: Request.client
+    # must be set by the server and a separately configured trusted proxy.
     clean_email = req.email.strip().lower()
+    account_key = f"account:{clean_email}"
+    source_host = request.client.host if request.client else "unknown"
+    source_key = f"source-account:{source_host}:{clean_email}"
+
+    # Throttle expensive password verification by source first. Its DB advisory
+    # lock stays held until the successful reset or failed-attempt commit.
+    check_login_throttle(source_key, db)
     user = db.query(User).filter(User.email == clean_email).first()
+    valid_credentials = (
+        user is not None
+        and verify_password(req.password, user.hashed_password)
+        and user.is_active
+    )
 
-    if not user or not verify_password(req.password, user.hashed_password):
-        record_failed_login(throttle_key, db)
+    if not valid_credentials:
+        # Persist a source-scoped failure before attempting the account-wide
+        # check. Distributed wrong-password guesses still share account state.
+        record_failed_login(source_key, db)
+        check_login_throttle(account_key, db)
+        record_failed_login(account_key, db)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password.",
             headers={"WWW-Authenticate": "Bearer"}
         )
 
-    if not user.is_active:
-        # Do not reveal that an account exists but has been disabled. Count
-        # attempts against the same shared throttle as invalid credentials.
-        record_failed_login(throttle_key, db)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password.",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    reset_login_throttle(throttle_key, db)
+    # A verified password can recover an account even after attackers exhaust
+    # the account-wide wrong-password budget from rotating source addresses.
+    # Source+account lockout still applies before hashing, which limits CPU
+    # abuse but can affect shared-NAT users; document this residual risk.
+    reset_login_throttle(source_key, db)
+    reset_login_throttle(account_key, db)
 
     business = db.query(Business).filter(Business.id == user.business_id).first()
 
