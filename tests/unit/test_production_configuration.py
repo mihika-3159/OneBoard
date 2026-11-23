@@ -97,3 +97,23 @@ def test_production_startup_rejects_stamped_but_incomplete_schema(monkeypatch):
     monkeypatch.setattr(database.Base.metadata, "create_all", lambda **kwargs: pytest.fail("create_all called"))
     with pytest.raises(RuntimeError, match="missing required application tables"):
         database.init_db()
+
+
+@pytest.mark.parametrize("override,expected", [
+    ({"SESSION_EXPIRY_SECONDS": 0}, "SESSION_EXPIRY_SECONDS"),
+    ({"SESSION_EXPIRY_SECONDS": 31 * 24 * 3600}, "SESSION_EXPIRY_SECONDS"),
+    ({"LOGIN_MAX_ATTEMPTS": 0}, "LOGIN_MAX_ATTEMPTS"),
+    ({"LOGIN_MAX_ATTEMPTS": 21}, "LOGIN_MAX_ATTEMPTS"),
+    ({"LOGIN_LOCKOUT_SECONDS": 0}, "LOGIN_LOCKOUT_SECONDS"),
+    ({"LOGIN_LOCKOUT_SECONDS": 86401}, "LOGIN_LOCKOUT_SECONDS"),
+])
+def test_production_rejects_dangerous_authentication_limits(override, expected):
+    with pytest.raises(RuntimeError, match=expected):
+        validate_production_configuration(production_settings(**override))
+
+
+def test_bounded_production_authentication_limits_are_accepted():
+    validate_production_configuration(production_settings(
+        SESSION_EXPIRY_SECONDS=3600, LOGIN_MAX_ATTEMPTS=5,
+        LOGIN_LOCKOUT_SECONDS=300,
+    ))
