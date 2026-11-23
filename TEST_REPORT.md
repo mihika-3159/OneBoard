@@ -326,3 +326,11 @@ Reproduction in isolated local/test environments: `python -m compileall -q apps/
 - **New-head verification pending** at report authoring time. All applicable workflows must be green on the same latest head SHA before any batch transition. Do not infer green from previous-head results.
 - Browser inference experiment remains non-default and unapproved for the founder experience. Its failing CI remains a gate blocker; do not suppress its checks merely to advance.
 - Remaining Batch 1 risks: comprehensive cross-tenant/role endpoint authorization, real shared-NAT abuse, legacy schema upgrades with data, HTTPS deployment behavior, and adversarial migration recovery. PR stays draft; no customer data or deployment.
+
+
+### 24 November 2026: production schema guard regression after migration 004
+
+- Previous head `313d1565d8ae584946a39a7dd8d1c8cd75c06ec2`: browser E2E run `45254840891` **success**, browser inference feasibility run `45254841119` **success**, verification run `45254840718` **failure**.
+- Verification `api-tests` job `137973817476` reported **2 failed, 316 passed, 26 skipped**. Both failures in `tests/adversarial/test_production_schema_guard.py` were test-fixture staleness: the incomplete database was stamped `003_app_schema` after migration 004 became current, so the startup guard correctly rejected a revision mismatch before it could exercise the missing-table guard.
+- Commit `f215c07ab8aad23f900926c9be9e073d2cc86465` changes the adversarial fixture to obtain the current Alembic script head dynamically and stamp that revision while deliberately leaving required tables absent. This retains the fail-closed assertion and checks that production does not call `create_all`.
+- **New-head CI pending/unverified** at time of change. All applicable workflows must pass on the exact latest PR head before Batch 2. PostgreSQL concurrent migrations and index checks passed on previous head; no production deployment or live database was used.
