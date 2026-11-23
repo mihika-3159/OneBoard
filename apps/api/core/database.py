@@ -26,25 +26,8 @@ def get_db():
         db.close()
 
 def init_db():
-    if settings.ONEBOARD_PRODUCTION_MODE:
-        # Never create an unversioned production schema. Operators must apply
-        # and verify Alembic migrations before exposing the service.
-        from alembic.migration import MigrationContext
-        from alembic.script import ScriptDirectory
-        from alembic.config import Config
-        from pathlib import Path
-
-        alembic_cfg = Config(str(settings.BASE_DIR / 'alembic.ini'))
-        script = ScriptDirectory.from_config(alembic_cfg)
-        expected_heads = set(script.get_heads())
-        with engine.connect() as connection:
-            actual_heads = set(MigrationContext.configure(connection).get_current_heads())
-        if not actual_heads or actual_heads != expected_heads:
-            raise RuntimeError(
-                'Production database migration revision mismatch; run alembic upgrade head before startup'
-            )
-        return
-
+    # Import every model before inspecting its metadata. A database stamped
+    # at Alembic head is not safe to serve if application tables are missing.
     import apps.api.models.business
     import apps.api.models.goals_tasks
     import apps.api.models.entities
@@ -53,4 +36,41 @@ def init_db():
     import apps.api.models.memory
     import apps.api.models.workflow
     import apps.api.models.integrations
+
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        # Never create or silently repair an unversioned production schema.
+        from alembic.migration import MigrationContext
+        from alembic.script import ScriptDirectory
+        from alembic.config import Config
+        from sqlalchemy import inspect
+
+        alembic_cfg = Config(str(settings.BASE_DIR / "alembic.ini"))
+        expected_heads = set(ScriptDirectory.from_config(alembic_cfg).get_heads())
+        with engine.connect() as connection:
+            actual_heads = set(MigrationContext.configure(connection).get_current_heads())
+            if not actual_heads or actual_heads != expected_heads:
+                raise RuntimeError(
+                    "Production database migration revision mismatch; run alembic upgrade head before startup"
+                )
+            inspector = inspect(connection)
+            present = set(inspector.get_table_names())
+            missing_tables = sorted(set(Base.metadata.tables) - present)
+            if missing_tables:
+                raise RuntimeError(
+                    "Production database missing required application tables: "
+                    + ", ".join(missing_tables)
+                )
+            missing_columns = []
+            for name, table in Base.metadata.tables.items():
+                actual_columns = {column["name"] for column in inspector.get_columns(name)}
+                for column in table.columns:
+                    if column.name not in actual_columns:
+                        missing_columns.append(f"{name}.{column.name}")
+            if missing_columns:
+                raise RuntimeError(
+                    "Production database missing required application columns: "
+                    + ", ".join(sorted(missing_columns))
+                )
+        return
+
     Base.metadata.create_all(bind=engine)
