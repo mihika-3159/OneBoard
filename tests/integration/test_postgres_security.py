@@ -197,3 +197,29 @@ def test_05_repeated_upgrade_preserves_auth_indexes_and_schema():
             assert before == after
     finally:
         engine.dispose()
+
+
+def test_06_production_guard_rejects_stamped_schema_missing_session_index(monkeypatch):
+    """A matching Alembic revision must not mask a missing session lookup index."""
+    from sqlalchemy.engine.reflection import Inspector
+    from apps.api.core.database import init_db
+
+    _engine().dispose()  # Enforce disposable PostgreSQL target precondition.
+    original = Inspector.get_indexes
+
+    def hide_session_index(self, table_name, *args, **kwargs):
+        indexes = original(self, table_name, *args, **kwargs)
+        if table_name == "user_sessions":
+            return [
+                index for index in indexes
+                if index.get("column_names") != ["token_hash"]
+            ]
+        return indexes
+
+    monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+    with monkeypatch.context() as patch:
+        patch.setattr(Inspector, "get_indexes", hide_session_index)
+        with pytest.raises(RuntimeError, match="missing required indexes/unique constraints"):
+            init_db()
+    # Once the index is visible again, the same real migrated database is valid.
+    init_db()
