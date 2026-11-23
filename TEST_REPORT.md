@@ -254,7 +254,7 @@ For the real Ollama test, start Ollama and pull `qwen2.5:0.5b`; set `ONEBOARD_LI
 - **Remaining Batch 1 blockers:** real PostgreSQL parallel migration and cross-worker throttle contention tests, account-lockout abuse resistance, full endpoint-wide tenant authorization matrix, and production HTTPS integration. No production certification or issue closure. PR remains draft.
 
 
-## 23 November 2026, 06:xx Dubai: consolidated security/auth/schema engineering batch
+## 23 November 2026: consolidated security/auth/schema engineering batch
 
 **PR:** draft #8, branch `fix/p0-auth-tenant-isolation` only. This report is not a certification of a production multi-tenant deployment. No provider signups, external API calls, real data, spending, merging or deployment were performed.
 
@@ -284,6 +284,12 @@ Those results **do not verify the current batch**.
 ### Observed CI regression and correction
 
 Earlier batch head `0ae7634fda0445dc8a7962bd45018fed6f69925f`: verification workflow https://github.com/mihika-3159/OneBoard/actions/runs/45099407721 **FAILED** in api-tests (**1 failed, 306 passed, 24 skipped**); web-build and real Ollama jobs passed. Browser E2E and browser feasibility both passed on that earlier head. The failure was `tests/unit/test_production_configuration.py::test_production_startup_accepts_stamped_schema_without_create_all`, which assumed a database containing **only an Alembic version stamp and no application tables** was safe to start. This obsolete expectation directly contradicted the new fail-closed schema contract. Commit `e35d4759fccd0a55ffd7ee8716f3eae7f2edeb35` corrected the test to demand rejection, rather than weakening production validation. Its exact-head CI must be verified.
+
+### Follow-up verification and database safety
+
+- Corrected test head `e35d4759fccd0a55ffd7ee8716f3eae7f2edeb35`: all applicable workflows completed successfully: [verification 45099642145](https://github.com/mihika-3159/OneBoard/actions/runs/45099642145), [browser E2E 45099642184](https://github.com/mihika-3159/OneBoard/actions/runs/45099642184), and [browser feasibility 45099642341](https://github.com/mihika-3159/OneBoard/actions/runs/45099642341). This is **prior-head CI**, not final-batch verification.
+- Commit `de92ee9e6f8fdc9a2d5cd1daee9a9b1b6c3e7149` adds a required explicit disposable localhost `oneboard_ci` database guard before the PostgreSQL migration subprocess starts, and imports the full model inventory into the Postgres assertions.
+- This report commit creates another head. Recheck exact final SHA and all applicable workflows. No independent PostgreSQL process test was run by this assistant.
 
 ### Critical unfinished evidence and restrictions
 
