@@ -14,12 +14,20 @@ from threading import Barrier
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from apps.api.core.auth import check_login_throttle, record_failed_login
 from apps.api.core.config import settings
 from apps.api.core.database import Base
 from apps.api.models.business import LoginThrottleState
+import apps.api.models.goals_tasks
+import apps.api.models.entities
+import apps.api.models.decision_evidence
+import apps.api.models.agent_council
+import apps.api.models.memory
+import apps.api.models.workflow
+import apps.api.models.integrations
 
 URL = os.getenv("ONEBOARD_TEST_POSTGRES_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="Requires dedicated disposable PostgreSQL CI URL")
@@ -28,11 +36,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _engine():
     assert URL and URL.startswith("postgresql+psycopg://"), "CI PostgreSQL URL required"
+    parsed = make_url(URL)
+    assert parsed.host in ("127.0.0.1", "localhost", "::1"), "Never run against remote PostgreSQL"
+    assert parsed.database == "oneboard_ci", "Only the disposable oneboard_ci database is permitted"
+    assert os.getenv("DATABASE_URL") == URL, "The Alembic and test database URLs must match"
     return create_engine(URL, pool_pre_ping=True)
 
 
 def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
-    assert URL
+    # Validate the target BEFORE spawning any migration process.
+    validation_engine = _engine()
+    validation_engine.dispose()
     env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
     processes = [
         subprocess.Popen(
