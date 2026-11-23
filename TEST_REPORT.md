@@ -334,3 +334,11 @@ Reproduction in isolated local/test environments: `python -m compileall -q apps/
 - Verification `api-tests` job `137973817476` reported **2 failed, 316 passed, 26 skipped**. Both failures in `tests/adversarial/test_production_schema_guard.py` were test-fixture staleness: the incomplete database was stamped `003_app_schema` after migration 004 became current, so the startup guard correctly rejected a revision mismatch before it could exercise the missing-table guard.
 - Commit `f215c07ab8aad23f900926c9be9e073d2cc86465` changes the adversarial fixture to obtain the current Alembic script head dynamically and stamp that revision while deliberately leaving required tables absent. This retains the fail-closed assertion and checks that production does not call `create_all`.
 - **New-head CI pending/unverified** at time of change. All applicable workflows must pass on the exact latest PR head before Batch 2. PostgreSQL concurrent migrations and index checks passed on previous head; no production deployment or live database was used.
+
+
+### 24 November 2026: production schema index guard and PostgreSQL regression
+- Exact prior head `08340172d241cef546795a8aee039f2b98e50859` verified green: verification run 45264559036, browser E2E run 45264558871, browser inference feasibility run 45264558976.
+- Security fix `f49cfe588452e3f532d2f7677ecc819e5b11dd74`: production startup now compares model-defined index column signatures and uniqueness constraints against the migrated database, rejecting incomplete schemas even when Alembic reports head. No automatic production repair.
+- Regression `a3b5dbc483836c2814fb080f83ccf2cacdc90a5e`: disposable PostgreSQL test simulates an absent session token index via an inspector shim, requires production startup to fail closed, then confirms healthy schema is accepted.
+- Exact latest head at this report update: `a3b5dbc483836c2814fb080f83ccf2cacdc90a5e`. Workflow lookup immediately after commit returned no runs; CI is **pending/unverified**, not green. The following report-only commit also requires its own exact-head CI verification.
+- Batch 1 remains open. Pending: full tenant/role endpoint authorization matrix, shared NAT abuse protection, migration failure recovery, HTTPS deployment verification. No live customer actions or external provider activation.
