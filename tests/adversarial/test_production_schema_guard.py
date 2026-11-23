@@ -1,5 +1,8 @@
 """Production must reject a stamped-but-incomplete schema without creating tables."""
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from pathlib import Path
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 
@@ -8,14 +11,17 @@ from apps.api.core.config import settings
 
 
 def _stamped_incomplete_engine():
+    root = Path(__file__).resolve().parents[2]
+    head_revision = ScriptDirectory.from_config(Config(str(root / "alembic.ini"))).get_current_head()
+    assert head_revision is not None
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     with engine.begin() as connection:
         connection.execute(text(
             "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
         ))
         connection.execute(text(
-            "INSERT INTO alembic_version (version_num) VALUES ('003_app_schema')"
-        ))
+            "INSERT INTO alembic_version (version_num) VALUES (:revision)"
+        ), {"revision": head_revision})
     return engine
 
 
