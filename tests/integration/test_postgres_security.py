@@ -142,19 +142,25 @@ def test_04_postgres_schema_constraints_and_indexes_match_models():
         with engine.connect() as conn:
             inspector = inspect(conn)
             for table_name, model in Base.metadata.tables.items():
-                actual_indexes = {index["name"] for index in inspector.get_indexes(table_name)}
+                actual_indexes = inspector.get_indexes(table_name)
+                indexed_columns = {
+                    (tuple(index["column_names"]), bool(index.get("unique")))
+                    for index in actual_indexes
+                }
                 actual_unique = {
                     tuple(sorted(item["column_names"]))
                     for item in inspector.get_unique_constraints(table_name)
                 }
                 actual_unique.update(
                     tuple(sorted(index["column_names"]))
-                    for index in inspector.get_indexes(table_name)
+                    for index in actual_indexes
                     if index.get("unique")
                 )
                 for index in model.indexes:
-                    assert index.name in actual_indexes, (
-                        f"Missing PostgreSQL index {table_name}.{index.name}"
+                    expected = (tuple(column.name for column in index.columns), bool(index.unique))
+                    assert expected in indexed_columns, (
+                        f"Missing PostgreSQL index on {table_name}: {expected}; "
+                        f"model name {index.name}"
                     )
                 for constraint in model.constraints:
                     from sqlalchemy import UniqueConstraint
