@@ -69,7 +69,7 @@ def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "003_app_schema"
+            assert revision == "004_schema_indexes"
             inspector = inspect(conn)
             tables = set(inspector.get_table_names())
             expected = set(Base.metadata.tables)
@@ -169,5 +169,31 @@ def test_04_postgres_schema_constraints_and_indexes_match_models():
                         assert cols in actual_unique, (
                             f"Missing PostgreSQL unique constraint on {table_name}: {cols}"
                         )
+    finally:
+        engine.dispose()
+
+
+def test_05_repeated_upgrade_preserves_auth_indexes_and_schema():
+    """Repeated deploys must not remove token lookups or other security indexes."""
+    engine = _engine()
+    try:
+        with engine.connect() as conn:
+            before = {
+                (tuple(item["column_names"]), bool(item.get("unique")))
+                for item in inspect(conn).get_indexes("user_sessions")
+            }
+            assert (("token_hash",), False) in before
+        env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.connect() as conn:
+            after = {
+                (tuple(item["column_names"]), bool(item.get("unique")))
+                for item in inspect(conn).get_indexes("user_sessions")
+            }
+            assert before == after
     finally:
         engine.dispose()
