@@ -77,6 +77,12 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("COOKIE_SECURE must be enabled behind HTTPS")
     if len(config.AUTH_SECRET_KEY) < 32 or config.AUTH_SECRET_KEY == "oneboard-LOCAL-DEMO-ONLY-NOT-FOR-PRODUCTION":
         errors.append("AUTH_SECRET_KEY must be at least 32 characters and not the demo sentinel")
+    if not 60 <= config.SESSION_EXPIRY_SECONDS <= 30 * 24 * 3600:
+        errors.append("SESSION_EXPIRY_SECONDS must be between 60 seconds and 30 days")
+    if not 1 <= config.LOGIN_MAX_ATTEMPTS <= 20:
+        errors.append("LOGIN_MAX_ATTEMPTS must be between 1 and 20")
+    if not 10 <= config.LOGIN_LOCKOUT_SECONDS <= 24 * 3600:
+        errors.append("LOGIN_LOCKOUT_SECONDS must be between 10 seconds and 24 hours")
     if not config.DATABASE_URL.startswith(("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")):
         errors.append("Production multi-tenant mode requires PostgreSQL; SQLite is development-only")
     origins = [origin.strip() for origin in config.CORS_ORIGINS.split(",") if origin.strip()]
