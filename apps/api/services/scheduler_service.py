@@ -1,6 +1,8 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import logging
+from math import isfinite
+from apps.api.core.config import settings
 from apscheduler.schedulers.background import BackgroundScheduler
 from apps.api.core.database import SessionLocal
 from apps.api.models.entities import Commitment, Invoice
@@ -31,8 +33,13 @@ class SchedulerService:
             )
             self.scheduler.start()
             logger.info("APScheduler proactive background monitor started.")
-        except Exception as e:
-            logger.error(f"Failed to start scheduler: {e}")
+        except Exception as exc:
+            # An operator must not be told that monitoring is active when
+            # APScheduler failed to start. Do not include exception bodies
+            # that might contain database URLs, credentials or tenant data.
+            logger.error("Scheduler startup failed (%s)", type(exc).__name__)
+            if settings.ONEBOARD_PRODUCTION_MODE:
+                raise RuntimeError("Required scheduler failed to start") from None
 
     def shutdown(self):
         if self.scheduler.running:
@@ -50,6 +57,9 @@ class SchedulerService:
             else:
                 businesses = db.query(Business).all()
 
+            # Avoid retaining a stale cached list if a tenant was removed.
+            if business_id and not businesses:
+                self.active_alerts_by_business.pop(business_id, None)
             for biz in businesses:
                 b_id = biz.id
                 alerts = []
@@ -79,15 +89,39 @@ class SchedulerService:
                     Invoice.status == "overdue"
                 ).all()
                 if overdue_invs:
-                    total_overdue = sum(float(i.amount) for i in overdue_invs)
-                    alerts.append({
-                        "id": f"alert_overdue_invoices_{b_id}",
-                        "type": "receivables_overdue",
-                        "severity": "medium",
-                        "title": f"{len(overdue_invs)} Overdue Invoices (${total_overdue:,.2f})",
-                        "description": "Outstanding customer invoices require reminder dispatch or collection review.",
-                        "created_at": now.isoformat()
-                    })
+                    amounts = []
+                    invalid_amount = False
+                    for invoice in overdue_invs:
+                        try:
+                            value = float(invoice.amount)
+                            if not isfinite(value) or value < 0:
+                                raise ValueError("Invalid overdue receivable")
+                            amounts.append(value)
+                        except (ValueError, TypeError, OverflowError):
+                            invalid_amount = True
+                    if invalid_amount:
+                        alerts.append({
+                            "id": f"alert_invoice_data_quality_{b_id}",
+                            "type": "financial_data_quality",
+                            "severity": "high",
+                            "title": "Overdue receivables require data review",
+                            "description": "At least one invoice amount is invalid; no total has been inferred.",
+                            "created_at": now.isoformat()
+                        })
+                    else:
+                        total_overdue = sum(amounts)
+                        currency = (biz.currency or "USD").upper()
+                        alerts.append({
+                            "id": f"alert_overdue_invoices_{b_id}",
+                            "type": "receivables_overdue",
+                            "severity": "medium",
+                            "title": f"{len(overdue_invs)} Overdue Invoices ({currency} {total_overdue:,.2f})",
+                            "description": (
+                                "User-recorded overdue invoice amounts, not verified bank balances. "
+                                "Review settlement before issuing reminders."
+                            ),
+                            "created_at": now.isoformat()
+                        })
 
                 # 3. Check unresolved data conflicts for this business
                 unresolved_conflicts = db.query(MemoryConflict).filter(
