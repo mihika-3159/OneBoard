@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -94,6 +94,14 @@ def test_unknown_expense_period_not_guessed_as_monthly(db, period):
                   amount=100, billing_period=period)
     db.add(exp)
     db.commit()
+    if period is None:
+        # SQLAlchemy applies the model's default "monthly" when a Python
+        # ORM insert omits/sets None. Explicitly simulate a corrupt legacy
+        # database row rather than testing a normalized monthly expense.
+        db.execute(text("UPDATE expenses SET billing_period = NULL WHERE id = :id"),
+                   {"id": exp.id})
+        db.commit()
+        db.expire_all()
     snapshot = calculate_business_financials(db, biz.id)
     assert snapshot["monthly_burn"] == 0
     assert snapshot["financial_data_status"] == "needs_review"
