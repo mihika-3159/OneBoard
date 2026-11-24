@@ -106,6 +106,9 @@ def run() -> dict:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+            # Windows disallows unlink while the parent still holds the file.
+            out.flush()
+            out.close()
             logfile.unlink(missing_ok=True)
 
 
