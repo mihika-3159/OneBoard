@@ -13,6 +13,7 @@ def production_config(**overrides):
         "AUTH_SECRET_KEY": "a" * 64,
         "DATABASE_URL": "postgresql://localhost/oneboard",
         "CORS_ORIGINS": "https://app.example.test",
+        "PUBLIC_API_ORIGIN": "https://api.example.test",
     }
     values.update(overrides)
     return Settings(**values)
