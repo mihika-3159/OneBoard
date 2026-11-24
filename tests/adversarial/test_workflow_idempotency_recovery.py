@@ -110,6 +110,7 @@ def test_interrupted_run_is_quarantined_not_replayed(db):
         status="running", trigger_source="manual",
         started_at=datetime.utcnow() - timedelta(hours=1),
         idempotency_key="crashed_run_0001",
+        verification_details={"dry_run": False},
         step_results={"start": {"status": "started"}},
     )
     db.add(run)
