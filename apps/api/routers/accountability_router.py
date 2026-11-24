@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from apps.api.core.database import get_db
-from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.decision_evidence import Decision
 from apps.api.services.accountability_engine import accountability_engine
@@ -35,7 +35,7 @@ def get_adviser_scorecards(
 @router.post("/verify-outcome")
 def verify_outcome(
     req: OutcomeVerificationRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     decision = db.query(Decision).filter(Decision.id == req.decision_id).first()
