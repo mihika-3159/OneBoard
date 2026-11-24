@@ -350,3 +350,64 @@ def test_09_postgres_rejects_orphan_auth_session():
                 )
     finally:
         engine.dispose()
+
+
+def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
+    """Dirty legacy rows cannot be silently deleted or accepted during FK repair.
+
+    Roll back *only* migration 005 on disposable CI PostgreSQL, introduce an
+    orphaned session, require 005 to fail atomically, then remove synthetic
+    corruption and prove that a clean recovery upgrade succeeds.
+    """
+    from uuid import uuid4
+
+    engine = _engine()
+    session_id = str(uuid4())
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+
+    def run_migration(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    try:
+        result = run_migration("downgrade", "-1")
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "004_schema_indexes"
+            conn.execute(
+                text("""INSERT INTO user_sessions
+                        (id, user_id, business_id, expires_at, is_revoked)
+                        VALUES (:id, :missing, :business,
+                                CURRENT_TIMESTAMP + INTERVAL '1 day', false)"""),
+                {"id": session_id, "missing": str(uuid4()), "business": str(uuid4())},
+            )
+
+        result = run_migration("upgrade", "head")
+        assert result.returncode != 0, "An orphaned session must block FK migration"
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "004_schema_indexes"
+            assert conn.execute(
+                text("SELECT count(*) FROM user_sessions WHERE id = :id"),
+                {"id": session_id},
+            ).scalar_one() == 1, "Migration must not discard dirty legacy tenant records"
+            assert "_oneboard_005_created_fks" not in inspect(conn).get_table_names()
+    finally:
+        # Always remove *only* the synthetic orphan, and restore CI schema.
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM user_sessions WHERE id = :id"), {"id": session_id}
+            )
+        result = run_migration("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+        engine.dispose()
+
+    with _engine().connect() as conn:
+        assert conn.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == "005_auth_foreign_keys"
