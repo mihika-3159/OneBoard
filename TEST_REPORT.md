@@ -491,3 +491,12 @@ integration.
 `python -m pytest -v tests/integration/test_postgres_security.py` with
 validated local `oneboard_ci` URL; `python -m alembic upgrade head` and
 SQLite downgrade/upgrade CI smoke; all browser workflows.
+
+
+### 24 November 2026: follow-up CI failure triage for API key migration and startup guard
+
+The initial new-batch code run [verification 45344268938](https://github.com/mihika-3159/OneBoard/actions/runs/45344268938) at `b5007b89ae93510b41d5bdd0702786bf86fef558` found two test-fixture problems: missing `name` on a synthetic login user (API: 384 passed, 36 skipped, one failed), and a stale migration 005 assertion after upgrade to head 006 (PostgreSQL: 14 passed, one failed). Fixed respectively in `d9e08496d50c48ce676dd66ea57779e930d6e35e` and `2721080a00f7ed63d248143c10c43034fa928d64`.
+
+A subsequent [CI run 45344644850](https://github.com/mihika-3159/OneBoard/actions/runs/45344644850) on `87106d75b709a300f4b886d34b7b421c31cd65b3` exposed a **Python SyntaxError** in the newly added production startup API-key invariant SQL block. That is an application-code defect; no success was claimed. Commit `20ccf0364c2d281ad795d5dba7f13c700147986f` replaces it with syntactically valid SQL that checks for the `sha256:` prefix, exact verifier length, and lowercase hex characters using PostgreSQL `translate`. The committed file was re-read and the full return/create-all structure inspected. No authentication check was removed.
+
+The security blocker status remains **implemented but not yet exact-head CI verified** after these corrections. The latest report commit also creates a fresh head requiring its own verification. All applicable PR workflows must complete successfully on precisely the same latest SHA before Batch 2 can begin. No deployment or real user data were used.
