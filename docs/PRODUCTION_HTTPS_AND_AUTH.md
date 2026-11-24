@@ -19,6 +19,7 @@ DATABASE_URL=postgresql+psycopg://<dedicated private connection>
 PUBLIC_API_ORIGIN=https://api.example.test
 CORS_ORIGINS=https://app.example.test
 LOGIN_MAX_ATTEMPTS=5
+LOGIN_SOURCE_MAX_ATTEMPTS=60
 REGISTRATION_SOURCE_MAX_ATTEMPTS=30
 LOGIN_LOCKOUT_SECONDS=300
 ```
@@ -97,3 +98,57 @@ Never attempt circumvention by trusting unvalidated forwarded IP headers.
 
 These tests are necessary but not a live load/security assessment. Consult
 `TEST_REPORT.md` for exact commit and CI execution results.
+
+
+## Cross-account password-hashing budget
+
+The ordinary `LOGIN_MAX_ATTEMPTS=5` budget protects a particular
+source+account combination, but rotating 100 different emails from the same
+source bypasses that expensive Argon2 protection. Production now charges
+**all** login attempts, including successful logins, against the independent
+`LOGIN_SOURCE_MAX_ATTEMPTS=60` source budget in each 300-second window. The
+allowed production configuration range is 20–200 and must exceed the
+per-account limit. A missing verified transport source fails closed before any
+password check. The budget is persisted via the same shared PostgreSQL
+transaction/advisory lock infrastructure and cannot be reset by a correct
+password for another account. A forwarded IP supplied by the client is not a
+trusted identity.
+
+This introduces an explicit availability trade-off: busy schools, offices, or
+carrier NATs can hit their source budget. The service must show HTTP 429 with
+Retry-After and allow users to retry after the window. It cannot distinguish
+all legitimate users behind one IP without an edge identity provider. Nor
+can it prevent denial of service through many source IPs. An owner-approved
+public deployment still needs proxy-level capacity controls and monitoring.
+
+## API key storage and migration
+
+New API credentials have 224 random bits, rendered as `obk_` plus 56 lowercase
+hex digits. They are returned in plaintext **only at rotation**; the database
+stores a `sha256:`-prefixed SHA-256 verifier. Querying the database cannot
+retrieve the original credential, and supplying the stored verifier to the API
+does not authenticate. Production rejects malformed keys before SQL lookup
+and does not fall back to plaintext comparisons. The local demo retains a
+development-only legacy lookup for synthetic keys.
+
+Alembic revision `006_api_key_hashing` upgrades previously issued canonical
+API keys in PostgreSQL without changing their client-visible value. **A
+noncanonical, weak or synthetic legacy key blocks the upgrade**, rather than
+silently turning an easily guessed demo credential into a valid production
+token. Inspect this failure only in an authorized maintenance process;
+rotate or explicitly disable invalid legacy credentials before retrying.
+Never include any raw key in deployment logs, diagnostics, test reports or
+screenshots. The migration is irreversible: a PostgreSQL downgrade from 006
+is deliberately refused while active hashed keys remain. Restoring an older
+application version requires a reviewed data-restoration and credential
+rotation plan, not a blind Alembic downgrade. This work does **not** implement
+backup/restore or authorize live deployment.
+
+After migration, production startup also rejects a database containing any
+plaintext/noncanonical API-key value, even if Alembic reports revision 006.
+Existing sessions and application data are not silently deleted. The
+disposable PostgreSQL CI suite verifies canonical legacy-key conversion,
+production authentication by the original raw key, rejection of unsafe
+downgrade, and failure with weak legacy keys without data loss.
+
+Production secrets must not be committed to this repository.
