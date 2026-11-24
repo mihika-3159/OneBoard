@@ -37,8 +37,22 @@ async def get_gateway_status(
 ):
     health = await ollama_gateway.check_health()
     profile = _business_model_profile(db, current_user.business_id)
+    requested = ollama_gateway.get_model_for_task(profile=profile)
+    installed = requested in health.get("available_models", [])
+    # A reachable daemon with a *different* downloaded model cannot execute
+    # this tenant's selected profile. Do not advertise inference as ready.
     health["active_profile"] = profile
     health["profile_details"] = settings.MODEL_PROFILES[profile]
+    health["requested_model"] = requested
+    health["requested_model_installed"] = bool(installed)
+    health["inference_available"] = bool(
+        health.get("status") == "connected" and installed
+    )
+    if health.get("status") == "connected" and not installed:
+        health["message"] = (
+            "The selected profile model is not installed. "
+            "Real inference is unavailable for this workspace."
+        )
     return health
 
 
