@@ -125,16 +125,45 @@ async def handle_founder_command(
     runway_val = financials['runway_months']
     runway_description = f'{runway_val} months' if runway_val is not None else financials['runway_status']
 
+    data_status = financials["financial_data_status"]
+    verified = financials["financial_data_verified"]
+    currency = biz.currency if biz and biz.currency else "USD"
+    if data_status == "needs_review":
+        financial_context = (
+            "Financial data require correction: at least one tenant record "
+            "is invalid or has an unknown reporting period. All partially "
+            "calculated amounts are withheld. Do not estimate runway, "
+            "cash health or revenue until records are corrected.\n"
+        )
+    elif data_status == "unconfigured":
+        financial_context = (
+            "Financial data have not been configured. No revenue, "
+            "cash balance or runway can be inferred.\n"
+        )
+    else:
+        financial_context = (
+            f"- User-recorded monthly recurring revenue: {currency} {total_mrr:,.2f} "
+            f"across {financials['active_customers_count']} active customer records\n"
+            f"- User-recorded cash runway estimate: {runway_description} "
+            f"(cash balance: {currency} {cash_val:,.2f})\n"
+            f"- User-recorded overdue invoices: {financials['overdue_invoices_count']} "
+            f"(amount: {currency} {financials['overdue_receivables_amount']:,.2f})\n"
+        )
+
     context = (
         f"You are the Executive AI Operating System for {biz_name}.\n"
-        f"Real Business Context:\n"
-        f"- MRR: ${total_mrr:,.2f} across {financials['active_customers_count']} active customers\n"
-        f"- Cash Runway: {runway_description} (Balance: ${cash_val:,.2f})\n"
-        f"- Overdue Invoices: {financials['overdue_invoices_count']} totaling ${financials['overdue_receivables_amount']:,.2f}\n"
-        f"- Critical Commitments: {len(critical_commitments)} (e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
-        f"- Pending Tasks: {len(tasks)}\n"
-        f"Founder Question: {req.command}\n"
-        f"Respond concisely with concrete facts and recommended next steps."
+        "Company information below comes from the authenticated business database. "
+        "Financial values are self-recorded, not independently reconciled, "
+        "and must never be called audited or bank-verified.\n"
+        f"Financial record status: {data_status}; independently verified: {verified}.\n"
+        f"{financial_context}"
+        f"- Critical commitments: {len(critical_commitments)} "
+        f"(e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
+        f"- Pending tasks: {len(tasks)}\n"
+        f"Founder question: {req.command}\n"
+        "Respond with supported facts and proportionate next steps. "
+        "Do not invent provider syncs, bank reconciliations, clients, or "
+        "financial health when the underlying records are incomplete."
     )
 
     profile = _business_model_profile(db, biz_id)
@@ -153,8 +182,15 @@ async def handle_founder_command(
         "fallback_reason": res.get("fallback_reason") if is_simulated else None,
         "inference_engine": "offline_simulated" if is_simulated else "local_ollama",
         "business_state_summary": {
-            "mrr": total_mrr,
-            "overdue_receivables": financials["overdue_receivables_amount"],
-            "pending_commitments": len(critical_commitments)
+            "mrr": total_mrr if data_status == "recorded" else None,
+            "overdue_receivables": (
+                financials["overdue_receivables_amount"]
+                if data_status == "recorded" else None
+            ),
+            "pending_commitments": len(critical_commitments),
+            "financial_data_status": data_status,
+            "financial_data_verified": verified,
+            "financial_data_issues_count": len(financials["financial_data_issues"]),
+            "currency": currency,
         }
     }
