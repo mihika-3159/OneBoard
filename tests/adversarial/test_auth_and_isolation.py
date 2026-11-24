@@ -721,6 +721,9 @@ class TestDocumentUploadLimits:
             results = await memory_engine.search_semantic_memory(
                 db=db, business_id=f["biz_a"].id, query="orphan", top_k=50
             )
-        match = next(row for row in results if row["chunk_id"] == orphan.id)
-        assert match["source_title"] == "Business Document"
-        assert match["source_title"] != f["doc_b"].title
+        # A chunk whose document belongs to another tenant must not be
+        # returned at all. Exclusion is stronger than replacing its title
+        # with a generic placeholder while leaking the orphan content.
+        assert all(row["chunk_id"] != orphan.id for row in results)
+        assert all(row["source_title"] != f["doc_b"].title for row in results)
+        assert "orphan chunk from tenant A" not in repr(results)
