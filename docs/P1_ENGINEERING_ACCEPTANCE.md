@@ -62,6 +62,16 @@ Implemented:
   bound extraction, ZIP expansion, PDF pages, XLSX rows/columns and
   database persistence. Unauthorized and cross-tenant access are covered
   by the existing adversarial security matrix.
+- Business Memory search now rejects blank/oversized queries and top-k
+  outside 1–20. It joins tenant-owned documents and chunks in **one**
+  database query rather than performing an N+1 lookup, limits scanning
+  to the **1,000 most recent candidate chunks**, and marks
+  `candidate_limit_applied=true` when the window truncates results.
+  This is a **prototype safety bound**, not exhaustive indexed semantic
+  retrieval. Old relevant documents may be missed until a proper
+  tenant-isolated indexed search backend exists.
+  `tests/adversarial/test_bounded_memory_search.py` checks query
+  budget, cross-tenant/orphan references, and truncation disclosure.
 - Scheduler reads **tenant-scoped persisted source records** and
   recomputes alerts on every GET. A new scheduler instance reconstructs
   the same alerts after a process restart; stale process cache is not the
