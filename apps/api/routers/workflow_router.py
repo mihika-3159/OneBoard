@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Literal
@@ -6,6 +6,7 @@ from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+from apps.api.core.config import settings
 from apps.api.core.database import get_db
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
@@ -74,6 +75,7 @@ def create_workflow(
 def execute_workflow(
     workflow_id: str,
     dry_run: bool = False,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
     current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
@@ -81,13 +83,19 @@ def execute_workflow(
     if not wf:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     enforce_tenant_boundary(wf.business_id, current_user)
+    if settings.ONEBOARD_PRODUCTION_MODE and not dry_run and not idempotency_key:
+        raise HTTPException(
+            status_code=428,
+            detail="A stable Idempotency-Key is required for production workflow execution.",
+        )
 
     try:
         run = workflow_engine.execute_workflow(
             db=db,
             business_id=current_user.business_id,
             workflow_id=workflow_id,
-            dry_run=dry_run
+            dry_run=dry_run,
+            idempotency_key=idempotency_key
         )
         return run
     except (PermissionError, ValueError) as pe:
@@ -95,6 +103,22 @@ def execute_workflow(
     except Exception:
         logger.exception("Unexpected workflow execution error")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Workflow execution failed; inspect server logs")
+
+@router.post("/runs/reconcile-interrupted")
+def reconcile_interrupted_runs(
+    older_than_seconds: int = 900,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db),
+):
+    """Quarantine stale, uncertain executions without automatic replay."""
+    try:
+        count = workflow_engine.reconcile_interrupted_runs(
+            db, current_user.business_id, older_than_seconds=older_than_seconds
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"paused_runs": count, "automatic_replay": False}
+
 
 @router.get("/runs")
 def list_runs(
