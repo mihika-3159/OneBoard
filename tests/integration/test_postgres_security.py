@@ -69,7 +69,7 @@ def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "004_schema_indexes"
+            assert revision == "005_auth_foreign_keys"
             inspector = inspect(conn)
             tables = set(inspector.get_table_names())
             expected = set(Base.metadata.tables)
@@ -169,6 +169,19 @@ def test_04_postgres_schema_constraints_and_indexes_match_models():
                         assert cols in actual_unique, (
                             f"Missing PostgreSQL unique constraint on {table_name}: {cols}"
                         )
+                reflected_fks = inspector.get_foreign_keys(table_name)
+                for constraint in model.foreign_key_constraints:
+                    local = tuple(col.parent.name for col in constraint.elements)
+                    target = constraint.elements[0].column.table.name
+                    remote = tuple(col.column.name for col in constraint.elements)
+                    ondelete = (constraint.ondelete or "").upper()
+                    assert any(
+                        tuple(fk.get("constrained_columns") or ()) == local
+                        and fk.get("referred_table") == target
+                        and tuple(fk.get("referred_columns") or ()) == remote
+                        and ((fk.get("options") or {}).get("ondelete") or "").upper() == ondelete
+                        for fk in reflected_fks
+                    ), f"Missing PostgreSQL FK: {table_name}{local}->{target}{remote} ON DELETE {ondelete}"
     finally:
         engine.dispose()
 
@@ -226,10 +239,10 @@ def test_06_production_guard_rejects_stamped_schema_missing_session_index(monkey
 
 
 def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
-    """Rollback migration 004, then reapply without losing existing tenant auth data.
+    """Rollback migration 005 and 004, then reapply without losing tenant auth data.
 
     Runs only against the validated disposable localhost oneboard_ci database.
-    A downgrade must remove *only* indexes created by 004, never drop or
+    Rollback must remove only the constraints/indexes registered by migrations 005/004, never drop or
     rewrite businesses, users, or revocable sessions.
     """
     from uuid import uuid4
@@ -266,7 +279,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
                 {"id": session_id, "user": user_id, "business": tenant_id},
             )
 
-        alembic("downgrade", "-1")
+        alembic("downgrade", "-2")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             assert revision == "003_app_schema"
@@ -275,7 +288,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
         alembic("upgrade", "head")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "004_schema_indexes"
+            assert revision == "005_auth_foreign_keys"
             assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
                                 {"id": tenant_id}).scalar_one() == 1
             assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
@@ -290,4 +303,50 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
             conn.execute(text("DELETE FROM user_sessions WHERE id = :id"), {"id": session_id})
             conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
             conn.execute(text("DELETE FROM businesses WHERE id = :id"), {"id": tenant_id})
+        engine.dispose()
+
+
+def test_08_production_guard_rejects_missing_auth_foreign_key(monkeypatch):
+    """Even a stamped head with correct indexes cannot omit session ownership FKs."""
+    from sqlalchemy.engine.reflection import Inspector
+    from apps.api.core.database import init_db
+
+    _engine().dispose()
+    original = Inspector.get_foreign_keys
+
+    def hide_session_owner_fk(self, table_name, *args, **kwargs):
+        fks = original(self, table_name, *args, **kwargs)
+        if table_name == "user_sessions":
+            return [
+                fk for fk in fks
+                if fk.get("constrained_columns") != ["user_id"]
+            ]
+        return fks
+
+    monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+    with monkeypatch.context() as patch:
+        patch.setattr(Inspector, "get_foreign_keys", hide_session_owner_fk)
+        with pytest.raises(RuntimeError, match="missing required foreign-key constraints"):
+            init_db()
+    init_db()
+
+
+def test_09_postgres_rejects_orphan_auth_session():
+    """The physical database must reject orphan sessions, not merely the API."""
+    from uuid import uuid4
+    from sqlalchemy.exc import IntegrityError
+
+    engine = _engine()
+    try:
+        with pytest.raises(IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""INSERT INTO user_sessions
+                            (id, user_id, business_id, expires_at, is_revoked)
+                            VALUES (:id, :user, :business,
+                                    CURRENT_TIMESTAMP + INTERVAL '1 day', false)"""),
+                    {"id": str(uuid4()), "user": str(uuid4()),
+                     "business": str(uuid4())},
+                )
+    finally:
         engine.dispose()
