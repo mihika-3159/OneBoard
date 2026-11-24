@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from pathlib import Path
 import logging
@@ -19,8 +19,8 @@ ALLOWED_EXTENSIONS = {".txt", ".md", ".json", ".csv", ".xlsx", ".pdf"}  # openpy
 logger = logging.getLogger(__name__)
 
 class SearchRequest(BaseModel):
-    query: str
-    top_k: int = 5
+    query: str = Field(min_length=1, max_length=2048)
+    top_k: int = Field(default=5, ge=1, le=20)
 
 class ResolveConflictRequest(BaseModel):
     resolution: str
