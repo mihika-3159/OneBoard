@@ -408,3 +408,86 @@ Reproduce in disposable CI: `python -m pytest -v tests/adversarial/test_tenant_m
 **CI triage:** On code head `e5d4c8f703de96c9183ba222a44df0cfd9395c35`, [browser E2E 45342801359](https://github.com/mihika-3159/OneBoard/actions/runs/45342801359), the disposable PostgreSQL job and real Ollama job in [verification 45342801402](https://github.com/mihika-3159/OneBoard/actions/runs/45342801402) succeeded. The API job on the same head reported **363 passed, 33 skipped, 2 failed**: an older CORS configuration-test fixture omitted the new required `PUBLIC_API_ORIGIN`, and a newly authored test incorrectly expected a syntactically valid but unfamiliar custom HTTPS hostname to be categorically rejected. `6f878f0b83da14b2663915b5d9ea337884471785` updates the existing fixture. `ed0677ea159f20c0448ac59f5571e3ccd58258fb` fixes the expectation: an explicit valid custom HTTPS host is acceptable as configuration; only incoming Host mismatch is forbidden, as exercised by the actual request middleware tests. The runtime security checks were **not** disabled to make CI green.
 
 **Execution / remaining gate:** Reproduce locally with `python -m pytest -v tests/unit/test_production_configuration.py tests/adversarial/test_production_cors_origins.py tests/adversarial/test_https_public_origin_guard.py tests/adversarial/test_registration_abuse_control.py`; full `python -m pytest -v`; dedicated disposable PostgreSQL `python -m pytest -v tests/integration/test_postgres_security.py`, and browser E2E. Exact-head verification after the fixture fixes and after this report commit is **not yet established**. Keep Batch 1 open until all applicable workflows finish successfully on the same latest SHA. No production account, customer data, live outbound integration, deployment, spending, merge or PR-ready transition. Residual shared-IP denial and real TLS/reverse-proxy exposure tests remain open; do not claim blanket Level 3 readiness.
+
+
+### 24 November 2026: cross-account login abuse and plaintext API-key migration
+
+**Strict gate at entry:** all three workflows were verified completed/successful on exactly
+`71e63226458fd3e2674348cb1cd4aa8d4a32999a`:
+[verification 45343087752](https://github.com/mihika-3159/OneBoard/actions/runs/45343087752),
+[browser E2E 45343087818](https://github.com/mihika-3159/OneBoard/actions/runs/45343087818),
+[browser inference feasibility 45343087750](https://github.com/mihika-3159/OneBoard/actions/runs/45343087750).
+The isolated browser inference workflow is not an approved production browser-model experience.
+
+**Security blocker 1, cross-account credential stuffing:** prior login throttling keyed by
+source+account and account still allowed a client to rotate email addresses at a single
+source and request unbounded expensive Argon2 checks. Commits
+`b3395a675d4d88dc8111b1cc186f24594cc84314`,
+`51acca9b59183750331e415ff79d27b4d0776092` and
+`91bb5b623afc250b12ece941ffb481f182d98c5d` introduce a separate
+production `LOGIN_SOURCE_MAX_ATTEMPTS` (default 60, configurable 20–200,
+greater than the per-account limit). Every admitted attempt is counted and
+committed via the existing shared PostgreSQL advisory-lock throttle *before*
+account lookup or password verification; successful logins do not reset it.
+Production denies login before hashing if no verified transport client IP is
+available, and does not consume untrusted forwarded-for headers. Existing
+per-account and account-global controls are retained. Tests:
+`tests/adversarial/test_cross_account_login_abuse.py`,
+`tests/unit/test_production_configuration.py`, and PostgreSQL
+`test_13_postgres_shared_login_source_quota_blocks_email_rotation`.
+**Residual:** a busy shared NAT may reach its 60-attempt budget, distributed
+source IPs can evade it, and trusted edge capacity controls still require
+live deployment validation. This is bounded abuse resistance, not a DDoS
+guarantee.
+
+**Security blocker 2, database-held plaintext API keys:** previously
+`users.api_key` contained reusable, raw `obk_` credentials; any database-only
+credential read could directly authenticate as that user.
+`7844b719769885734f8c1aa723f80cf39d3a42b6` adds SHA-256 one-way
+verifiers and bounded canonical key input checks in production lookup;
+`0c586fd71e9b1068c446fbd5160e3ad729c7d559` stores verifiers on
+registration and rotation and returns only the new raw rotated key.
+`99c4b1e1ba33fd358d81a93ec9a69561180cfaa8` adds Alembic revision
+`006_api_key_hashing`: canonical legacy keys are upgraded atomically without
+changing what the client holds, while noncanonical/weak legacy keys block
+deployment without data loss. The irreversible conversion refuses PostgreSQL
+downgrade while hashed keys exist. Development-only legacy demo credentials
+remain local; production does not match them. Commit
+`8da1116b6ed869487d9a7291e038187ca5acc958` rejects production startup
+when a manually stamped revision still contains plaintext/noncanonical API
+keys. Tests include
+`tests/adversarial/test_api_key_hashing.py`, PostgreSQL
+`test_14_postgres_legacy_api_keys_are_hashed_without_losing_users`,
+`test_15_postgres_rejects_weak_legacy_api_key_without_data_loss`,
+and `test_16_postgres_production_guard_rejects_stamped_plaintext_api_key`.
+Operational migration/rollback caveats are documented in
+`docs/PRODUCTION_HTTPS_AND_AUTH.md`. **Residual:** cannot restore pre-006
+plaintext keys by downgrade; a tested backup/restore and client key rotation
+procedure remains unverified. No secret raw keys were committed.
+
+**CI triage on code commit `b5007b89ae93510b41d5bdd0702786bf86fef558`:**
+The API job in [verification 45344268938](https://github.com/mihika-3159/OneBoard/actions/runs/45344268938)
+reported **384 passed, 36 skipped, 1 failed** because a new synthetic
+successful-login test fixture was missing the `name` attribute. The disposable
+PostgreSQL job reported **14 passed, 1 failed** because the migration-005
+recovery test still asserted that `head` was revision 005 after introduction
+of revision 006. These were test fixture / expected-head defects.
+`d9e08496d50c48ce676dd66ea57779e930d6e35e` added the missing
+fixture attribute and `2721080a00f7ed63d248143c10c43034fa928d64`
+updated recovery's expected head to `006_api_key_hashing`.
+No underlying security check was weakened to pass CI.
+
+**Gate:** Verification, PostgreSQL, and browser checks on the final report
+commit remain **unverified** at report creation; passing workflows on
+`71e63226` do not satisfy checks on later commits. Keep Batch 1 open and
+PR #8 draft until every applicable workflow on the *exact final SHA* is
+completed successfully. All issue acceptance criteria remain open until
+separately evidenced. This work used only synthetic CI/dev data. There was
+no deployment, customer data, paid provider, merged PR, or outbound live
+integration.
+
+**Reproduction:** `python -m pytest -v tests/adversarial/test_cross_account_login_abuse.py tests/adversarial/test_api_key_hashing.py tests/adversarial/test_tenant_membership_revocation.py tests/unit/test_production_configuration.py`;
+`python -m pytest -v`; disposable PostgreSQL 16
+`python -m pytest -v tests/integration/test_postgres_security.py` with
+validated local `oneboard_ci` URL; `python -m alembic upgrade head` and
+SQLite downgrade/upgrade CI smoke; all browser workflows.
