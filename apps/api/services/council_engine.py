@@ -87,6 +87,8 @@ class CouncilEngine:
             "overdue_receivables": snapshot["overdue_receivables_amount"],
             "active_paying_customers": snapshot["active_customers_count"],
             "financial_data_status": snapshot["financial_data_status"],
+            "financial_data_issues": snapshot["financial_data_issues"],
+            "financial_data_verified": snapshot["financial_data_verified"],
             "financial_data_updated_at": snapshot["financial_data_updated_at"],
         }
 
@@ -113,8 +115,17 @@ class CouncilEngine:
             f"net burn={financials['net_burn']}; cash={financials['cash_balance']}; "
             f"runway={financials['runway_months'] if financials['runway_months'] is not None else financials['runway_status']}; "
             f"overdue receivables={financials['overdue_receivables']}; "
-            f"data status={financials['financial_data_status']}."
+            f"data status={financials['financial_data_status']}; "
+            f"independently verified={financials['financial_data_verified']}; "
+            f"data quality warnings={len(financials['financial_data_issues'])}."
         )
+        if financials["financial_data_status"] == "needs_review":
+            facts = (
+                "WARNING: FINANCIAL INPUTS FAILED VALIDATION. The numbers "
+                "below are partial/unreconciled and MUST NOT support numeric "
+                "recommendations or a claim of financial health. "
+                "Request correction of the underlying records. " + facts
+            )
         meeting = CouncilMeeting(
             business_id=business_id, title=title, meeting_type=meeting_type,
             topic=topic, advisers_present=selected_advisers, stage="deliberating"
