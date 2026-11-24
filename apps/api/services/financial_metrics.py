@@ -23,7 +23,9 @@ def _money(value: Any, label: str) -> Decimal:
     financial figures used by deterministic advisers.
     """
     try:
-        number = Decimal(str(value if value is not None else 0))
+        if value is None:
+            raise ValueError(label + " is missing")
+        number = Decimal(str(value))
         if not number.is_finite() or number < 0:
             raise ValueError(label + " must be finite and nonnegative")
         return number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
