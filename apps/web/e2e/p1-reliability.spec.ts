@@ -99,3 +99,30 @@ test('integrations screen has empty chat importer and honest sandbox messaging',
   await expect(page.locator('textarea')).toHaveValue('');
   await expect(page.getByText('No sandbox messages recorded. This adapter does not deliver emails.')).toBeVisible();
 });
+
+test('provider API outage produces a visible retryable integrations error', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto('/');
+  await page.getByRole('button', { name: /Register/ }).click();
+  await page.getByPlaceholder('e.g. Alex Founder').fill('P1 Error Tester');
+  await page.getByPlaceholder('e.g. Apex SaaS Labs').fill('P1 Network Failure Test');
+  await page.getByPlaceholder('founder@example.com').fill(`p1-outage-${randomUUID()}@example.test`);
+  await page.locator('input[type=password]').fill('TestPassword123!');
+  await page.getByRole('button', { name: 'Create Workspace & Sign In' }).click();
+  await expect(page.getByText('P1 Error Tester')).toBeVisible();
+
+  await page.route('**/api/integrations', route => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ detail: 'Synthetic service unavailable' }),
+  }));
+  const sidebar = page.getByRole('complementary');
+  await sidebar.locator('nav button').filter({
+    has: page.locator('span').getByText('Integrations', { exact: true }),
+  }).click();
+  await expect(page.getByRole('alert')).toContainText('Synthetic service unavailable');
+  await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
+  await page.unroute('**/api/integrations');
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
