@@ -17,14 +17,31 @@ export interface BusinessProfile {
 export interface DashboardMetrics {
   mrr: number;
   monthly_burn: number;
-  runway_months: number;
+  net_burn: number;
+  runway_months: number | null;
+  runway_status: string;
   cash_balance: number;
   active_customers_count: number;
   overdue_invoices_count: number;
   overdue_receivables_amount: number;
   pending_tasks_count: number;
   goals_count: number;
-  health_score: number;
+  health_score: number | null;
+  financial_data_status: 'recorded' | 'unconfigured' | 'needs_review';
+  financial_data_issues: string[];
+  financial_data_verified: boolean;
+  financial_data_updated_at: string | null;
+  financial_snapshot_generated_at: string;
+  financial_record_ids: {
+    active_customer_ids: string[];
+    expense_ids: string[];
+    invoice_ids: string[];
+  };
+  financial_provenance: {
+    currency: string;
+    independent_ledger_reconciliation: boolean;
+    [key: string]: string | boolean;
+  };
 }
 
 export interface CouncilRole {
