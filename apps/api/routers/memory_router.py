@@ -5,7 +5,7 @@ from typing import Optional
 from pathlib import Path
 import logging
 from apps.api.core.database import get_db
-from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.services.memory_engine import memory_engine
 from apps.api.services.integrations.local_files import local_files_adapter
@@ -58,7 +58,7 @@ def get_memory_conflicts(
 def resolve_conflict(
     conflict_id: str,
     req: ResolveConflictRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     conflict = db.query(MemoryConflict).filter(MemoryConflict.id == conflict_id).first()
@@ -75,7 +75,7 @@ def resolve_conflict(
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     # Normalize both POSIX and Windows path separators; reject nameless files.
