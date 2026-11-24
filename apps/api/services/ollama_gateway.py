@@ -53,7 +53,7 @@ class OllamaGateway:
             "active_profile": self.active_profile,
             "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {}),
             "offline_mode": True,
-            "message": "Local Ollama daemon is offline or not installed. High-fidelity local simulation adapter is active."
+            "message": "Ollama is offline or not installed. Only a clearly labeled deterministic fallback is available; no model has generated an answer."
         }
 
     def get_model_for_task(self, task_type: str = "chat", profile: Optional[str] = None) -> str:
