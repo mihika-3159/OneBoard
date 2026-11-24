@@ -130,17 +130,15 @@ jobs:
         env:
           ONEBOARD_CI_DISPOSABLE_RESTORE: "1"
         run: |
-          # The runner's apt sources may lack PG16 client packages. Reuse the
-          # EXACT official PostgreSQL 16 image already pulled for this CI
-          # service. Bind only disposable /tmp archive files; host networking
-          # reaches the oneboard_ci service on 127.0.0.1:5432.
+          # Runner packages can omit PG16. Use the already-pulled official
+          # postgres:16 service image for both dump and restore. No external
+          # provider is contacted and only the disposable /tmp is mounted.
           mkdir -p "$RUNNER_TEMP/oneboard-pg16-client"
           for command in pg_dump pg_restore; do
-            cat > "$RUNNER_TEMP/oneboard-pg16-client/$command" <<EOF
+            cat > "$RUNNER_TEMP/oneboard-pg16-client/$command" <<'WRAPPER'
           #!/bin/sh
-          exec docker run --rm --pull never --network host \\
-            -v /tmp:/tmp -e PGPASSWORD --entrypoint $command postgres:16 "\\$@"
-          EOF
+          exec docker run --rm --pull never --network host --volume /tmp:/tmp --env PGPASSWORD --entrypoint "$(basename "$0")" postgres:16 "$@"
+          WRAPPER
             chmod 700 "$RUNNER_TEMP/oneboard-pg16-client/$command"
           done
           export PATH="$RUNNER_TEMP/oneboard-pg16-client:$PATH"
