@@ -167,6 +167,8 @@ export interface GatewayStatus {
   latency_ms: number;
   available_models: string[];
   inference_available?: boolean;
+  requested_model?: string;
+  requested_model_installed?: boolean;
   active_profile: string;
   profile_details: Record<string, any>;
   offline_mode?: boolean;
