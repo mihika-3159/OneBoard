@@ -23,7 +23,7 @@ export const IntegrationsTab: React.FC = () => {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvPreview, setCsvPreview] = useState<any | null>(null);
   const [csvBusy, setCsvBusy] = useState(false);
-  const [csvKey, setCsvKey] = useState<string>(crypto.randomUUID().replaceAll('-', '_'));
+  const [csvKey, setCsvKey] = useState<string>(crypto.randomUUID().replace(/-/g, '_'));
 
   // Chat Import State
   const [chatText, setChatText] = useState('');
@@ -89,7 +89,7 @@ export const IntegrationsTab: React.FC = () => {
         setNotice(`${result.rows_imported} user-supplied customers ${result.status}. Not independently CRM-verified.`);
         setCsvPreview(null);
         setCsvFile(null);
-        setCsvKey(crypto.randomUUID().replaceAll('-', '_'));
+        setCsvKey(crypto.randomUUID().replace(/-/g, '_'));
       }
       setError(null);
     } catch (e) {
@@ -138,7 +138,7 @@ export const IntegrationsTab: React.FC = () => {
           onChange={event => {
             setCsvFile(event.target.files?.[0] || null);
             setCsvPreview(null);
-            setCsvKey(crypto.randomUUID().replaceAll('-', '_'));
+            setCsvKey(crypto.randomUUID().replace(/-/g, '_'));
           }}
         />
         <div className="flex gap-2">
