@@ -516,3 +516,71 @@ def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypat
         db.commit()
         db.close()
         engine.dispose()
+
+
+def test_12_postgres_shared_nat_registration_quota_across_workers(monkeypatch):
+    """Shared-source signup allowance is independent of the login guess limit.
+
+    A 10-signup budget (lowered from default 30 to keep CI lightweight)
+    is safely serialized across 14 simultaneous PostgreSQL workers. The
+    unrelated login account key and a different source stay usable.
+    """
+    monkeypatch.setattr(settings, "REGISTRATION_SOURCE_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(settings, "LOGIN_MAX_ATTEMPTS", 5)
+    engine = _engine()
+    signup_source = "registration-source:198.51.100.212"
+    login_source = "source-account:198.51.100.212:person@example.invalid"
+    keys = [hashlib.sha256(key.encode()).hexdigest() for key in
+            [signup_source, login_source]]
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM login_throttle_states WHERE identifier_hash IN (:a, :b)"),
+            {"a": keys[0], "b": keys[1]},
+        )
+
+    workers = 14
+    barrier = Barrier(workers)
+    make_session = sessionmaker(bind=engine, autoflush=False)
+
+    def attempt(_):
+        session = make_session()
+        try:
+            barrier.wait(timeout=20)
+            try:
+                check_login_throttle(signup_source, session)
+                record_failed_login(signup_source, session)
+                return "admitted"
+            except HTTPException as exc:
+                session.rollback()
+                assert exc.status_code == 429
+                return "throttled"
+        finally:
+            session.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(attempt, range(workers)))
+        assert results.count("admitted") == 10, results
+        assert results.count("throttled") == 4, results
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT attempt_count FROM login_throttle_states WHERE identifier_hash = :key"),
+                {"key": keys[0]},
+            ).scalar_one() == 10
+        db = make_session()
+        try:
+            # Source-wide registrations must not exhaust the login key for an
+            # unrelated account sharing the NAT.
+            check_login_throttle(login_source, db)
+            db.rollback()
+            check_login_throttle("registration-source:203.0.113.212", db)
+            db.rollback()
+        finally:
+            db.close()
+    finally:
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM login_throttle_states WHERE identifier_hash IN (:a, :b)"),
+                {"a": keys[0], "b": keys[1]},
+            )
+        engine.dispose()
