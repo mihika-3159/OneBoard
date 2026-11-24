@@ -69,7 +69,7 @@ def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "005_auth_foreign_keys"
+            assert revision == "006_api_key_hashing"
             inspector = inspect(conn)
             tables = set(inspector.get_table_names())
             expected = set(Base.metadata.tables)
@@ -279,7 +279,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
                 {"id": session_id, "user": user_id, "business": tenant_id},
             )
 
-        alembic("downgrade", "-2")
+        alembic("downgrade", "-3")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             assert revision == "003_app_schema"
@@ -288,7 +288,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
         alembic("upgrade", "head")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "005_auth_foreign_keys"
+            assert revision == "006_api_key_hashing"
             assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
                                 {"id": tenant_id}).scalar_one() == 1
             assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
@@ -372,7 +372,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
         )
 
     try:
-        result = run_migration("downgrade", "-1")
+        result = run_migration("downgrade", "-2")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             assert conn.execute(
@@ -450,12 +450,13 @@ def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypat
             Business(id=second_id, name=f"Postgres secondary {suffix}"),
         ])
         db.flush()
+        raw_api_key = auth.generate_api_key()
         user = User(
             id=user_id, email=f"postgres-role-{suffix}@example.invalid",
             name="Synthetic PostgreSQL founder",
             hashed_password="no-real-login",
             role="founder",
-            api_key=auth.generate_api_key(),
+            api_key=auth.hash_api_key(raw_api_key),
             business_id=first_id,
             is_active=True,
         )
@@ -481,7 +482,7 @@ def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypat
         bearer = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
         monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
         assert auth.get_current_user(request(), bearer, db).id == user_id
-        assert auth.get_current_user(request(user.api_key), None, db).id == user_id
+        assert auth.get_current_user(request(raw_api_key), None, db).id == user_id
         assert auth.require_founder_role(current_user=user, db=db).id == user_id
         with pytest.raises(HTTPException) as outside:
             auth.enforce_tenant_boundary(second_id, user, db)
@@ -497,7 +498,7 @@ def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypat
         db.delete(primary)
         db.commit()
         for req, credentials in (
-            (request(), bearer), (request(user.api_key), None),
+            (request(), bearer), (request(raw_api_key), None),
         ):
             with pytest.raises(HTTPException) as revoked:
                 auth.get_current_user(req, credentials, db)
