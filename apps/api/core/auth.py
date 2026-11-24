@@ -457,6 +457,7 @@ def get_current_user(
             )
         if user.business_id != payload.get("biz"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session tenant mismatch.")
+        _require_active_membership(user, db)
         return user
 
     # 2. X-API-Key Header Authentication
@@ -464,6 +465,7 @@ def get_current_user(
     if api_key:
         user = db.query(User).filter(User.api_key == api_key, User.is_active == True).first()
         if user:
+            _require_active_membership(user, db)
             return user
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -491,32 +493,55 @@ def get_current_user(
 
 
 def enforce_tenant_boundary(resource_business_id: str, current_user: User, db: Optional[Session] = None) -> None:
-    """
-    Object-level authorization check.
-    Ensures that current_user is an authorized member/owner of resource_business_id.
+    """Enforce the single active-tenant context used by every API router.
+
+    A secondary BusinessMembership must *not* grant access to resource IDs
+    outside the user's active business. Routers and workflow services always
+    execute in current_user.business_id, not an explicitly switched context.
+    Accepting secondary memberships here caused confused-deputy access.
+    Keep the db parameter for existing call sites, but never use it to widen
+    the authorized tenant.
     """
     if not resource_business_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing resource business context."
         )
+    if resource_business_id != current_user.business_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Access to another business tenant's resources is denied."
+        )
 
-    if current_user.business_id == resource_business_id:
+
+def _require_active_membership(user: User, db: Session) -> None:
+    """Deny revoked production workspace access even for valid signed tokens.
+
+    Registration creates an owner membership. Legacy owner rows are recognized
+    by the business owner_id, but a non-owner without a matching membership is
+    no longer authorized. This applies to API keys as well as signed sessions;
+    disabling a user, deleting their membership, or changing their primary
+    tenant must never leave a working credential to that tenant.
+    """
+    if not settings.ONEBOARD_PRODUCTION_MODE:
         return
-
-    # Secondary check in BusinessMembership table if db session provided
-    if db:
-        membership = db.query(BusinessMembership).filter(
-            BusinessMembership.user_id == current_user.id,
-            BusinessMembership.business_id == resource_business_id
-        ).first()
-        if membership:
-            return
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Forbidden: Access to another business tenant's resources is denied."
-    )
+    business = db.query(Business).filter(Business.id == user.business_id).first()
+    if business is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Workspace access has been revoked."
+        )
+    if business.owner_id == user.id:
+        return
+    membership = db.query(BusinessMembership).filter(
+        BusinessMembership.user_id == user.id,
+        BusinessMembership.business_id == user.business_id
+    ).first()
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Workspace access has been revoked."
+        )
 
 
 def require_founder_role(current_user: User = Depends(get_current_user)) -> User:
