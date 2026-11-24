@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     COOKIE_SECURE: bool = False
     SESSION_EXPIRY_SECONDS: int = 7 * 24 * 3600  # 7 days
     LOGIN_MAX_ATTEMPTS: int = 5
+    # Across different user emails, a single source can otherwise perform
+    # unbounded Argon2 verifications despite per-account throttles. Set a
+    # separate, higher limit to reduce shared-office/school NAT lockouts.
+    LOGIN_SOURCE_MAX_ATTEMPTS: int = 60
     # Registration has its own source-wide budget. A shared office/school NAT
     # should not be restricted to five registrations in five minutes simply
     # because the password-guessing budget is five. Still bounded server-side.
@@ -88,6 +92,10 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("SESSION_EXPIRY_SECONDS must be between 60 seconds and 30 days")
     if not 1 <= config.LOGIN_MAX_ATTEMPTS <= 20:
         errors.append("LOGIN_MAX_ATTEMPTS must be between 1 and 20")
+    if not 20 <= config.LOGIN_SOURCE_MAX_ATTEMPTS <= 200:
+        errors.append("LOGIN_SOURCE_MAX_ATTEMPTS must be between 20 and 200")
+    if config.LOGIN_SOURCE_MAX_ATTEMPTS <= config.LOGIN_MAX_ATTEMPTS:
+        errors.append("LOGIN_SOURCE_MAX_ATTEMPTS must exceed LOGIN_MAX_ATTEMPTS")
     if not 10 <= config.REGISTRATION_SOURCE_MAX_ATTEMPTS <= 100:
         errors.append("REGISTRATION_SOURCE_MAX_ATTEMPTS must be between 10 and 100")
     if config.REGISTRATION_SOURCE_MAX_ATTEMPTS < config.LOGIN_MAX_ATTEMPTS:
