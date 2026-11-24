@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     
     # Centralized Ollama Model Gateway
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    # No remote inference destination is authorized by default.
+    OLLAMA_REMOTE_APPROVED: bool = False
+    OLLAMA_REMOTE_HOST: str = ""
     DEFAULT_MODEL_PROFILE: str = "balanced"  # 'lightweight', 'balanced', 'high_quality'
     
     # Model Profile Presets
@@ -152,5 +155,33 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("CORS_ORIGINS must contain only canonical explicit HTTPS origins")
     if not valid_https_origin(config.PUBLIC_API_ORIGIN):
         errors.append("PUBLIC_API_ORIGIN must be a canonical explicit HTTPS origin")
+    # Remote inference requires a separately approved, exact HTTPS endpoint.
+    # Browser downloads and arbitrary URL-based inference are not supported.
+    try:
+        model_url = urlsplit(config.OLLAMA_BASE_URL)
+        model_host = (model_url.hostname or "").lower()
+        invalid = (not model_host or bool(model_url.username or model_url.password)
+                   or bool(model_url.query or model_url.fragment)
+                   or model_url.path not in ("", "/")
+                   or model_url.scheme not in ("http", "https"))
+        local_model = model_host in ("localhost", "127.0.0.1", "::1")
+        if invalid:
+            errors.append("OLLAMA_BASE_URL must be a credential-free HTTP(S) origin")
+        elif local_model:
+            if config.OLLAMA_REMOTE_APPROVED or config.OLLAMA_REMOTE_HOST:
+                errors.append("Remote Ollama approval cannot be used for loopback")
+        else:
+            try:
+                ip_address(model_host)
+                literal = True
+            except ValueError:
+                literal = False
+            if literal or model_host.endswith((".internal", ".local", ".localhost")) or "." not in model_host:
+                errors.append("Remote Ollama requires a non-internal DNS hostname")
+            if (model_url.scheme != "https" or not config.OLLAMA_REMOTE_APPROVED
+                    or model_host != config.OLLAMA_REMOTE_HOST):
+                errors.append("Remote Ollama requires explicit exact-host approval and HTTPS")
+    except ValueError:
+        errors.append("Invalid OLLAMA_BASE_URL")
     if errors:
         raise RuntimeError("Unsafe OneBoard production configuration: " + "; ".join(errors))

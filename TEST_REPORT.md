@@ -691,3 +691,45 @@ It must separately pass all applicable workflows on **that exact new
 head** before any new engineering priority batch begins. A pending,
 failed, skipped or unavailable check is not green. Do not close any of
 the seven GitHub issue acceptance criteria without full proof.
+
+## 24 November 2026: single-commit external deployment safety gate
+
+Starting PR #8 head: a450074ac175aaa2665aaf404b010b8738a76780.
+All three PR workflows had completed successfully before changes began.
+
+This single, atomic engineering commit adds:
+- Production Ollama URL origin validation. The default server-side loopback
+  model remains permitted; arbitrary public URLs, credentialed URLs and
+  metadata/internal hosts are blocked. Remote HTTPS requires a separately
+  pinned hostname and an explicit owner-controlled approval flag.
+- An opt-in external HTTPS probe: safe GET requests to the exact authorized
+  public API origin with real TLS verification, HSTS, Host and forwarded
+  header checks. It cannot run without TWO operator actions.
+- An opt-in production PostgreSQL streaming backup piped to age encryption
+  without writing plaintext dumps. Requires explicit owner approval,
+  local private directory, verified remote DB TLS, checksum manifest and
+  no overwrite. Ciphertext verification is offline and DOES NOT prove
+  decryptability or successful restoration.
+- An example, not activated, local Caddy HTTPS reverse proxy configuration.
+- Regression tests and an explicit external release no-go checklist.
+- Local .env example updated to remove fictional unused cloud failover keys.
+
+External requirements remain UNVERIFIED and must not be marked complete:
+1. Legal, minor-eligible zero-cost/no-card hosting with persistent PostgreSQL
+   has not been chosen, approved or provisioned.
+2. No owner-approved, free and reliable remote server-side inference provider
+   is deployed; no browser model download is introduced.
+3. No actual public HTTPS certificate, reverse-proxy isolation or ingress
+   scan has been performed.
+4. No production encrypted offsite backup, retention policy or independent
+   real-host restore test has been executed.
+
+No new provider accounts, external services, live customer data, real
+backups, payments or deployments were created. No main branch changes,
+merges or ready-for-review transition. PR #8 stays draft. The experimental
+OVHcloud tests are not provider approval.
+
+Current commit CI status at report creation: PENDING until all applicable
+GitHub Actions are green on the exact final head. Previous-head green checks
+do not verify this new code.
+
