@@ -107,7 +107,7 @@ async def test_timeout_reports_reason_without_success(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_valid_model_response_is_real_inference(monkeypatch):
-    stub_http(monkeypatch, post=StubResponse(data={"message": {"content": "OK"}}))
+    stub_http(monkeypatch, post=StubResponse(data={"message": {"content": "OK"}, "done": True}))
     result = await OllamaGateway().chat_complete(messages=[{"role": "user", "content": "test"}])
     assert result["simulated"] is False
     assert result["content"] == "OK"
