@@ -12,6 +12,7 @@ def production_settings(**overrides):
         "AUTH_SECRET_KEY": "a" * 64,
         "DATABASE_URL": "postgresql://oneboard:placeholder@localhost/oneboard",
         "CORS_ORIGINS": "https://app.example.test",
+        "PUBLIC_API_ORIGIN": "https://api.example.test",
     }
     values.update(overrides)
     return Settings(**values)
@@ -30,6 +31,13 @@ def test_secure_production_configuration_passes():
     {"CORS_ORIGINS": "*"},
     {"CORS_ORIGINS": "http://localhost:5173"},
     {"CORS_ORIGINS": ""},
+    {"PUBLIC_API_ORIGIN": ""},
+    {"PUBLIC_API_ORIGIN": "http://api.example.test"},
+    {"PUBLIC_API_ORIGIN": "https://api.example.test.evil.test"},
+    {"PUBLIC_API_ORIGIN": "https://api.example.test/auth"},
+    {"PUBLIC_API_ORIGIN": "https://username@api.example.test"},
+    {"PUBLIC_API_ORIGIN": "https://api.example.test:invalid"},
+    {"PUBLIC_API_ORIGIN": "*"},
 ])
 def test_unsafe_production_configuration_fails_closed(unsafe):
     with pytest.raises(RuntimeError, match="Unsafe OneBoard production configuration"):
@@ -106,6 +114,9 @@ def test_production_startup_rejects_stamped_but_incomplete_schema(monkeypatch):
     ({"LOGIN_MAX_ATTEMPTS": 21}, "LOGIN_MAX_ATTEMPTS"),
     ({"LOGIN_LOCKOUT_SECONDS": 0}, "LOGIN_LOCKOUT_SECONDS"),
     ({"LOGIN_LOCKOUT_SECONDS": 86401}, "LOGIN_LOCKOUT_SECONDS"),
+    ({"REGISTRATION_SOURCE_MAX_ATTEMPTS": 9}, "REGISTRATION_SOURCE_MAX_ATTEMPTS"),
+    ({"REGISTRATION_SOURCE_MAX_ATTEMPTS": 101}, "REGISTRATION_SOURCE_MAX_ATTEMPTS"),
+    ({"REGISTRATION_SOURCE_MAX_ATTEMPTS": 10, "LOGIN_MAX_ATTEMPTS": 12}, "REGISTRATION_SOURCE_MAX_ATTEMPTS"),
 ])
 def test_production_rejects_dangerous_authentication_limits(override, expected):
     with pytest.raises(RuntimeError, match=expected):
@@ -117,3 +128,39 @@ def test_bounded_production_authentication_limits_are_accepted():
         SESSION_EXPIRY_SECONDS=3600, LOGIN_MAX_ATTEMPTS=5,
         LOGIN_LOCKOUT_SECONDS=300,
     ))
+
+
+
+def test_shared_network_signup_budget_is_separate_from_password_guess_budget(monkeypatch):
+    """A five-failure login lockout must not disable all school/office signups."""
+    from apps.api.core import auth
+
+    monkeypatch.setattr(auth, "_LOGIN_ATTEMPTS", {})
+    monkeypatch.setattr(auth.settings, "ONEBOARD_PRODUCTION_MODE", False)
+    monkeypatch.setattr(auth.settings, "LOGIN_MAX_ATTEMPTS", 5)
+    monkeypatch.setattr(auth.settings, "REGISTRATION_SOURCE_MAX_ATTEMPTS", 30)
+    shared_source = "registration-source:198.51.100.7"
+    login_source = "source-account:198.51.100.7:founder@example.invalid"
+
+    for _ in range(5):
+        auth.check_login_throttle(shared_source)
+        auth.record_failed_login(shared_source)
+        auth.check_login_throttle(login_source)
+        auth.record_failed_login(login_source)
+
+    # The login key has exhausted its own password-guessing allowance.
+    with pytest.raises(Exception) as throttled:
+        auth.check_login_throttle(login_source)
+    assert throttled.value.status_code == 429
+
+    # Other users can still register behind the same NAT.
+    auth.check_login_throttle(shared_source)
+    for _ in range(25):
+        auth.check_login_throttle(shared_source)
+        auth.record_failed_login(shared_source)
+
+    with pytest.raises(Exception) as throttled:
+        auth.check_login_throttle(shared_source)
+    assert throttled.value.status_code == 429
+    # Different source is unaffected.
+    auth.check_login_throttle("registration-source:203.0.113.8")
