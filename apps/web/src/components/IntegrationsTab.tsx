@@ -20,6 +20,10 @@ export const IntegrationsTab: React.FC = () => {
   const [isSyncing, setIsSyncing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvPreview, setCsvPreview] = useState<any | null>(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [csvKey, setCsvKey] = useState<string>(crypto.randomUUID().replaceAll('-', '_'));
 
   // Chat Import State
   const [chatText, setChatText] = useState('');
@@ -68,6 +72,33 @@ export const IntegrationsTab: React.FC = () => {
     }
   };
 
+  const handleCustomerCSV = async (dryRun: boolean) => {
+    if (!csvFile || (!dryRun && !csvPreview)) return;
+    setCsvBusy(true);
+    try {
+      if (csvFile.size > 1024 * 1024) {
+        throw new Error('CSV exceeds the 1 MiB limit');
+      }
+      const result = await api.importLocalCustomers(
+        await csvFile.text(), csvKey, csvFile.name, dryRun
+      );
+      if (dryRun) {
+        setCsvPreview(result);
+        setNotice(`Validated ${result.rows_validated} customer rows. Nothing has been imported yet.`);
+      } else {
+        setNotice(`${result.rows_imported} user-supplied customers ${result.status}. Not independently CRM-verified.`);
+        setCsvPreview(null);
+        setCsvFile(null);
+        setCsvKey(crypto.randomUUID().replaceAll('-', '_'));
+      }
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'CSV validation or import failed');
+    } finally {
+      setCsvBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Banner */}
@@ -94,6 +125,38 @@ export const IntegrationsTab: React.FC = () => {
         </div>
       )}
       {notice && <div role="status" className="p-3 border border-amber-500/30 rounded-xl text-amber-200 text-xs">{notice}</div>}
+      <section className="p-5 rounded-2xl glass-panel space-y-3" aria-label="Import customer CSV">
+        <h2 className="text-sm font-bold text-white">Import user-supplied customer CSV</h2>
+        <p className="text-xs text-slate-400">
+          Actual tenant-owned import, not a CRM connection. Required columns: name,mrr.
+          Optional: company,email,status. Maximum 250 rows or 1 MiB. Validate first,
+          then explicitly confirm the write. No external provider is contacted.
+        </p>
+        <input
+          type="file" accept=".csv,text/csv" aria-label="Customer CSV file"
+          className="text-xs text-slate-300"
+          onChange={event => {
+            setCsvFile(event.target.files?.[0] || null);
+            setCsvPreview(null);
+            setCsvKey(crypto.randomUUID().replaceAll('-', '_'));
+          }}
+        />
+        <div className="flex gap-2">
+          <button
+            disabled={!csvFile || csvBusy}
+            onClick={() => void handleCustomerCSV(true)}
+            className="rounded-lg bg-indigo-600 px-3 py-2 text-xs text-white disabled:opacity-50"
+          >Validate CSV</button>
+          <button
+            disabled={!csvPreview || csvBusy}
+            onClick={() => void handleCustomerCSV(false)}
+            className="rounded-lg bg-slate-700 px-3 py-2 text-xs text-white disabled:opacity-50"
+          >Confirm Import</button>
+        </div>
+        {csvPreview && <p role="status" className="text-xs text-emerald-300">
+          {csvPreview.rows_validated} rows validated. No records written yet.
+        </p>}
+      </section>
       {/* Connectors Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
         {integrations.map((conn) => (

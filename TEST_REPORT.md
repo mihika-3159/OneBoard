@@ -733,3 +733,17 @@ Current commit CI status at report creation: PENDING until all applicable
 GitHub Actions are green on the exact final head. Previous-head green checks
 do not verify this new code.
 
+## 24 November 2026: five-area durability and indexed-search engineering batch
+
+Prior PR #8 head f80592767143d935eb518452e64271b02ce1ff2b: verification, browser E2E and isolated browser feasibility workflows all completed success. Work started only after that strict gate was green.
+
+Prepared related production code and adversarial tests for: (1) operator-approved encrypted restore into a scratch localhost database, (2) persisted tenant alert snapshots and resolved history with PostgreSQL advisory transaction locks, (3) a real, founder-confirmed and idempotent user-supplied CSV customer import with strict validation but no live provider calls, (4) a durable pre-dispatch workflow execution checkpoint and no-replay recovery, and (5) PostgreSQL GIN full-text search across older document chunks plus tenant/date indexing.
+
+Files include migration 008_operational_durability, production models, services and routes, UI import, synthetic tests and docs/RELIABILITY_BATCH_5.md. Existing PostgreSQL tests now expect schema head 008 and include tests of indexed retrieval beyond 1,000 chunks and concurrent import. The synthetic PostgreSQL dump/restore script now expects the new migration head.
+
+All new operations are non-deploying source changes. No real encrypted backup, external provider enrollment, offsite store, model access, customer import, money, outbound send or production restore occurred. The new restore drill is not executed against any real database.
+
+CI STATUS AT CODE AUTHORING: pending on the exact new head until GitHub Actions finishes. Do not advance beyond this batch until every workflow is green; repair failures with focused follow-on commits without bypassing tests.
+
+UNRESOLVED EXTERNAL BLOCKERS: actual eligible no-card zero-dollar hosting and storage, real encrypted offsite backup retention and independent restore on approved infrastructure, scheduling during free-tier sleep, live provider OAuth/scopes and real sync, genuine third-party exactly-once effects, and measured deployed large-corpus semantic retrieval.
+

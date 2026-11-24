@@ -454,6 +454,20 @@ export const api = {
     return request<any[]>('/integrations');
   },
 
+  importLocalCustomers: async (
+    csvText: string, idempotencyKey: string, sourceName: string, dryRun = true
+  ): Promise<any> => {
+    return request<any>('/integrations/local/customers/import', {
+      method: 'POST',
+      body: JSON.stringify({
+        csv_text: csvText,
+        idempotency_key: idempotencyKey,
+        source_name: sourceName,
+        dry_run: dryRun,
+      }),
+    });
+  },
+
   syncIntegration: async (integrationId: string): Promise<any> => {
     return request<any>(`/integrations/${integrationId}/sync`, {
       method: 'POST',

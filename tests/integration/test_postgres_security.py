@@ -28,6 +28,7 @@ import apps.api.models.agent_council
 import apps.api.models.memory
 import apps.api.models.workflow
 import apps.api.models.integrations
+import apps.api.models.operations
 
 URL = os.getenv("ONEBOARD_TEST_POSTGRES_URL")
 pytestmark = pytest.mark.skipif(not URL, reason="Requires dedicated disposable PostgreSQL CI URL")
@@ -69,7 +70,7 @@ def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "007_workflow_idempotency"
+            assert revision == "008_operational_durability"
             inspector = inspect(conn)
             tables = set(inspector.get_table_names())
             expected = set(Base.metadata.tables)
@@ -279,7 +280,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
                 {"id": session_id, "user": user_id, "business": tenant_id},
             )
 
-        alembic("downgrade", "-4")
+        alembic("downgrade", "-5")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             assert revision == "003_app_schema"
@@ -288,7 +289,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
         alembic("upgrade", "head")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "007_workflow_idempotency"
+            assert revision == "008_operational_durability"
             assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
                                 {"id": tenant_id}).scalar_one() == 1
             assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
@@ -372,7 +373,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
         )
 
     try:
-        result = run_migration("downgrade", "-3")
+        result = run_migration("downgrade", "-4")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             assert conn.execute(
@@ -410,7 +411,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
     with _engine().connect() as conn:
         assert conn.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "007_workflow_idempotency"
+        ).scalar_one() == "008_operational_durability"
 
 
 def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypatch):
@@ -669,7 +670,7 @@ def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch
     try:
         # A disposable, isolated CI schema without active hashed keys can
         # safely return to 005 for a representative legacy upgrade.
-        result = migrate("downgrade", "-2")
+        result = migrate("downgrade", "-3")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             assert conn.execute(
@@ -705,7 +706,7 @@ def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch
             assert stored != old_raw
             assert conn.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "007_workflow_idempotency"
+            ).scalar_one() == "008_operational_durability"
 
         monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
         db = sessionmaker(bind=engine)()
@@ -756,7 +757,7 @@ def test_15_postgres_rejects_weak_legacy_api_key_without_data_loss():
         )
 
     try:
-        result = migrate("downgrade", "-2")
+        result = migrate("downgrade", "-3")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             conn.execute(
@@ -805,7 +806,7 @@ def test_16_postgres_production_guard_rejects_stamped_plaintext_api_key(monkeypa
         with engine.begin() as conn:
             assert conn.execute(text(
                 "SELECT version_num FROM alembic_version"
-            )).scalar_one() == "007_workflow_idempotency"
+            )).scalar_one() == "008_operational_durability"
             conn.execute(
                 text("INSERT INTO businesses (id,name) VALUES (:id,'Tampered synthetic tenant')"),
                 {"id": business_id},
@@ -995,5 +996,97 @@ def test_18_postgres_concurrent_approval_claim_prevents_duplicate_resume():
                 WorkflowDefinition.business_id == biz_id
             ).delete()
             db.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": biz_id})
+            db.commit()
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_19_postgres_indexed_memory_finds_old_relevant_chunk(monkeypatch):
+    """GIN full-text retrieval must reach old data beyond recent 1,000 chunks."""
+    from uuid import uuid4
+    from unittest.mock import AsyncMock
+    from apps.api.models.memory import MemoryDocument, MemoryChunk
+    from apps.api.services.memory_engine import memory_engine
+    import apps.api.services.memory_engine as memory_module
+
+    engine = _engine()
+    tenant = str(uuid4())
+    factory = sessionmaker(bind=engine, autoflush=False)
+    try:
+        with factory() as db:
+            doc = MemoryDocument(
+                business_id=tenant, title="Old synthetic archive",
+                content_hash="d" * 64, file_type="txt",
+            )
+            db.add(doc)
+            db.flush()
+            doc_id = doc.id
+            db.add(MemoryChunk(
+                business_id=tenant, document_id=doc_id,
+                chunk_index=0, content="uniquehistoricalneedle synthetic legacy key",
+            ))
+            db.commit()
+        # Later arrivals are intentionally newer than the matching result.
+        with factory() as db:
+            db.add_all([
+                MemoryChunk(
+                    business_id=tenant, document_id=doc_id,
+                    chunk_index=i + 1, content=f"Unrelated routine note {i}",
+                )
+                for i in range(1010)
+            ])
+            db.commit()
+            monkeypatch.setattr(
+                memory_module.ollama_gateway, "generate_embedding",
+                AsyncMock(return_value=[0.1, 0.2]),
+            )
+            rows = await memory_engine.search_semantic_memory(
+                db, tenant, "uniquehistoricalneedle", top_k=5
+            )
+            assert rows and "uniquehistoricalneedle" in rows[0]["content"]
+            assert rows[0]["search_strategy"] == "postgresql_indexed_fulltext"
+            assert rows[0]["candidate_limit_applied"] is False
+            index_names = {x["name"] for x in inspect(engine).get_indexes("memory_chunks")}
+            assert "ix_memory_chunks_fts_simple" in index_names
+    finally:
+        with factory() as db:
+            db.query(MemoryChunk).filter(MemoryChunk.business_id == tenant).delete()
+            db.query(MemoryDocument).filter(MemoryDocument.business_id == tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_20_postgres_concurrent_customer_import_is_idempotent():
+    """Concurrent workers share a durable key and cannot duplicate rows."""
+    from uuid import uuid4
+    from apps.api.models.entities import Customer
+    from apps.api.models.operations import LocalCustomerImport
+    from apps.api.services.customer_csv_import import import_customer_csv
+
+    engine = _engine()
+    factory = sessionmaker(bind=engine, autoflush=False)
+    tenant = str(uuid4())
+    text_data = "name,mrr,status\nSynthetic A,12.25,active\nSynthetic B,10,churned\n"
+    barrier = Barrier(2)
+
+    def apply(_):
+        with factory() as db:
+            barrier.wait(timeout=20)
+            return import_customer_csv(
+                db, tenant, text_data, "concurrent_import_0001",
+                source_name="Synthetic CSV", dry_run=False,
+            )["status"]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(apply, range(2)))
+        assert sorted(statuses) == ["already_imported", "imported"]
+        with factory() as db:
+            assert db.query(Customer).filter_by(business_id=tenant).count() == 2
+            assert db.query(LocalCustomerImport).filter_by(business_id=tenant).count() == 1
+    finally:
+        with factory() as db:
+            db.query(LocalCustomerImport).filter_by(business_id=tenant).delete()
+            db.query(Customer).filter_by(business_id=tenant).delete()
             db.commit()
         engine.dispose()

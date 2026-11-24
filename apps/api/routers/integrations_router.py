@@ -8,6 +8,7 @@ from apps.api.services.seed_data import DEMO_BUSINESS_ID
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.integrations import IntegrationAccount
+from apps.api.services.customer_csv_import import import_customer_csv
 from apps.api.services.integrations.demo_adapters import (
     demo_crm, demo_finance, demo_email, demo_calendar,
     github_adapter, notion_adapter, chat_import_adapter
@@ -29,6 +30,31 @@ def _require_fixture_tenant(current_user: User) -> None:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="The demonstration adapter is not available in this workspace.",
         )
+
+
+class CustomerCSVImportRequest(BaseModel):
+    csv_text: str = Field(min_length=1, max_length=1_048_576)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    source_name: str = Field(default="User CSV", min_length=1, max_length=100)
+    dry_run: bool = True
+
+
+@router.post("/local/customers/import")
+def import_local_customers(
+    req: CustomerCSVImportRequest,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db),
+):
+    """Actual tenant-scoped CSV import; not a live CRM OAuth connection."""
+    try:
+        return import_customer_csv(
+            db, current_user.business_id, req.csv_text, req.idempotency_key,
+            source_name=req.source_name, dry_run=req.dry_run
+        )
+    except ValueError as exc:
+        db.rollback()
+        code = 409 if "already used" in str(exc) else 422
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
 
 
 class ChatImportRequest(BaseModel):

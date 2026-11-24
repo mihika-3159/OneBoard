@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Boolean, Integer
+from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Boolean, Integer, Index
 from datetime import datetime
 import uuid
 from apps.api.core.database import Base
@@ -22,6 +22,9 @@ class MemoryDocument(Base):
 
 class MemoryChunk(Base):
     __tablename__ = "memory_chunks"
+    __table_args__ = (
+        Index("ix_memory_chunks_business_created", "business_id", "created_at"),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     document_id = Column(String(36), nullable=False)

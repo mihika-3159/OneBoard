@@ -50,6 +50,7 @@ FOUNDER_MUTATIONS = {
     "/api/memory/conflicts/{conflict_id}/resolve",
     "/api/memory/upload",
     "/api/integrations/{integration_id}/sync",
+    "/api/integrations/local/customers/import",
     "/api/accountability/verify-outcome",
 }
 

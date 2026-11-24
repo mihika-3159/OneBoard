@@ -1,6 +1,8 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import logging
+import hashlib
+from sqlalchemy import text
 from math import isfinite
 from apps.api.core.config import settings
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -9,6 +11,7 @@ from apps.api.models.entities import Commitment, Invoice
 from apps.api.models.memory import MemoryConflict
 from apps.api.models.business import Business
 from apps.api.models.workflow import AuditLog
+from apps.api.models.operations import AlertSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,15 @@ class SchedulerService:
                 self.active_alerts_by_business.pop(business_id, None)
             for biz in businesses:
                 b_id = biz.id
+                # PostgreSQL serializes this tenant's alert update across
+                # independent schedulers and HTTP workers. The transaction
+                # releases the advisory lock at commit, not process exit.
+                if db.get_bind().dialect.name == "postgresql":
+                    lock_key = int.from_bytes(
+                        hashlib.sha256(("oneboard-alerts:" + b_id).encode()).digest()[:8],
+                        "big", signed=True,
+                    )
+                    db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
                 alerts = []
 
                 # 1. Check commitments for this specific business
@@ -138,11 +150,65 @@ class SchedulerService:
                         "created_at": now.isoformat()
                     })
 
-                self.active_alerts_by_business[b_id] = alerts
+                self._persist_alerts(db, b_id, alerts, now)
+                # Keep only an optional process-local presentation cache.
+                # Durable AlertSnapshot rows are the source of alert history.
+                self.active_alerts_by_business[b_id] = list(alerts)
+                db.commit()
 
         except Exception:
             logger.exception("Error in proactive check run")
             raise  # Do not silently return stale cached alerts as current.
+        finally:
+            db.close()
+
+    @staticmethod
+    def _persist_alerts(db, business_id: str, alerts: List[Dict[str, Any]], now: datetime) -> None:
+        """Upsert stable alert keys, resolve missing ones, never delete history."""
+        existing = {
+            row.alert_key: row
+            for row in db.query(AlertSnapshot).filter(
+                AlertSnapshot.business_id == business_id
+            ).all()
+        }
+        seen = set()
+        for payload in alerts:
+            key = payload["id"]
+            seen.add(key)
+            row = existing.get(key)
+            if row is None:
+                row = AlertSnapshot(
+                    business_id=business_id, alert_key=key,
+                    payload=dict(payload), is_active=True,
+                    first_seen_at=now, last_seen_at=now,
+                )
+                db.add(row)
+            else:
+                row.payload = dict(payload)
+                row.is_active = True
+                row.last_seen_at = now
+                row.resolved_at = None
+        for key, row in existing.items():
+            if row.is_active and key not in seen:
+                row.is_active = False
+                row.resolved_at = now
+
+    def get_alert_history(self, business_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Read persistently stored alerts without any scheduler-local cache."""
+        if not business_id or not 1 <= limit <= 100:
+            raise ValueError("Tenant and history limit 1-100 required")
+        db = SessionLocal()
+        try:
+            entries = db.query(AlertSnapshot).filter(
+                AlertSnapshot.business_id == business_id
+            ).order_by(AlertSnapshot.last_seen_at.desc()).limit(limit).all()
+            return [{
+                **dict(row.payload or {}),
+                "is_active": bool(row.is_active),
+                "first_seen_at": row.first_seen_at.isoformat(),
+                "last_seen_at": row.last_seen_at.isoformat(),
+                "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+            } for row in entries]
         finally:
             db.close()
 

@@ -336,9 +336,23 @@ class WorkflowEngine:
             status="running",
             trigger_source=trigger_source,
             step_results={},
+            verification_details={
+                "verified": False,
+                "dry_run": dry_run,
+                "node_order": [node["id"] for node in ordered_nodes],
+                "definition_digest": self._definition_digest(wf),
+                "reason": "Execution started, outcome not yet verified",
+            },
         )
         db.add(run)
         db.flush()
+        # Persist this checkpoint BEFORE any tool is invoked. If the API
+        # worker crashes after returning control to an external adapter,
+        # later workers can see 'running' and quarantine it for review.
+        # A retry with the same tenant/key returns this existing run and
+        # never blindly dispatches the steps a second time.
+        db.commit()
+        db.refresh(run)
         return self._execute_steps(db, run, wf, ordered_nodes, 0, {}, dry_run=dry_run)
 
     def reconcile_interrupted_runs(

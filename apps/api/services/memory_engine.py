@@ -2,6 +2,7 @@ import math
 import hashlib
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from apps.api.models.memory import MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict
 from apps.api.models.entities import Product, Customer, Invoice
 from apps.api.services.ollama_gateway import ollama_gateway
@@ -47,18 +48,42 @@ class MemoryEngine:
             raise ValueError("Search query length must be between 1 and 2048")
         if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 50:
             raise ValueError("top_k must be between 1 and 50 for internal callers")
-        max_candidates = 1000
-        entries = (
+        # PostgreSQL uses a real GIN-indexed lexical search across the
+        # ENTIRE tenant corpus, including documents older than 1,000 chunks.
+        # SQLite development falls back to a bounded recent window.
+        indexed = db.get_bind().dialect.name == "postgresql"
+        max_candidates = 200 if indexed else 1000
+        scope = (
             db.query(MemoryChunk, MemoryDocument.title)
             .join(MemoryDocument, MemoryChunk.document_id == MemoryDocument.id)
             .filter(
                 MemoryChunk.business_id == business_id,
                 MemoryDocument.business_id == business_id,
             )
-            .order_by(MemoryChunk.created_at.desc(), MemoryChunk.id.desc())
-            .limit(max_candidates + 1)
-            .all()
         )
+        if indexed:
+            vector = func.to_tsvector("simple", MemoryChunk.content)
+            tsquery = func.plainto_tsquery("simple", query)
+            ranked = scope.filter(vector.op("@@")(tsquery)).order_by(
+                func.ts_rank_cd(vector, tsquery).desc(),
+                MemoryChunk.created_at.desc(),
+                MemoryChunk.id.desc(),
+            )
+            entries = ranked.limit(max_candidates + 1).all()
+            strategy = "postgresql_indexed_fulltext"
+            # No lexical matches: preserve bounded semantic/keyword fallback
+            # rather than silently returning empty for all synonym queries.
+            if not entries:
+                entries = scope.order_by(
+                    MemoryChunk.created_at.desc(), MemoryChunk.id.desc()
+                ).limit(1001).all()
+                max_candidates = 1000
+                strategy = "recent_window_semantic_fallback"
+        else:
+            entries = scope.order_by(
+                MemoryChunk.created_at.desc(), MemoryChunk.id.desc()
+            ).limit(max_candidates + 1).all()
+            strategy = "recent_window_dev"
         limited = len(entries) > max_candidates
         entries = entries[:max_candidates]
         if not entries:
@@ -79,6 +104,7 @@ class MemoryEngine:
                 "content": chunk.content,
                 "score": round(total_score, 4),
                 "score_kind": "local_similarity_estimate_not_verified_relevance",
+                "search_strategy": strategy,
                 "candidate_limit_applied": limited,
                 "candidate_count": len(entries),
                 "metadata": chunk.metadata_tags or {},

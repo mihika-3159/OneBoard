@@ -36,6 +36,7 @@ def init_db():
     import apps.api.models.memory
     import apps.api.models.workflow
     import apps.api.models.integrations
+    import apps.api.models.operations
 
     if settings.ONEBOARD_PRODUCTION_MODE:
         # Never create or silently repair an unversioned production schema.

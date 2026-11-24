@@ -21,6 +21,7 @@ import apps.api.models.agent_council
 import apps.api.models.memory
 import apps.api.models.workflow
 import apps.api.models.integrations
+import apps.api.models.operations
 
 config = context.config
 
