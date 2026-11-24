@@ -4,8 +4,6 @@ The high-impact DB mutation endpoints must additionally require the central
 founder privilege dependency. This checks the actual FastAPI dependency graph,
 not source-code substrings, so nested dependencies are included.
 """
-from fastapi.routing import APIRoute
-
 from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.main import app
 
@@ -39,10 +37,14 @@ def _dependency_calls(dependant):
 
 def test_all_nonpublic_business_routes_require_current_authenticated_user():
     observed = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute) or not route.path.startswith("/api/"):
+    for route in app.router.routes:
+        path = getattr(route, "path", "")
+        if not path.startswith("/api/"):
             continue
-        for method in route.methods - {"HEAD", "OPTIONS"}:
+        assert getattr(route, "dependant", None) is not None, (
+            f"API route {path} has no inspectable authentication dependencies"
+        )
+        for method in (getattr(route, "methods", set()) or set()) - {"HEAD", "OPTIONS"}:
             identity = (method, route.path)
             observed.add(identity)
             if identity in PUBLIC_API:
@@ -56,12 +58,15 @@ def test_all_nonpublic_business_routes_require_current_authenticated_user():
 
 def test_all_privileged_mutations_have_central_founder_role_guard():
     observed = set()
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
+    for route in app.router.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if "POST" not in methods or path not in FOUNDER_MUTATIONS:
             continue
-        if "POST" not in route.methods or route.path not in FOUNDER_MUTATIONS:
-            continue
-        observed.add(route.path)
+        assert getattr(route, "dependant", None) is not None, (
+            f"API mutation {path} has no inspectable authentication dependencies"
+        )
+        observed.add(path)
         calls = set(_dependency_calls(route.dependant))
         assert require_founder_role in calls, (
             f"POST {route.path} must check live founder privileges"
