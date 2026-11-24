@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 import time
 from apps.api.core.database import get_db
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.config import settings
 from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.models.business import User, Business
@@ -112,6 +113,8 @@ async def handle_founder_command(
 ):
     """Founder Command Center: Direct conversational interaction backed by structured business facts."""
     biz_id = current_user.business_id
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, biz_id, "ai_command")
     biz = db.query(Business).filter(Business.id == biz_id).first()
     commitments = db.query(Commitment).filter(Commitment.business_id == biz_id).all()
     tasks = db.query(Task).filter(Task.business_id == biz_id, Task.status != "done").all()

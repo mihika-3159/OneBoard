@@ -747,3 +747,52 @@ CI STATUS AT CODE AUTHORING: pending on the exact new head until GitHub Actions 
 
 UNRESOLVED EXTERNAL BLOCKERS: actual eligible no-card zero-dollar hosting and storage, real encrypted offsite backup retention and independent restore on approved infrastructure, scheduling during free-tier sleep, live provider OAuth/scopes and real sync, genuine third-party exactly-once effects, and measured deployed large-corpus semantic retrieval.
 
+
+## 24 November 2026: financial evidence, tenant quotas, Windows and acceptance
+
+**Strict start gate:** latest PR #8 SHA
+65a491cbfc0780dc28ba5ec29c28c3252bcb23f3 had all three applicable
+GitHub Actions workflows completed/successful before this work.
+
+**Financial evidence**: introduced founder-only, read-only CSV comparison
+for tenant invoices, expenses and cash, with strict date, duplicate,
+currency, finite amount and size checks. Outputs identify mismatches,
+include SHA-256 source identity, never touch invoice state and explicitly
+say independently_verified=false. A user-uploaded statement is NOT an
+authenticated banking or audit source. Source verification against a
+trusted external provider remains unproven.
+
+**Multi-tenant resource limits**: persistent per-tenant/per-resource
+sliding window budgets (fixed windows) with PostgreSQL transaction
+advisory locking on selected expensive production endpoints. Budget
+limits: 30 AI commands/min, 120 memory searches/min, 6 imports/5min,
+20 reconciliation checks/min. HTTP 429 includes Retry-After. New
+disposable PostgreSQL concurrent regression checks 12 competing
+sessions, 4 accepted/8 rejected when set to a synthetic 4/min cap,
+and another tenant accepted. This is not a cluster-global CPU/GPU cap,
+DDoS mitigation or measured live hosting performance.
+
+**Clean Windows**: new windows-latest GitHub Actions workflow performs
+fresh Python/Node install, frontend build, Alembic migration, finance
+and quota tests, and a real subprocess localhost Uvicorn startup with
+two synthetic account registrations, business isolation and explicit
+financial unverified output. It produces an acceptance receipt, destroys
+the child process and never reaches a paid provider.
+
+**Independent acceptance**: new acceptance-evidence workflow creates a
+machine-readable commit-tagged matrix and explicitly refuses to certify
+Level 3 on self-authored CI. An independent assessor has NOT reviewed
+this code or an owner-approved deployed instance. Formal external
+review, financial authentication, real load testing, TLS, offsite
+restore, eligible hosting and provider validation remain NO-GO items.
+
+**Migration**: added Alembic 009_resource_budgets with a safe journal
+to avoid destroying model-bootstrap-created objects, updated head
+checks, downgrade roundtrips and disposable PostgreSQL restore
+expected revision. All existing verification tests remain enabled.
+
+**CI at authoring time**: new exact-head checks PENDING; never infer
+success from the old green head. Keep PR #8 draft, unmerged and all
+partially evidenced issue acceptance criteria open. No real customer
+data, payment, service signup, external provider action or deployment.
+

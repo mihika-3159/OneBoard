@@ -70,7 +70,7 @@ def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "008_operational_durability"
+            assert revision == "009_resource_budgets"
             inspector = inspect(conn)
             tables = set(inspector.get_table_names())
             expected = set(Base.metadata.tables)
@@ -280,7 +280,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
                 {"id": session_id, "user": user_id, "business": tenant_id},
             )
 
-        alembic("downgrade", "-5")
+        alembic("downgrade", "-6")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             assert revision == "003_app_schema"
@@ -289,7 +289,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
         alembic("upgrade", "head")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "008_operational_durability"
+            assert revision == "009_resource_budgets"
             assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
                                 {"id": tenant_id}).scalar_one() == 1
             assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
@@ -373,7 +373,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
         )
 
     try:
-        result = run_migration("downgrade", "-4")
+        result = run_migration("downgrade", "-5")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             assert conn.execute(
@@ -411,7 +411,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
     with _engine().connect() as conn:
         assert conn.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "008_operational_durability"
+        ).scalar_one() == "009_resource_budgets"
 
 
 def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypatch):
@@ -670,7 +670,7 @@ def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch
     try:
         # A disposable, isolated CI schema without active hashed keys can
         # safely return to 005 for a representative legacy upgrade.
-        result = migrate("downgrade", "-3")
+        result = migrate("downgrade", "-4")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             assert conn.execute(
@@ -706,7 +706,7 @@ def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch
             assert stored != old_raw
             assert conn.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "008_operational_durability"
+            ).scalar_one() == "009_resource_budgets"
 
         monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
         db = sessionmaker(bind=engine)()
@@ -757,7 +757,7 @@ def test_15_postgres_rejects_weak_legacy_api_key_without_data_loss():
         )
 
     try:
-        result = migrate("downgrade", "-3")
+        result = migrate("downgrade", "-4")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             conn.execute(
@@ -806,7 +806,7 @@ def test_16_postgres_production_guard_rejects_stamped_plaintext_api_key(monkeypa
         with engine.begin() as conn:
             assert conn.execute(text(
                 "SELECT version_num FROM alembic_version"
-            )).scalar_one() == "008_operational_durability"
+            )).scalar_one() == "009_resource_budgets"
             conn.execute(
                 text("INSERT INTO businesses (id,name) VALUES (:id,'Tampered synthetic tenant')"),
                 {"id": business_id},
@@ -1088,5 +1088,51 @@ def test_20_postgres_concurrent_customer_import_is_idempotent():
         with factory() as db:
             db.query(LocalCustomerImport).filter_by(business_id=tenant).delete()
             db.query(Customer).filter_by(business_id=tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_21_concurrent_tenant_resource_budget_is_cross_worker_and_isolated(monkeypatch):
+    """12 overlapping workers: 4 accepted, 8 HTTP 429; other tenant unaffected."""
+    from uuid import uuid4
+    from apps.api.services import tenant_resource_budget as budgets
+    from apps.api.models.operations import TenantResourceWindow
+
+    engine = _engine()
+    factory = sessionmaker(bind=engine, autoflush=False)
+    tenant_a, tenant_b = str(uuid4()), str(uuid4())
+    policy = "ai_command"
+    monkeypatch.setitem(budgets.POLICIES, policy, (4, 60))
+    barrier = Barrier(12)
+
+    def attempt(_):
+        with factory() as db:
+            barrier.wait(timeout=30)
+            try:
+                budgets.consume_tenant_budget(db, tenant_a, policy, now=2000000)
+                return "accepted"
+            except HTTPException as exc:
+                assert exc.status_code == 429
+                assert int(exc.headers["Retry-After"]) > 0
+                return "limited"
+
+    try:
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            answers = list(pool.map(attempt, range(12)))
+        assert answers.count("accepted") == 4
+        assert answers.count("limited") == 8
+        with factory() as db:
+            one = db.query(TenantResourceWindow).filter(
+                TenantResourceWindow.business_id == tenant_a,
+                TenantResourceWindow.resource == policy,
+            ).one()
+            assert one.attempt_count == 4
+            other = budgets.consume_tenant_budget(db, tenant_b, policy, now=2000000)
+            assert other["remaining"] == 3
+    finally:
+        with factory() as db:
+            db.query(TenantResourceWindow).filter(
+                TenantResourceWindow.business_id.in_([tenant_a, tenant_b])
+            ).delete(synchronize_session=False)
             db.commit()
         engine.dispose()

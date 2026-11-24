@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from datetime import datetime
 from apps.api.core.database import get_db
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.config import settings
 from apps.api.services.seed_data import DEMO_BUSINESS_ID
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
@@ -46,6 +47,8 @@ def import_local_customers(
     db: Session = Depends(get_db),
 ):
     """Actual tenant-scoped CSV import; not a live CRM OAuth connection."""
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "customer_import")
     try:
         return import_customer_csv(
             db, current_user.business_id, req.csv_text, req.idempotency_key,

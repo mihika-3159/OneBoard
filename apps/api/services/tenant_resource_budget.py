@@ -1,0 +1,65 @@
+"""PostgreSQL-backed tenant budgets for expensive operations across workers.
+
+Only invoked for production endpoints. This is not IP DDoS mitigation, a
+global model semaphore, or an externally verified load benchmark.
+"""
+from __future__ import annotations
+import hashlib
+import math
+import time
+from fastapi import HTTPException
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from apps.api.models.operations import TenantResourceWindow
+
+POLICIES = {
+    "ai_command": (30, 60),
+    "memory_search": (120, 60),
+    "customer_import": (6, 300),
+    "financial_reconciliation": (20, 60),
+}
+
+
+def consume_tenant_budget(
+    db: Session, business_id: str, resource: str, *,
+    now: float | None = None,
+) -> dict:
+    if resource not in POLICIES or not business_id:
+        raise ValueError("Unknown tenant resource or missing tenant")
+    limit, duration = POLICIES[resource]
+    now = time.time() if now is None else now
+    if not math.isfinite(now) or now < 0:
+        raise ValueError("Invalid request clock")
+    if db.get_bind().dialect.name == "postgresql":
+        key = int.from_bytes(
+            hashlib.sha256((business_id + ":budget:" + resource).encode()).digest()[:8],
+            "big", signed=True
+        )
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
+    row = db.query(TenantResourceWindow).filter(
+        TenantResourceWindow.business_id == business_id,
+        TenantResourceWindow.resource == resource,
+    ).first()
+    if row is None:
+        row = TenantResourceWindow(
+            business_id=business_id, resource=resource,
+            attempt_count=1, window_started_at=now,
+        )
+        db.add(row)
+    elif now < row.window_started_at or now - row.window_started_at >= duration:
+        row.window_started_at = now
+        row.attempt_count = 1
+    elif row.attempt_count >= limit:
+        retry = max(1, math.ceil(duration - (now - row.window_started_at)))
+        db.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail="Tenant resource budget exhausted. Retry after the window.",
+            headers={"Retry-After": str(retry)},
+        )
+    else:
+        row.attempt_count += 1
+    db.commit()
+    return {"resource": resource, "remaining": limit - row.attempt_count,
+            "window_seconds": duration}

@@ -43,6 +43,7 @@ FOUNDER_MUTATIONS = {
     "/api/workflows",
     "/api/workflows/{workflow_id}/execute",
     "/api/workflows/runs/reconcile-interrupted",
+    "/api/business/financial/reconcile",
     "/api/workflows/approvals/{request_id}/action",
     "/api/council/deliberate",
     "/api/council/meetings/{meeting_id}/approve",

@@ -1,0 +1,60 @@
+name: OneBoard Windows clean install and startup
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-startup:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      AUTH_SECRET_KEY: "windows-ci-only-signing-key-not-for-production-0123456789abcdef"
+      DATABASE_URL: "sqlite:///./oneboard_windows_ci.sqlite3"
+      ONEBOARD_DEMO_MODE: "false"
+      ONEBOARD_PRODUCTION_MODE: "false"
+      ONEBOARD_TEST_DISPOSABLE_STARTUP: "1"
+      OLLAMA_BASE_URL: "http://127.0.0.1:19999"
+      PYTHONPATH: "."
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: apps/api/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install Python dependencies in fresh runner
+        run: python -m pip install -r apps/api/requirements.txt
+      - name: TypeScript production build on Windows
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run build
+      - name: Create fresh disposable SQLite schema with Alembic
+        run: python -m alembic upgrade head
+      - name: Financial and tenant budget tests on Windows
+        run: python -m pytest -q tests/adversarial/test_financial_evidence_reconciliation.py tests/adversarial/test_tenant_resource_budget.py
+      - name: Fresh localhost API startup and two-tenant HTTP acceptance
+        run: |
+          python scripts/windows_startup_smoke.py > windows-smoke.json
+          python scripts/production_acceptance.py --smoke-report windows-smoke.json --out windows-acceptance.json
+          python -c "import json; a=json.load(open('windows-acceptance.json')); assert a['production_level_3']=='NO_GO'; assert a['windows_installation']['clean_startup']=='passed'"
+      - name: Archive disposable Windows startup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneboard-windows-startup
+          path: |
+            windows-smoke.json
+            windows-acceptance.json
+          if-no-files-found: ignore
+          retention-days: 14

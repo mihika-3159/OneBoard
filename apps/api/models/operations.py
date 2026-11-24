@@ -1,7 +1,7 @@
 """Durable tenant-scoped operational records for monitoring and local import."""
 from datetime import datetime
 import uuid
-from sqlalchemy import Column, String, DateTime, JSON, Boolean, Integer, Index, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, JSON, Boolean, Integer, Float, Index, UniqueConstraint
 from apps.api.core.database import Base
 
 
@@ -37,3 +37,12 @@ class LocalCustomerImport(Base):
     row_count = Column(Integer, nullable=False)
     customer_ids = Column(JSON, nullable=False, default=list)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class TenantResourceWindow(Base):
+    """Cross-worker per-tenant request budget for expensive endpoints."""
+    __tablename__ = "tenant_resource_windows"
+    business_id = Column(String(36), primary_key=True)
+    resource = Column(String(60), primary_key=True)
+    attempt_count = Column(Integer, nullable=False)
+    window_started_at = Column(Float, nullable=False)

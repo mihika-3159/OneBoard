@@ -5,6 +5,8 @@ from typing import Optional
 from pathlib import Path
 import logging
 from apps.api.core.database import get_db
+from apps.api.core.config import settings
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.services.memory_engine import memory_engine
@@ -40,6 +42,8 @@ async def search_memory(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "memory_search")
     results = await memory_engine.search_semantic_memory(
         db=db,
         business_id=current_user.business_id,

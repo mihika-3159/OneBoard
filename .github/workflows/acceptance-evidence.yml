@@ -1,0 +1,31 @@
+name: OneBoard acceptance evidence (not independent certification)
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify acceptance receipt cannot claim production certification
+        run: |
+          python -m pip install pytest
+          python -m pytest -q tests/adversarial/test_production_acceptance_gate.py
+          python scripts/production_acceptance.py --out acceptance-evidence.json
+          python -c "import json; a=json.load(open('acceptance-evidence.json')); assert a['production_level_3']=='NO_GO'"
+      - name: Archive transparent external no-go evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneboard-acceptance-evidence
+          path: acceptance-evidence.json
+          retention-days: 14

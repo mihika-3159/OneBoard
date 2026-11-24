@@ -1,14 +1,17 @@
 import os
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from apps.api.core.config import settings
 from apps.api.core.database import get_db
-from apps.api.core.auth import get_current_user
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
+from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.models.business import Business, User
 from apps.api.models.entities import Customer, Product, Invoice, Expense
 from apps.api.models.goals_tasks import Goal, Task
 from apps.api.services.seed_data import seed_northstar_studio, DEMO_BUSINESS_ID
 from apps.api.services.financial_metrics import calculate_business_financials
+from apps.api.services.financial_reconciliation import reconcile_financial_evidence
 
 router = APIRouter(prefix="/api/business", tags=["Business"])
 
@@ -82,6 +85,28 @@ def reset_demo(
         )
     biz = seed_northstar_studio(db, reset=True)
     return {"status": "success", "message": "Demo environment reset to baseline.", "business": biz}
+
+class FinancialReconciliationRequest(BaseModel):
+    evidence_csv: str = Field(min_length=1, max_length=262144)
+    source_label: str = Field(default="Supplied statement", min_length=1, max_length=100)
+
+
+@router.post("/financial/reconcile")
+def reconcile_financial_records(
+    req: FinancialReconciliationRequest,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db),
+):
+    """Compare user-provided evidence, without bank verification claims."""
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "financial_reconciliation")
+    try:
+        return reconcile_financial_evidence(
+            db, current_user.business_id, req.evidence_csv, req.source_label
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
 
 @router.get("/metrics")
 def get_dashboard_metrics(
