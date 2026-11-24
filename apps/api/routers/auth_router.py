@@ -27,6 +27,7 @@ from apps.api.core.auth import (
     verify_password,
     verify_csrf_protection,
 )
+from apps.api.core.config import settings
 from apps.api.core.database import get_db
 from apps.api.models.business import Business, BusinessMembership, User, UserSession
 
