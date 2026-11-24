@@ -47,7 +47,7 @@ def list_workflows(
 @router.post("")
 def create_workflow(
     req: WorkflowCreateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     validation = workflow_engine.validate_workflow({"nodes": req.nodes, "edges": req.edges})
@@ -74,7 +74,7 @@ def create_workflow(
 def execute_workflow(
     workflow_id: str,
     dry_run: bool = False,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     wf = db.query(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id).first()
