@@ -117,6 +117,9 @@ def test_production_startup_rejects_stamped_but_incomplete_schema(monkeypatch):
     ({"REGISTRATION_SOURCE_MAX_ATTEMPTS": 9}, "REGISTRATION_SOURCE_MAX_ATTEMPTS"),
     ({"REGISTRATION_SOURCE_MAX_ATTEMPTS": 101}, "REGISTRATION_SOURCE_MAX_ATTEMPTS"),
     ({"REGISTRATION_SOURCE_MAX_ATTEMPTS": 10, "LOGIN_MAX_ATTEMPTS": 12}, "REGISTRATION_SOURCE_MAX_ATTEMPTS"),
+    ({"LOGIN_SOURCE_MAX_ATTEMPTS": 19}, "LOGIN_SOURCE_MAX_ATTEMPTS"),
+    ({"LOGIN_SOURCE_MAX_ATTEMPTS": 201}, "LOGIN_SOURCE_MAX_ATTEMPTS"),
+    ({"LOGIN_SOURCE_MAX_ATTEMPTS": 20, "LOGIN_MAX_ATTEMPTS": 20}, "LOGIN_SOURCE_MAX_ATTEMPTS"),
 ])
 def test_production_rejects_dangerous_authentication_limits(override, expected):
     with pytest.raises(RuntimeError, match=expected):
@@ -174,3 +177,35 @@ def test_explicit_canonical_https_api_origin_is_allowed_regardless_of_hostname()
     validate_production_configuration(production_settings(
         PUBLIC_API_ORIGIN="https://api.example.test.evil.test"
     ))
+
+
+def test_login_source_budget_is_distinct_from_single_account_budget(monkeypatch):
+    from apps.api.core import auth
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(auth, "_LOGIN_ATTEMPTS", {})
+    monkeypatch.setattr(auth.settings, "ONEBOARD_PRODUCTION_MODE", False)
+    monkeypatch.setattr(auth.settings, "LOGIN_MAX_ATTEMPTS", 5)
+    monkeypatch.setattr(auth.settings, "LOGIN_SOURCE_MAX_ATTEMPTS", 60)
+    source = "login-source:198.51.100.41"
+    account = "source-account:198.51.100.41:founder@example.invalid"
+
+    for _ in range(5):
+        auth.check_login_throttle(account)
+        auth.record_failed_login(account)
+        auth.check_login_throttle(source)
+        auth.record_failed_login(source)
+
+    with pytest.raises(HTTPException) as locked:
+        auth.check_login_throttle(account)
+    assert locked.value.status_code == 429
+
+    # Other accounts behind this NAT retain ample login capacity.
+    for _ in range(55):
+        auth.check_login_throttle(source)
+        auth.record_failed_login(source)
+    with pytest.raises(HTTPException) as locked:
+        auth.check_login_throttle(source)
+    assert locked.value.status_code == 429
+
+    auth.check_login_throttle("login-source:203.0.113.41")
