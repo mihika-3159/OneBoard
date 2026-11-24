@@ -500,3 +500,48 @@ The initial new-batch code run [verification 45344268938](https://github.com/mih
 A subsequent [CI run 45344644850](https://github.com/mihika-3159/OneBoard/actions/runs/45344644850) on `87106d75b709a300f4b886d34b7b421c31cd65b3` exposed a **Python SyntaxError** in the newly added production startup API-key invariant SQL block. That is an application-code defect; no success was claimed. Commit `20ccf0364c2d281ad795d5dba7f13c700147986f` replaces it with syntactically valid SQL that checks for the `sha256:` prefix, exact verifier length, and lowercase hex characters using PostgreSQL `translate`. The committed file was re-read and the full return/create-all structure inspected. No authentication check was removed.
 
 The security blocker status remains **implemented but not yet exact-head CI verified** after these corrections. The latest report commit also creates a fresh head requiring its own verification. All applicable PR workflows must complete successfully on precisely the same latest SHA before Batch 2 can begin. No deployment or real user data were used.
+
+
+## 24 November 2026: four critical control clusters on PR #8
+
+**Strict gate at start:** draft PR head `908c09444a39583e47fbc27a8e1b758dce9b2ff0` had all three applicable GitHub Actions workflows completed successfully. The batch remains on `fix/p0-auth-tenant-isolation`, PR #8 only; no merge, real customer data, paid services, provider enrollment, external actions or deployment.
+
+### Critical 1: durable workflows, approvals and recovery
+
+- New `WorkflowRun.idempotency_key` with tenant-scoped uniqueness and Alembic `007_workflow_idempotency`. Migration initially failed on legacy/bootstrap tables that already had the new column; revision `756141cbef652f02d0541ebd9f93cbf635115b63` reconciles existing columns/constraints, tracks only changes created by this revision for safe downgrade. `1f1adf719d99fd46c3c41e14240ac4ead6ab0909` tolerates reflected column order. Full disposable PostgreSQL migration/concurrency suite now passes.
+- The workflow engine accepts a bounded client idempotency key, holds a PostgreSQL advisory transaction lock for concurrent first use, refuses reuse for a different workflow or dry-run mode, and returns the existing run to a retry rather than running it twice. Production non-dry-run execute requires `Idempotency-Key`. The browser reuses an in-memory key after uncertain network/5xx results. Founder-only `/api/workflows/runs/reconcile-interrupted` quarantines stale `running` states without replaying uncertain actions.
+- New unit/adversarial tests and disposable PostgreSQL `test_17` and `test_18` confirm concurrent single-run and concurrent approval claim behavior; **18 PostgreSQL tests passed**. Existing DAG, approval checkpoint and dry-run tests remain enforced.
+- **Limitations:** no genuine external effect dispatch is available, so exactly-once behavior cannot be claimed for unapproved third-party tools; browser reload discards the in-memory request key; paused runs need operator review.
+
+### Critical 2: financial record accuracy and provenance, including UI
+
+- Deterministic financial snapshot rejects invalid/missing/nonfinite/negative recorded amounts, flags unknown expense periods and invalid receivables, includes contributing tenant-scoped customer/invoice/expense IDs, currency, source and update timestamps. All figures are explicitly **user recorded, not independently ledger-reconciled**. Invalid inputs suppress health/runway claims; the council receives data-quality warnings.
+- Found significant **frontend fabricated values** still shown despite backend improvements: Overview/Finance previously displayed fallback `18450` MRR, `132840` cash, `7.2` runway, invented customer growth, trend histories, pretend paid invoices, expenses, bank names, and an unverified accountability score. Replaced both tabs with authenticated tenant metrics, empty/error states, verification labels and no invented historical trend. Added strongly typed nullable financial data-quality fields.
+- `tests/adversarial/test_financial_record_provenance.py` and `test_financial_frontend_truthfulness.py` verify the invalid-record response and lack of fabricated UI. An ORM default forced a synthetic None billing period to monthly; corrected fixture with an explicit persisted NULL. All current API tests pass.
+- **Limitations:** bank transactions, FX normalization, ledger reconciliations, historical close and external audit are not integrated. Self-maintained data and derived computations must not be pitched as verified accounting balances.
+
+### Critical 3: synthetic backup/restore and crash recovery
+
+- New `scripts/verify_postgres_restore.py` has hard guards for disposable local PostgreSQL `oneboard_ci`, matching database URLs, explicit `ONEBOARD_CI_DISPOSABLE_RESTORE=1` and a separate scratch `oneboard_restore_ci` that must not already exist. Uses full custom-format PostgreSQL dump, SHA-256 manifest, scratch restore, all-table row hashes and counts, Alembic head 007 and schema uniqueness checks. Synthetic tenant, customer, expense, workflow definition and run are inserted, backed up, then deleted from the source to simulate damage. The scratch restore must contain the original rows. Cleanup targets synthetic IDs and the scratch DB it created.
+- `tests/adversarial/test_disposable_backup_guards.py` tests refusal of remote/customer databases and corrupted manifests. CI runs the live disposable PostgreSQL 16 restore drill **after** its 18 passing migration and concurrency tests.
+- Early runs failed: newer runner `pg_restore` emitted PostgreSQL 17+ `transaction_timeout` unsupported by PG16; runner `apt` lacked `postgresql-client-16`; first Docker wrapper had an unterminated quoted string. These were fixed by using an explicitly quoted heredoc wrapper invoking `pg_dump` / `pg_restore` from the already available official `postgres:16` CI service image. No restore assertions were disabled.
+- **Successful proof on code commit `1be29a94700414dc165e146c5e9d1072c195f96e`**, GitHub Actions [verification run 45348904926](https://github.com/mihika-3159/OneBoard/actions/runs/45348904926): **pg_dump and pg_restore 16.16**, **18 PostgreSQL tests passed**, backup/restore output: **35 application tables, 38 records, SHA-256 validated, schema head 007**. The same verification run included 436 passing API tests and a passing frontend build.
+- **Limitations:** this proves a CI-only synthetic restore, not an encrypted, durably retained offsite production backup system, retention schedule, RPO/RTO or recovery from provider loss.
+
+### Critical 4: production deployment security guardrails
+
+- New `TRUSTED_PROXY_IPS` production setting allows only explicit addresses, no wildcard/CIDR, duplicates or multicast; remote PostgreSQL URLs require `sslmode=verify-full`. `scripts/serve_secure_api.py` binds Uvicorn to loopback only, disables reload and trusts exactly configured proxy IPs. Existing production app Host, HTTPS scope, CORS, CSRF, secure-cookie, tenant membership, API-key hash and shared DB throttle controls remain in force.
+- `tests/adversarial/test_secure_entrypoint.py` exercises remote DB TLS and proxy allowlist refusals, and `docs/PRODUCTION_HTTPS_AND_AUTH.md` records the deployment trust contract. No actual account or external TLS endpoint was created.
+- **Limitations, hard deployment no-go:** a real certificate/HTTPS reverse proxy, external Host testing, private database network, provider age/no-card/zero-budget eligibility, persistent disk/offsite backups, operational monitoring and throughput have **not been verified**. This implementation must not be represented as a deployed or independently audited production SaaS.
+
+### Exact-head CI and remaining gate
+
+**Latest inspected executable code head:** `1be29a94700414dc165e146c5e9d1072c195f96e`. On that SHA:
+- [OneBoard verification 45348904926](https://github.com/mihika-3159/OneBoard/actions/runs/45348904926) **completed success**: 436 passed / 39 skipped API tests, frontend build passed, real Ollama CPU inference job passed, 18/18 disposable PostgreSQL tests passed, and backup/restore completed with 35 tables and 38 records.
+- [Browser E2E 45348905073](https://github.com/mihika-3159/OneBoard/actions/runs/45348905073) **completed success**.
+- [Browser inference feasibility 45348905153](https://github.com/mihika-3159/OneBoard/actions/runs/45348905153) was **still in progress** at the final inspected code head. This is an isolated experiment only, not approval for default browser-side model downloads.
+- This report update creates another latest head and requires its own applicable workflows. No advance to the high-priority batch without all green on that exact latest SHA.
+
+**Remaining production blockers:** the four clusters have stronger, automated code-level controls, but real hosted TLS/proxy validation, approved eligible zero-dollar server inference/hosting, backup retention/recovery RPO/RTO, independent financial source reconciliation, authorized live integration/side-effect tests, and operational performance/security assessment are still **unverified**. Keep all seven issue acceptance criteria open. Level 3 is a no-go absent those real-world checks; the hackathon prototype/demo is a separate, lower-readiness target.
+
+Reproduce: `python -m pytest -v`; `npm run build`; `python -m pytest -v tests/integration/test_postgres_security.py` on a disposable PostgreSQL 16 `oneboard_ci`; `ONEBOARD_CI_DISPOSABLE_RESTORE=1 python scripts/verify_postgres_restore.py` only with both matching explicitly validated localhost CI database URLs and PostgreSQL 16 client binaries; browser Playwright E2E and isolated inference CI.
