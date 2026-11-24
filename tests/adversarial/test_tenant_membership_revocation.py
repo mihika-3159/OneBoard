@@ -158,3 +158,34 @@ def test_member_role_demotion_revokes_privileged_mutations_without_revoking_read
     primary.owner_id = user.id
     db.commit()
     assert auth.require_founder_role(current_user=user, db=db).id == user.id
+
+
+def test_revoked_membership_cannot_log_in_and_mint_a_fresh_session(
+    multiple_memberships, monkeypatch
+):
+    from fastapi import Response
+    from apps.api.routers import auth_router
+
+    db, user, _, _, first, _, _ = multiple_memberships
+    monkeypatch.setattr(auth.settings, "ONEBOARD_PRODUCTION_MODE", True)
+    # Isolate membership authorization from Argon2: simulate an already
+    # verified valid password and confirm that authorization still fails.
+    monkeypatch.setattr(auth_router, "verify_password", lambda password, hashed: True)
+
+    db.delete(first)
+    db.commit()
+    before = db.query(UserSession).filter(UserSession.user_id == user.id).count()
+    request = Request({
+        "type": "http", "method": "POST", "path": "/api/auth/login",
+        "headers": [], "scheme": "https",
+        "client": ("198.51.100.99", 43210),
+        "server": ("oneboard.test", 443), "query_string": b"",
+    })
+    with pytest.raises(HTTPException) as exc:
+        auth_router.login(
+            auth_router.LoginRequest(email=user.email, password="correct-synthetic-pass"),
+            Response(), request, db,
+        )
+    assert exc.value.status_code == 401
+    assert exc.value.detail == "Invalid email or password."
+    assert db.query(UserSession).filter(UserSession.user_id == user.id).count() == before
