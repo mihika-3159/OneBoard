@@ -72,7 +72,7 @@ def test_successful_login_never_resets_shared_source_budget(monkeypatch):
                         lambda user, db: None)
     user = SimpleNamespace(
         id="synthetic-user", email="founder@example.invalid",
-        business_id="synthetic-tenant", role="founder",
+        name="Synthetic Founder", business_id="synthetic-tenant", role="founder",
         is_active=True, hashed_password="fake"
     )
     business = SimpleNamespace(
