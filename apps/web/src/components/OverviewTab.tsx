@@ -102,7 +102,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
             : ''}
         </div>
       )}
-      {/* Proactive Hazards & Alerts Banner */
+      {/* Proactive Hazards & Alerts Banner */}
       {alerts.length > 0 && (
         <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-start gap-3">
