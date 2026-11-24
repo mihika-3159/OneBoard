@@ -132,3 +132,29 @@ def test_inactive_identity_stays_denied_even_with_membership(
         with pytest.raises(HTTPException) as exc:
             auth.get_current_user(req, bearer, db)
         assert exc.value.status_code == 401
+
+
+def test_member_role_demotion_revokes_privileged_mutations_without_revoking_reads(
+    multiple_memberships, monkeypatch
+):
+    db, user, primary, _, membership, _, token = multiple_memberships
+    monkeypatch.setattr(auth.settings, "ONEBOARD_PRODUCTION_MODE", True)
+    signed = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+    # A valid founder membership permits writes.
+    assert auth.require_founder_role(current_user=user, db=db).id == user.id
+
+    # Demoting the live membership invalidates founder-only authority even
+    # though User.role and the HMAC-signed role claim still say "founder".
+    membership.role = "member"
+    db.commit()
+    assert auth.get_current_user(_request(), signed, db).id == user.id
+    assert auth.get_current_user(_request(api_key=user.api_key), None, db).id == user.id
+    with pytest.raises(HTTPException) as exc:
+        auth.require_founder_role(current_user=user, db=db)
+    assert exc.value.status_code == 403
+
+    # Live owner authority is distinct from an ordinary membership.
+    primary.owner_id = user.id
+    db.commit()
+    assert auth.require_founder_role(current_user=user, db=db).id == user.id
