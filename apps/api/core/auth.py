@@ -108,8 +108,28 @@ security_bearer = HTTPBearer(auto_error=False)
 # API Key Utilities
 # ---------------------------------------------------------------------------
 def generate_api_key() -> str:
-    """Return a high-entropy 64-character API key with the 'obk_' prefix."""
+    """Return a high-entropy API credential (shown once, never persisted raw)."""
     return f"obk_{secrets.token_hex(28)}"
+
+
+def hash_api_key(api_key: str) -> str:
+    """Return a non-authenticating SHA-256 verifier for a high-entropy API key.
+
+    Keys have 224 bits of random entropy. Unlike a password, they do not
+    require a slow password KDF: SHA-256 gives constant-time work and prevents
+    a database-only leak from immediately authenticating to the API.
+    """
+    return "sha256:" + hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def _valid_api_key_format(value: str) -> bool:
+    """Only allow canonical generated keys into production lookup paths."""
+    return (
+        isinstance(value, str)
+        and len(value) == 60
+        and value.startswith("obk_")
+        and all(ch in "0123456789abcdef" for ch in value[4:])
+    )
 
 
 def generate_csrf_token() -> str:
@@ -473,15 +493,31 @@ def get_current_user(
     # 2. X-API-Key Header Authentication
     api_key = request.headers.get("x-api-key")
     if api_key:
-        user = db.query(User).filter(User.api_key == api_key, User.is_active == True).first()
-        if user:
-            _require_active_membership(user, db)
-            return user
-        raise HTTPException(
+        invalid_key = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key provided.",
             headers={"WWW-Authenticate": "ApiKey"}
         )
+        # Bound input and deny noncanonical credentials before SQL work.
+        if not _valid_api_key_format(api_key):
+            if settings.ONEBOARD_PRODUCTION_MODE or not (
+                api_key.startswith("obk_") and len(api_key) <= 100
+            ):
+                raise invalid_key
+        # Production never compares a raw API key against stored secrets.
+        user = db.query(User).filter(
+            User.api_key == hash_api_key(api_key),
+            User.is_active == True,
+        ).first()
+        if user is None and not settings.ONEBOARD_PRODUCTION_MODE:
+            # Development-only support for legacy, locally seeded demo keys.
+            user = db.query(User).filter(
+                User.api_key == api_key, User.is_active == True
+            ).first()
+        if user:
+            _require_active_membership(user, db)
+            return user
+        raise invalid_key
 
     # 3. Demo / Local Dev Fallback (Opt-in only, never synthesised on the fly)
     if _DEMO_MODE and not settings.ONEBOARD_PRODUCTION_MODE:
