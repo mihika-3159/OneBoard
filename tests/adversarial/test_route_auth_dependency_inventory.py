@@ -5,7 +5,31 @@ founder privilege dependency. This checks the actual FastAPI dependency graph,
 not source-code substrings, so nested dependencies are included.
 """
 from apps.api.core.auth import get_current_user, require_founder_role
-from apps.api.main import app
+# Inspect the actual router definitions, not app.router.routes. Other tests
+# may replace or clear the shared application route table during isolation;
+# a fresh import of its registered routers is the authoritative endpoint
+# inventory, and the separate TestClient tests exercise actual app wiring.
+from apps.api.routers.auth_router import router as auth_router
+from apps.api.routers.business_router import router as business_router
+from apps.api.routers.council_router import router as council_router
+from apps.api.routers.memory_router import router as memory_router
+from apps.api.routers.workflow_router import router as workflow_router
+from apps.api.routers.agent_studio_router import router as agent_studio_router
+from apps.api.routers.accountability_router import router as accountability_router
+from apps.api.routers.integrations_router import router as integrations_router
+from apps.api.routers.alerts_router import router as alerts_router
+from apps.api.routers.model_gateway_router import router as model_gateway_router
+
+API_ROUTERS = (
+    auth_router, business_router, council_router, memory_router,
+    workflow_router, agent_studio_router, accountability_router,
+    integrations_router, alerts_router, model_gateway_router,
+)
+
+
+def _routes():
+    for router in API_ROUTERS:
+        yield from router.routes
 
 PUBLIC_API = {
     ("POST", "/api/auth/register"),
@@ -37,7 +61,7 @@ def _dependency_calls(dependant):
 
 def test_all_nonpublic_business_routes_require_current_authenticated_user():
     observed = set()
-    for route in app.router.routes:
+    for route in _routes():
         path = getattr(route, "path", "")
         if not path.startswith("/api/"):
             continue
@@ -58,7 +82,7 @@ def test_all_nonpublic_business_routes_require_current_authenticated_user():
 
 def test_all_privileged_mutations_have_central_founder_role_guard():
     observed = set()
-    for route in app.router.routes:
+    for route in _routes():
         path = getattr(route, "path", "")
         methods = getattr(route, "methods", set()) or set()
         if "POST" not in methods or path not in FOUNDER_MUTATIONS:
