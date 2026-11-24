@@ -138,7 +138,7 @@ async def test_empty_tenant_memory_skips_unnecessary_ollama_call(isolated, monke
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("top_k", [-1, 0, 21, True])
+@pytest.mark.parametrize("top_k", [-1, 0, 51, 1000000, True])
 async def test_direct_service_rejects_unbounded_search_before_db(
     isolated, top_k
 ):
