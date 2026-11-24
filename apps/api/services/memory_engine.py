@@ -33,37 +33,57 @@ class MemoryEngine:
         query: str,
         top_k: int = 5
     ) -> List[Dict[str, Any]]:
+        """Bounded tenant-scoped hybrid search without an N+1 database query.
+
+        On large memories this prototype examines only the 1,000 newest
+        candidate chunks. Response metadata clearly indicates the search
+        window was limited, rather than silently promising exhaustive
+        semantic retrieval. A future indexed vector store is required
+        for complete large-corpus recall.
+        """
+        if not business_id:
+            raise ValueError("Business ID is required")
+        if not isinstance(query, str) or not 1 <= len(query.strip()) <= 2048:
+            raise ValueError("Search query length must be between 1 and 2048")
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 20:
+            raise ValueError("top_k must be between 1 and 20")
+        max_candidates = 1000
+        entries = (
+            db.query(MemoryChunk, MemoryDocument.title)
+            .join(MemoryDocument, MemoryChunk.document_id == MemoryDocument.id)
+            .filter(
+                MemoryChunk.business_id == business_id,
+                MemoryDocument.business_id == business_id,
+            )
+            .order_by(MemoryChunk.created_at.desc(), MemoryChunk.id.desc())
+            .limit(max_candidates + 1)
+            .all()
+        )
+        limited = len(entries) > max_candidates
+        entries = entries[:max_candidates]
+        if not entries:
+            return []
         query_vector = await ollama_gateway.generate_embedding(query)
-        chunks = db.query(MemoryChunk).filter(MemoryChunk.business_id == business_id).all()
-        
+        keywords = [word for word in query.lower().split() if len(word) > 3]
         scored_results = []
-        q_lower = query.lower()
-        
-        for c in chunks:
-            # Semantic score
+        for chunk, title in entries:
             sim = 0.0
-            if c.embedding:
-                sim = self._cosine_similarity(query_vector, c.embedding)
-            # Keyword bonus (hybrid ranking)
-            kw_match = 0.3 if any(word in c.content.lower() for word in q_lower.split() if len(word) > 3) else 0.0
+            if chunk.embedding:
+                sim = self._cosine_similarity(query_vector, chunk.embedding)
+            kw_match = 0.3 if any(word in chunk.content.lower() for word in keywords) else 0.0
             total_score = min(sim + kw_match, 1.0)
-            
-            doc = db.query(MemoryDocument).filter(
-                MemoryDocument.id == c.document_id,
-                MemoryDocument.business_id == business_id
-            ).first()
-            source_title = doc.title if doc else "Business Document"
-            
             scored_results.append({
-                "chunk_id": c.id,
-                "document_id": c.document_id,
-                "source_title": source_title,
-                "content": c.content,
+                "chunk_id": chunk.id,
+                "document_id": chunk.document_id,
+                "source_title": title,
+                "content": chunk.content,
                 "score": round(total_score, 4),
-                "metadata": c.metadata_tags or {}
+                "score_kind": "local_similarity_estimate_not_verified_relevance",
+                "candidate_limit_applied": limited,
+                "candidate_count": len(entries),
+                "metadata": chunk.metadata_tags or {},
             })
-            
-        scored_results.sort(key=lambda x: x["score"], reverse=True)
+        scored_results.sort(key=lambda row: row["score"], reverse=True)
         return scored_results[:top_k]
 
     def get_relationship_graph(
