@@ -190,8 +190,25 @@ def login(
     # must be set by the server and a separately configured trusted proxy.
     clean_email = req.email.strip().lower()
     account_key = f"account:{clean_email}"
-    source_host = request.client.host if request.client else "unknown"
+    source_host = request.client.host if request.client and request.client.host else None
+    if settings.ONEBOARD_PRODUCTION_MODE and not source_host:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Login requires a verified client transport address.",
+        )
+    source_host = source_host or "unknown"
     source_key = f"source-account:{source_host}:{clean_email}"
+
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        # Charge every admitted attempt *before* user lookup and expensive
+        # Argon2 verification. The shared source counter is not reset by a
+        # successful login: otherwise valid credentials could continuously
+        # clear the budget while guessing passwords for other accounts.
+        # This counter is independent of account-specific lockouts and
+        # applies when an attacker rotates email addresses behind one IP.
+        shared_source_key = f"login-source:{source_host}"
+        check_login_throttle(shared_source_key, db)
+        record_failed_login(shared_source_key, db)
 
     # Throttle expensive password verification by source first. Its DB advisory
     # lock stays held until the successful reset or failed-attempt commit.
