@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import json
 import logging
 import hashlib
+from decimal import Decimal
+from apps.api.services.financial_metrics import _money
 from apps.api.models.workflow import WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog
 from apps.api.models.entities import Invoice, Customer, Commitment
 from apps.api.models.goals_tasks import Task
@@ -35,8 +37,19 @@ class ToolRegistry:
             Invoice.business_id == business_id,
             Invoice.status == "overdue"
         ).all()
-        total = sum(i.amount for i in invoices)
-        return {"total_overdue": total, "invoice_count": len(invoices)}
+        # A financial workflow must not bypass the dashboard's data
+        # quality checks: a negative, NaN, or missing amount must fail the
+        # workflow visibly, never become an actionable collection total.
+        total = sum(
+            (_money(invoice.amount, "invoice.amount") for invoice in invoices),
+            Decimal("0.00"),
+        )
+        return {
+            "total_overdue": float(total),
+            "invoice_count": len(invoices),
+            "verified": False,
+            "source": "tenant_overdue_invoice_records_unreconciled",
+        }
 
     @staticmethod
     def draft_invoice_reminder_emails(db: Session, business_id: str, **kwargs) -> Dict[str, Any]:
