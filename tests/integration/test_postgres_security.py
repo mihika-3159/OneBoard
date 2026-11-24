@@ -411,3 +411,108 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
         assert conn.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one() == "005_auth_foreign_keys"
+
+
+def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypatch):
+    """Live auth and role checks must work against the actual PostgreSQL engine.
+
+    Synthetic two-tenant test records live only in the disposable oneboard_ci
+    service. Revoking membership denies existing credentials, and a second
+    membership never grants access to a non-active workspace.
+    """
+    from datetime import datetime, timedelta
+    from uuid import uuid4
+
+    from fastapi.security import HTTPAuthorizationCredentials
+    from starlette.requests import Request
+
+    from apps.api.core import auth
+    from apps.api.models.business import (
+        Business, BusinessMembership, User, UserSession,
+    )
+
+    engine = _engine()
+    db = sessionmaker(bind=engine, autoflush=False)()
+    suffix = uuid4().hex
+    first_id, second_id, user_id, jti = (str(uuid4()) for _ in range(4))
+
+    def request(api_key=None):
+        headers = [(b"x-api-key", api_key.encode())] if api_key else []
+        return Request({
+            "type": "http", "method": "GET", "path": "/api/auth/me",
+            "headers": headers, "scheme": "https", "query_string": b"",
+            "server": ("oneboard.test", 443),
+        })
+
+    try:
+        db.add_all([
+            Business(id=first_id, name=f"Postgres primary {suffix}"),
+            Business(id=second_id, name=f"Postgres secondary {suffix}"),
+        ])
+        db.flush()
+        user = User(
+            id=user_id, email=f"postgres-role-{suffix}@example.invalid",
+            name="Synthetic PostgreSQL founder",
+            hashed_password="no-real-login",
+            role="founder",
+            api_key=auth.generate_api_key(),
+            business_id=first_id,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        primary = BusinessMembership(
+            user_id=user_id, business_id=first_id, role="founder",
+        )
+        secondary = BusinessMembership(
+            user_id=user_id, business_id=second_id, role="member",
+        )
+        db.add_all([
+            primary, secondary,
+            UserSession(
+                id=jti, user_id=user_id, business_id=first_id,
+                expires_at=datetime.utcnow() + timedelta(hours=1),
+                is_revoked=False,
+            ),
+        ])
+        db.commit()
+
+        token = auth.create_access_token(user_id, first_id, role="founder", jti=jti)
+        bearer = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+        assert auth.get_current_user(request(), bearer, db).id == user_id
+        assert auth.get_current_user(request(user.api_key), None, db).id == user_id
+        assert auth.require_founder_role(current_user=user, db=db).id == user_id
+        with pytest.raises(HTTPException) as outside:
+            auth.enforce_tenant_boundary(second_id, user, db)
+        assert outside.value.status_code == 403
+
+        primary.role = "member"
+        db.commit()
+        assert auth.get_current_user(request(), bearer, db).id == user_id
+        with pytest.raises(HTTPException) as demoted:
+            auth.require_founder_role(current_user=user, db=db)
+        assert demoted.value.status_code == 403
+
+        db.delete(primary)
+        db.commit()
+        for req, credentials in (
+            (request(), bearer), (request(user.api_key), None),
+        ):
+            with pytest.raises(HTTPException) as revoked:
+                auth.get_current_user(req, credentials, db)
+            assert revoked.value.status_code == 401
+    finally:
+        db.rollback()
+        # Remove only these synthetic records; never modify other fixtures.
+        db.query(UserSession).filter(UserSession.id == jti).delete()
+        db.query(BusinessMembership).filter(
+            BusinessMembership.user_id == user_id
+        ).delete()
+        db.query(User).filter(User.id == user_id).delete()
+        db.query(Business).filter(
+            Business.id.in_([first_id, second_id])
+        ).delete()
+        db.commit()
+        db.close()
+        engine.dispose()
