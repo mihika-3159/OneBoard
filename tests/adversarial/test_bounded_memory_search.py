@@ -117,7 +117,7 @@ async def test_search_rejects_cross_tenant_document_id_and_orphan_chunk(
 
 
 @pytest.mark.parametrize("payload", [
-    {"query": ""}, {"query": " " * 2049}, {"query": "a" * 2049},
+    {"query": ""}, {"query": "   "}, {"query": " " * 2049}, {"query": "a" * 2049},
     {"query": "x", "top_k": 0}, {"query": "x", "top_k": -5},
     {"query": "x", "top_k": 21}, {"query": "x", "top_k": 1000000},
 ])
