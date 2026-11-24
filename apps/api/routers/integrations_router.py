@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from datetime import datetime
 from apps.api.core.database import get_db
+from apps.api.core.config import settings
+from apps.api.services.seed_data import DEMO_BUSINESS_ID
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.integrations import IntegrationAccount
@@ -12,6 +14,22 @@ from apps.api.services.integrations.demo_adapters import (
 )
 
 router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
+
+def _require_fixture_tenant(current_user: User) -> None:
+    """Prevent static Northstar fixtures from masquerading as tenant records.
+
+    A logged-in user of another business has no permission to read the
+    demonstration contacts, mock ledger, or fictional GitHub repository,
+    even in development. Production never exposes the fixtures at all.
+    """
+    if (settings.ONEBOARD_PRODUCTION_MODE
+            or not settings.ONEBOARD_DEMO_MODE
+            or current_user.business_id != DEMO_BUSINESS_ID):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The demonstration adapter is not available in this workspace.",
+        )
+
 
 class ChatImportRequest(BaseModel):
     conversation_text: str = Field(min_length=1, max_length=1_000_000)
@@ -88,6 +106,7 @@ def import_chat_conversation(
 
 @router.get("/crm/contacts")
 def get_crm_contacts(current_user: User = Depends(get_current_user)):
+    _require_fixture_tenant(current_user)
     return {
         "is_simulated": True,
         "source": "demo_crm_adapter",
@@ -96,6 +115,7 @@ def get_crm_contacts(current_user: User = Depends(get_current_user)):
 
 @router.get("/finance/ledger")
 def get_finance_ledger(current_user: User = Depends(get_current_user)):
+    _require_fixture_tenant(current_user)
     return {
         "is_simulated": True,
         "source": "demo_finance_adapter",
@@ -112,6 +132,7 @@ def get_email_outbox(current_user: User = Depends(get_current_user)):
 
 @router.get("/github/status")
 def get_github_status(current_user: User = Depends(get_current_user)):
+    _require_fixture_tenant(current_user)
     return {
         "is_simulated": True,
         "source": "local_mock_github_adapter",
