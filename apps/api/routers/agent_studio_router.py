@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 from apps.api.core.database import get_db
-from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.workflow import CustomAgent
 from apps.api.services.natural_language_builder import natural_language_builder
@@ -40,7 +40,7 @@ def list_agents(
 @router.post("")
 def create_agent(
     req: AgentCreateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     agent = CustomAgent(
@@ -98,7 +98,7 @@ async def test_agent(
 @router.post("/{agent_id}/toggle-status")
 def toggle_agent_status(
     agent_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     agent = db.query(CustomAgent).filter(CustomAgent.id == agent_id).first()
