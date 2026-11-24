@@ -226,7 +226,15 @@ def check_login_throttle(identifier: str, db: Optional[Session] = None) -> None:
     """
     now = time.time()
     window = settings.LOGIN_LOCKOUT_SECONDS
-    max_attempts = settings.LOGIN_MAX_ATTEMPTS
+    # Registration is source-wide and counts successful signups too, while
+    # login throttling is scoped to source+account or account. Reusing the
+    # five-guess login budget for a whole NAT wrongly locks out unrelated
+    # school/office users. Keep both budgets independently bounded.
+    max_attempts = (
+        settings.REGISTRATION_SOURCE_MAX_ATTEMPTS
+        if identifier.startswith("registration-source:")
+        else settings.LOGIN_MAX_ATTEMPTS
+    )
 
     if db is not None:
         _lock_shared_throttle(db, identifier)
