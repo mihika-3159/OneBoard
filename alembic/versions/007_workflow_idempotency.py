@@ -25,7 +25,7 @@ def _has_unique(conn):
     inspector = sa.inspect(conn)
     columns = ["business_id", "idempotency_key"]
     return any(
-        item.get("column_names") == columns
+        sorted(item.get("column_names") or []) == sorted(columns)
         for item in (
             inspector.get_unique_constraints(_TABLE)
             + [i for i in inspector.get_indexes(_TABLE) if i.get("unique")]
