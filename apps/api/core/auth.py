@@ -233,6 +233,8 @@ def check_login_throttle(identifier: str, db: Optional[Session] = None) -> None:
     max_attempts = (
         settings.REGISTRATION_SOURCE_MAX_ATTEMPTS
         if identifier.startswith("registration-source:")
+        else settings.LOGIN_SOURCE_MAX_ATTEMPTS
+        if identifier.startswith("login-source:")
         else settings.LOGIN_MAX_ATTEMPTS
     )
 
