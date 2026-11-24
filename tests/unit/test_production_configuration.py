@@ -34,7 +34,6 @@ def test_secure_production_configuration_passes():
     {"CORS_ORIGINS": ""},
     {"PUBLIC_API_ORIGIN": ""},
     {"PUBLIC_API_ORIGIN": "http://api.example.test"},
-    {"PUBLIC_API_ORIGIN": "https://api.example.test.evil.test"},
     {"PUBLIC_API_ORIGIN": "https://api.example.test/auth"},
     {"PUBLIC_API_ORIGIN": "https://username@api.example.test"},
     {"PUBLIC_API_ORIGIN": "https://api.example.test:invalid"},
@@ -165,3 +164,13 @@ def test_shared_network_signup_budget_is_separate_from_password_guess_budget(mon
     assert throttled.value.status_code == 429
     # Different source is unaffected.
     auth.check_login_throttle("registration-source:203.0.113.8")
+
+
+
+def test_explicit_canonical_https_api_origin_is_allowed_regardless_of_hostname():
+    # Production configuration cannot determine who owns a syntactically
+    # valid HTTPS domain. Runtime Host validation enforces the operator's
+    # exact configured origin, not a hard-coded domain suffix.
+    validate_production_configuration(production_settings(
+        PUBLIC_API_ORIGIN="https://api.example.test.evil.test"
+    ))
