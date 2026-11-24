@@ -6,6 +6,8 @@ and the business cash balance. Demo fixture amounts are never substituted.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from math import isfinite
 from typing import Any, Dict
 
 from sqlalchemy.orm import Session
@@ -14,19 +16,34 @@ from apps.api.models.business import Business
 from apps.api.models.entities import Customer, Expense, Invoice
 
 
-def monthly_expense_amount(expense: Expense) -> float:
-    """Convert explicitly annual expenses to monthly; exclude one-off costs.
+def _money(value: Any, label: str) -> Decimal:
+    """Reject non-finite or negative unverified recorded amounts.
 
-    Unknown billing periods are treated as monthly for compatibility with
-    historical records, rather than silently inventing a new billing period.
+    Do not allow NaN, infinity, or malformed strings to quietly contaminate
+    financial figures used by deterministic advisers.
     """
-    period = (expense.billing_period or "monthly").strip().lower()
-    amount = float(expense.amount or 0.0)
+    try:
+        number = Decimal(str(value if value is not None else 0))
+        if not number.is_finite() or number < 0:
+            raise ValueError(label + " must be finite and nonnegative")
+        return number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError(label + " is not a valid nonnegative amount") from exc
+
+
+def monthly_expense_amount(expense: Expense) -> float:
+    """Normalize only known recurring periods; never guess unknown periods."""
+    period = (expense.billing_period or "").strip().lower()
+    amount = _money(expense.amount, "expense.amount")
     if period == "annual":
-        return amount / 12.0
+        return float((amount / Decimal(12)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        ))
+    if period == "monthly":
+        return float(amount)
     if period in ("one-off", "one_time", "one-time"):
         return 0.0
-    return amount
+    raise ValueError("Unrecognized expense billing period")
 
 
 def runway_from_records(cash: float, monthly_burn: float, mrr: float) -> tuple[float | None, str, float]:
@@ -44,48 +61,103 @@ def runway_from_records(cash: float, monthly_burn: float, mrr: float) -> tuple[f
 
 
 def calculate_business_financials(db: Session, business_id: str) -> Dict[str, Any]:
-    """Compute a single consistent snapshot scoped to one business."""
+    """Tenant-scoped, dated financial snapshot with explicit uncertainty.
+
+    No bank connection or independently reconciled ledger is available.
+    These values describe user-maintained application records, not verified
+    accounting balances. Invalid records are reported instead of silently
+    converted or used to produce reassuring health indicators.
+    """
     business = db.query(Business).filter(Business.id == business_id).first()
     if business is None:
         raise ValueError("Business not found")
-
     customers = db.query(Customer).filter(
         Customer.business_id == business_id, Customer.status == "active"
     ).all()
     invoices = db.query(Invoice).filter(Invoice.business_id == business_id).all()
     expenses = db.query(Expense).filter(Expense.business_id == business_id).all()
 
-    mrr = round(sum(float(c.mrr or 0.0) for c in customers), 2)
-    monthly_burn = round(sum(monthly_expense_amount(e) for e in expenses), 2)
+    issues: list[str] = []
+    customer_total = Decimal("0.00")
+    expense_total = Decimal("0.00")
+    overdue_total = Decimal("0.00")
+    overdue_count = 0
     cash = float(business.current_cash_balance or 0.0)
-    overdue = round(sum(float(i.amount or 0.0) for i in invoices if i.status == "overdue"), 2)
+    if not isfinite(cash):
+        issues.append("invalid_business_cash_balance")
+        cash = 0.0
+    for customer in customers:
+        try:
+            customer_total += _money(customer.mrr, "customer.mrr")
+        except ValueError:
+            issues.append(f"invalid_customer_mrr:{customer.id}")
+    for expense in expenses:
+        try:
+            expense_total += Decimal(str(monthly_expense_amount(expense)))
+        except ValueError:
+            issues.append(f"invalid_expense_period_or_amount:{expense.id}")
+    for invoice in invoices:
+        # The invoice status is authoritative; a past due date alone is not
+        # proof that the receivable is still unpaid.
+        if invoice.status == "overdue":
+            overdue_count += 1
+            try:
+                overdue_total += _money(invoice.amount, "invoice.amount")
+            except ValueError:
+                issues.append(f"invalid_overdue_invoice_amount:{invoice.id}")
+
+    mrr = float(customer_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    monthly_burn = float(expense_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+    overdue = float(overdue_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
     runway, runway_status, net_burn = runway_from_records(cash, monthly_burn, mrr)
     configured = bool(customers or invoices or expenses or cash)
-    if not configured:
+    if issues:
+        # Partial figures are not a valid basis for a positive health claim.
+        runway, runway_status = None, "needs_review"
+    elif not configured:
         runway_status = "unconfigured"
 
-    updated = [getattr(record, "updated_at", None) for record in [business, *customers, *invoices, *expenses]]
+    updated = [getattr(record, "updated_at", None) for record in
+               [business, *customers, *invoices, *expenses]]
     timestamps = [timestamp for timestamp in updated if isinstance(timestamp, datetime)]
     last_updated = max(timestamps).isoformat() if timestamps else None
-
+    source_records = {
+        "active_customer_ids": sorted(c.id for c in customers),
+        "expense_ids": sorted(e.id for e in expenses),
+        "invoice_ids": sorted(i.id for i in invoices),
+    }
     return {
         "mrr": mrr,
         "monthly_burn": monthly_burn,
         "net_burn": net_burn,
-        "is_profitable": net_burn < 0,
+        "is_profitable": net_burn < 0 if not issues else None,
         "runway_months": runway,
         "runway_status": runway_status,
         "cash_balance": round(cash, 2),
         "overdue_receivables_amount": overdue,
-        "overdue_invoices_count": sum(i.status == "overdue" for i in invoices),
+        "overdue_invoices_count": overdue_count,
         "active_customers_count": len(customers),
-        "financial_data_status": "recorded" if configured else "unconfigured",
+        "financial_data_status": (
+            "needs_review" if issues else "recorded" if configured else "unconfigured"
+        ),
+        "financial_data_issues": sorted(issues),
         "financial_data_updated_at": last_updated,
+        "financial_snapshot_generated_at": datetime.utcnow().isoformat(),
+        "financial_data_verified": False,
+        "financial_record_ids": source_records,
         "financial_sources": {
             "mrr": "active_customer_records",
             "monthly_burn": "recurring_expense_records",
             "cash_balance": "business_profile",
             "overdue_receivables": "overdue_invoice_records",
         },
-        "expense_period_policy": "annual_divided_by_12; one_off_excluded; unknown_treated_as_monthly",
+        "financial_provenance": {
+            "cash_balance": "user_recorded_unreconciled",
+            "mrr": "user_recorded_unreconciled",
+            "monthly_burn": "user_recorded_unreconciled",
+            "overdue_receivables": "invoice_status_unreconciled",
+            "currency": business.currency or "USD",
+            "independent_ledger_reconciliation": False,
+        },
+        "expense_period_policy": "annual_divided_by_12; one_off_excluded; unknown_flagged_and_excluded",
     }
