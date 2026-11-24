@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 from apps.api.core.database import get_db
-from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.agent_council import CouncilMeeting
 from apps.api.services.council_engine import council_engine, COUNCIL_ROLES
@@ -37,7 +37,7 @@ def get_council_meetings(
 @router.post("/deliberate")
 async def convene_council_meeting(
     req: DeliberationRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     meeting = await council_engine.conduct_deliberation(
@@ -54,7 +54,7 @@ async def convene_council_meeting(
 def approve_meeting(
     meeting_id: str,
     payload: ApprovalRequestPayload,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     meeting = db.query(CouncilMeeting).filter(CouncilMeeting.id == meeting_id).first()
