@@ -14,6 +14,7 @@ def production_config(**overrides):
         "DATABASE_URL": "postgresql://localhost/oneboard",
         "CORS_ORIGINS": "https://app.example.test",
         "PUBLIC_API_ORIGIN": "https://api.example.test",
+        "TRUSTED_PROXY_IPS": "127.0.0.1",
     }
     values.update(overrides)
     return Settings(**values)
