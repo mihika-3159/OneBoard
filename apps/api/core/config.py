@@ -21,9 +21,16 @@ class Settings(BaseSettings):
     ONEBOARD_DEMO_MODE: bool = False
     ONEBOARD_PRODUCTION_MODE: bool = False
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000"
+    # Exact public API origin, including optional port. Never trust client
+    # X-Forwarded-Host/Proto directly to construct redirects or cookies.
+    PUBLIC_API_ORIGIN: str = ""
     COOKIE_SECURE: bool = False
     SESSION_EXPIRY_SECONDS: int = 7 * 24 * 3600  # 7 days
     LOGIN_MAX_ATTEMPTS: int = 5
+    # Registration has its own source-wide budget. A shared office/school NAT
+    # should not be restricted to five registrations in five minutes simply
+    # because the password-guessing budget is five. Still bounded server-side.
+    REGISTRATION_SOURCE_MAX_ATTEMPTS: int = 30
     LOGIN_LOCKOUT_SECONDS: int = 300  # 5 minutes
     
     # Centralized Ollama Model Gateway
@@ -81,6 +88,10 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("SESSION_EXPIRY_SECONDS must be between 60 seconds and 30 days")
     if not 1 <= config.LOGIN_MAX_ATTEMPTS <= 20:
         errors.append("LOGIN_MAX_ATTEMPTS must be between 1 and 20")
+    if not 10 <= config.REGISTRATION_SOURCE_MAX_ATTEMPTS <= 100:
+        errors.append("REGISTRATION_SOURCE_MAX_ATTEMPTS must be between 10 and 100")
+    if config.REGISTRATION_SOURCE_MAX_ATTEMPTS < config.LOGIN_MAX_ATTEMPTS:
+        errors.append("REGISTRATION_SOURCE_MAX_ATTEMPTS cannot be lower than LOGIN_MAX_ATTEMPTS")
     if not 10 <= config.LOGIN_LOCKOUT_SECONDS <= 24 * 3600:
         errors.append("LOGIN_LOCKOUT_SECONDS must be between 10 seconds and 24 hours")
     if not config.DATABASE_URL.startswith(("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")):
@@ -102,5 +113,7 @@ def validate_production_configuration(config: Settings) -> None:
 
     if not origins or any(not valid_https_origin(origin) for origin in origins):
         errors.append("CORS_ORIGINS must contain only canonical explicit HTTPS origins")
+    if not valid_https_origin(config.PUBLIC_API_ORIGIN):
+        errors.append("PUBLIC_API_ORIGIN must be a canonical explicit HTTPS origin")
     if errors:
         raise RuntimeError("Unsafe OneBoard production configuration: " + "; ".join(errors))
