@@ -130,14 +130,20 @@ jobs:
         env:
           ONEBOARD_CI_DISPOSABLE_RESTORE: "1"
         run: |
-          # GitHub runners may default to PostgreSQL 17+ clients while the
-          # disposable database is PostgreSQL 16. pg_restore from a newer
-          # client can emit SET transaction_timeout, unsupported by PG16.
-          if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ] || [ ! -x /usr/lib/postgresql/16/bin/pg_restore ]; then
-            sudo apt-get update -qq
-            sudo apt-get install -y postgresql-client-16
-          fi
-          export PATH="/usr/lib/postgresql/16/bin:$PATH"
+          # The runner's apt sources may lack PG16 client packages. Reuse the
+          # EXACT official PostgreSQL 16 image already pulled for this CI
+          # service. Bind only disposable /tmp archive files; host networking
+          # reaches the oneboard_ci service on 127.0.0.1:5432.
+          mkdir -p "$RUNNER_TEMP/oneboard-pg16-client"
+          for command in pg_dump pg_restore; do
+            cat > "$RUNNER_TEMP/oneboard-pg16-client/$command" <<EOF
+          #!/bin/sh
+          exec docker run --rm --pull never --network host \\
+            -v /tmp:/tmp -e PGPASSWORD --entrypoint $command postgres:16 "\\$@"
+          EOF
+            chmod 700 "$RUNNER_TEMP/oneboard-pg16-client/$command"
+          done
+          export PATH="$RUNNER_TEMP/oneboard-pg16-client:$PATH"
           pg_dump --version
           pg_restore --version
           python scripts/verify_postgres_restore.py
