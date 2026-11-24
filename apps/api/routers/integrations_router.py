@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from datetime import datetime
 from apps.api.core.database import get_db
-from apps.api.core.auth import get_current_user, enforce_tenant_boundary
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.integrations import IntegrationAccount
 from apps.api.services.integrations.demo_adapters import (
@@ -48,7 +48,7 @@ def list_integrations(
 @router.post("/{integration_id}/sync")
 def sync_integration(
     integration_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     acc = db.query(IntegrationAccount).filter(IntegrationAccount.id == integration_id).first()
