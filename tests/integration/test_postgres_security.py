@@ -223,3 +223,71 @@ def test_06_production_guard_rejects_stamped_schema_missing_session_index(monkey
             init_db()
     # Once the index is visible again, the same real migrated database is valid.
     init_db()
+
+
+def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
+    """Rollback migration 004, then reapply without losing existing tenant auth data.
+
+    Runs only against the validated disposable localhost oneboard_ci database.
+    A downgrade must remove *only* indexes created by 004, never drop or
+    rewrite businesses, users, or revocable sessions.
+    """
+    from uuid import uuid4
+
+    engine = _engine()
+    tenant_id, user_id, session_id = (str(uuid4()) for _ in range(3))
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+
+    def alembic(*args):
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"Alembic {' '.join(args)} failed: {result.stdout[-1200:]} {result.stderr[-2000:]}"
+        )
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO businesses (id, name) VALUES (:id, 'Synthetic recovery tenant')"),
+                {"id": tenant_id},
+            )
+            conn.execute(
+                text("""INSERT INTO users (id, email, name, hashed_password, business_id, role, is_active)
+                        VALUES (:id, :email, 'Recovery founder', 'synthetic-only',
+                                :business, 'founder', true)"""),
+                {"id": user_id, "email": f"{user_id}@example.invalid", "business": tenant_id},
+            )
+            conn.execute(
+                text("""INSERT INTO user_sessions
+                        (id, user_id, business_id, expires_at, is_revoked)
+                        VALUES (:id, :user, :business, CURRENT_TIMESTAMP + INTERVAL '1 day', false)"""),
+                {"id": session_id, "user": user_id, "business": tenant_id},
+            )
+
+        alembic("downgrade", "-1")
+        with engine.connect() as conn:
+            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            assert revision == "003_app_schema"
+            assert conn.execute(text("SELECT count(*) FROM user_sessions WHERE id = :id"),
+                                {"id": session_id}).scalar_one() == 1
+        alembic("upgrade", "head")
+        with engine.connect() as conn:
+            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            assert revision == "004_schema_indexes"
+            assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
+                                {"id": tenant_id}).scalar_one() == 1
+            assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
+                                {"id": user_id}).scalar_one() == 1
+            assert conn.execute(text("SELECT count(*) FROM user_sessions WHERE id = :id"),
+                                {"id": session_id}).scalar_one() == 1
+            indexes = inspect(conn).get_indexes("user_sessions")
+            assert any(idx["column_names"] == ["token_hash"] for idx in indexes)
+    finally:
+        # Synthetic cleanup, without touching other tenant fixtures.
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM user_sessions WHERE id = :id"), {"id": session_id})
+            conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id = :id"), {"id": tenant_id})
+        engine.dispose()
