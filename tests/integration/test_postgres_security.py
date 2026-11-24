@@ -835,3 +835,78 @@ def test_16_postgres_production_guard_rejects_stamped_plaintext_api_key(monkeypa
         engine.dispose()
     # Once the synthetic corruption is removed, startup is allowed.
     init_db()
+
+
+def test_17_postgres_concurrent_idempotent_workflow_execution():
+    """Two worker sessions with the same tenant key persist one workflow run.
+
+    The durable unique constraint and pg_advisory_xact_lock prevent duplicate
+    action execution and approval creation under concurrent incoming requests.
+    All rows and keys are synthetic and restricted to disposable oneboard_ci.
+    """
+    from uuid import uuid4
+    from apps.api.models.workflow import (
+        WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog,
+    )
+    from apps.api.services.workflow_engine import workflow_engine
+
+    engine = _engine()
+    biz_id, workflow_id = str(uuid4()), str(uuid4())
+    key = "parallel_idempotent_001"
+    factory = sessionmaker(bind=engine, autoflush=False)
+    try:
+        with factory() as db:
+            db.execute(text(
+                "INSERT INTO businesses (id,name) VALUES (:id,'Concurrent workflow tenant')"
+            ), {"id": biz_id})
+            db.add(WorkflowDefinition(
+                id=workflow_id, business_id=biz_id, name="CI idempotency",
+                nodes=[{"id": "start", "type": "trigger", "data": {}}],
+                edges=[], is_valid=True,
+            ))
+            db.commit()
+
+        barrier = Barrier(2)
+
+        def run_workflow(_):
+            db = factory()
+            try:
+                barrier.wait(timeout=20)
+                result = workflow_engine.execute_workflow(
+                    db, biz_id, workflow_id, idempotency_key=key
+                )
+                return result.id
+            finally:
+                db.close()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            run_ids = list(workers.map(run_workflow, range(2)))
+        assert run_ids[0] == run_ids[1], run_ids
+        with factory() as db:
+            runs = db.query(WorkflowRun).filter(
+                WorkflowRun.business_id == biz_id
+            ).all()
+            assert len(runs) == 1
+            assert runs[0].status == "completed"
+            assert runs[0].idempotency_key == key
+            assert len(runs[0].step_results) == 1
+            assert db.query(AuditLog).filter(
+                AuditLog.business_id == biz_id,
+                AuditLog.action == "execute_workflow"
+            ).count() == 1
+            assert db.query(ApprovalRequest).filter(
+                ApprovalRequest.business_id == biz_id
+            ).count() == 0
+    finally:
+        with factory() as db:
+            db.query(AuditLog).filter(AuditLog.business_id == biz_id).delete()
+            db.query(ApprovalRequest).filter(
+                ApprovalRequest.business_id == biz_id
+            ).delete()
+            db.query(WorkflowRun).filter(WorkflowRun.business_id == biz_id).delete()
+            db.query(WorkflowDefinition).filter(
+                WorkflowDefinition.business_id == biz_id
+            ).delete()
+            db.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": biz_id})
+            db.commit()
+        engine.dispose()
