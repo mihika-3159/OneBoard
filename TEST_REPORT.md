@@ -545,3 +545,149 @@ The security blocker status remains **implemented but not yet exact-head CI veri
 **Remaining production blockers:** the four clusters have stronger, automated code-level controls, but real hosted TLS/proxy validation, approved eligible zero-dollar server inference/hosting, backup retention/recovery RPO/RTO, independent financial source reconciliation, authorized live integration/side-effect tests, and operational performance/security assessment are still **unverified**. Keep all seven issue acceptance criteria open. Level 3 is a no-go absent those real-world checks; the hackathon prototype/demo is a separate, lower-readiness target.
 
 Reproduce: `python -m pytest -v`; `npm run build`; `python -m pytest -v tests/integration/test_postgres_security.py` on a disposable PostgreSQL 16 `oneboard_ci`; `ONEBOARD_CI_DISPOSABLE_RESTORE=1 python scripts/verify_postgres_restore.py` only with both matching explicitly validated localhost CI database URLs and PostgreSQL 16 client binaries; browser Playwright E2E and isolated inference CI.
+
+
+## 24 November 2026: P1 engineering batch after critical CI gate
+
+**Gate at batch start:** draft PR #8, `fix/p0-auth-tenant-isolation`,
+commit `3fb8592a6f025b782be6187bcee3c3acc93f5c31`: all three GitHub
+Actions workflows completed **success** (OneBoard verification,
+browser E2E and browser inference feasibility). High-priority work only
+began after this exact-head gate passed. No production secrets, real
+customers, paid resources, new accounts, deployments, main commits,
+merges or ready-for-review transition were performed.
+
+### P1 #5: Ollama reliability and honest frontend errors
+
+- `apps/api/routers/model_gateway_router.py` now makes model readiness
+  tenant-specific: the requested chat model must be installed. A
+  connected daemon with unrelated models does not count as real
+  inference. Founder Command financial data now show source/verification
+  status, and invalid or unconfigured figures are withheld from model
+  prompts and from business-state output instead of fabricated.
+- `apps/api/services/ollama_gateway.py` uses a two-slot bounded
+  **per-process** concurrency gate with a three-second queue timeout.
+  Overload is explicitly reported as `capacity_exceeded` with simulated
+  output, not as a successful model response. Actual responses must have
+  nonempty completed generation, the correct returned model when
+  present, and a JSON object for structured requests. Missing model,
+  malformed JSON, incomplete generation, 404 and timeouts remain
+  explicitly labeled fallback. Prompts and provider exception messages
+  are not logged.
+- `apps/web/src/components/SettingsTab.tsx` distinguishes the selected
+  model's availability and real benchmark status, with retryable errors.
+  `tests/adversarial/test_ollama_backpressure_and_model_truth.py`,
+  `test_founder_command_financial_quality.py` and existing gateway
+  and offline tests cover these cases. Browser test
+  `apps/web/e2e/p1-reliability.spec.ts` checks tenant-selected model
+  readiness on a disposable founder account.
+- **Unverified:** provider/region eligibility, offsite server-side
+  inference, cluster-global rate limiting, target-hardware resource
+  soak, long-term uptime, cloud fallback and live provider privacy
+  terms. No browser-hosted model default was implemented.
+
+### P1 #6: integration boundaries, bounded memory and restart monitoring
+
+- `apps/api/routers/integrations_router.py` refuses fixed Northstar
+  demo CRM/finance/GitHub data for any non-demo tenant or production
+  request. Non-mock provider sync remains **501 not implemented** and
+  sandbox refresh is clearly simulated. `IntegrationsTab.tsx`
+  disables unsupported live sync, shows a visible retryable API error,
+  removes fabricated prefilled chat examples, marks heuristic parsing
+  as unverified and labels the in-memory email outbox undelivered.
+- `apps/api/services/scheduler_service.py` now rejects nonfinite,
+  missing and negative overdue invoice totals with an explicit
+  data-quality alert. A scheduler that cannot start causes production
+  startup failure rather than being silently marked active; no
+  connection-sensitive exception text is logged. Alert facts still
+  derive from tenant-scoped stored records on each GET, so the same
+  alert can be regenerated after a process restart. **The job interval
+  scheduler and email outbox remain process-local, not a durable
+  distributed queue.** Documented in
+  `docs/P1_ENGINEERING_ACCEPTANCE.md`.
+- `apps/api/routers/memory_router.py` restricts public search to
+  nonblank 1–2048-character queries and top-k 1–20. Internally, the
+  engine accepts top-k 1–50 for existing security checks. The
+  `MemoryChunk`/`MemoryDocument` same-tenant join eliminates the
+  N+1 document query and excludes chunks pointing to a foreign tenant
+  document. The query scans at most 1,000 recent chunks and explicitly
+  flags `candidate_limit_applied`; this is **not** exhaustive
+  old-document recall. New tests check 1,005 chunks, a single SELECT,
+  orphan exclusion, parsing limits and no Ollama work on an empty
+  tenant.
+- `apps/api/services/workflow_engine.py` now validates every overdue
+  invoice amount through the same deterministic money-validation
+  policy used by financial snapshots. An invalid amount fails the
+  financial workflow instead of producing an actionable total.
+- Regression evidence: new `test_demo_integration_tenant_scope.py`,
+  `test_scheduler_restart_and_invalid_invoices.py`,
+  `test_bounded_memory_search.py` and
+  `test_workflow_finance_quality.py`, plus browser E2E.
+
+### P1 #7: verification breadth and public technical claims
+
+- `apps/web/e2e/p1-reliability.spec.ts` adds Chromium browser tests
+  for fixture access denial, exact selected-model readiness, replay
+  of a workflow with a fixed idempotency key, honest sandbox UI, and a
+  synthetic HTTP 503 integration failure with visible retry/recovery.
+- `README.md` was reconciled against actual source and execution.
+  Removed claims of deployed ChromaDB, cloud-provider inference
+  fallback, SSE, immutable cryptographic ledgers, fully verified
+  revenue/clients, fabricated Northstar accounting metrics and
+  guaranteed seamless offline AI. Clarifies nine actual adviser
+  roles, user-recorded finance, process-local monitoring, no live
+  OAuth/provider sync, no public deployment certification, and
+  zero browser-model-download default. New
+  `tests/adversarial/test_readme_truthfulness.py` protects these
+  distinctions.
+- **Blocked or not independently verified:** clean Windows startup,
+  external browser certificate and reverse-proxy network checks,
+  sustained real CPU/GPU performance, provider authorization/scopes,
+  actual live email or payment actions, operational alert/outbox
+  persistence across sleeping hosts and replicas, external backup
+  retention and a systematic audit of every README claim against
+  a real deployed instance. GitHub issues #5–#7 remain open.
+
+### Regression failures uncovered and corrected during the batch
+
+1. New memory service top-k 20 bound conflicted with an existing direct
+   internal tenant-isolation test using 50; the public endpoint remains
+   bounded to 20 and internal direct calls allow at most 50.
+2. Old tenant-isolation test expected a malformed cross-tenant chunk to
+   appear with its title redacted; secure joined retrieval now **omits
+   such rows entirely**. The test was strengthened to assert no chunk
+   content or document title leaks, not weakened to return the orphan.
+3. An adversarial test attempted to persist SQL NULL into
+   `Invoice.amount`, which is NOT NULL. Replaced that impossible
+   fixture with an isolated mock to exercise the defensive validation
+   path without weakening database constraints. No product guard was
+   disabled to make tests pass.
+
+### Exact CI evidence (prior to this reporting commit)
+
+**Last tested code head for this batch:**
+`1e4517befb7d495aa6c28ecace672e81eee090c5`
+
+- [OneBoard verification run 45352376857](https://github.com/mihika-3159/OneBoard/actions/runs/45352376857):
+  - Python API/unit/adversarial/integration: **495 passed, 39 skipped,
+    4 deprecation warnings** on exact code head.
+  - Frontend TypeScript/Vite production build: **passed**.
+  - Disposable PostgreSQL 16 concurrency/migration suite:
+    **18 passed**.
+  - Disposable PostgreSQL custom dump/restore:
+    **35 application tables, 38 synthetic records, SHA-256 validated,
+    schema head 007**.
+  - The dedicated small real-Ollama CPU job was still completing at
+    the time of this report's creation; check the workflow's conclusion
+    rather than assuming its final status.
+- Browser E2E: [run 45352376668](https://github.com/mihika-3159/OneBoard/actions/runs/45352376668)
+  was in progress at report drafting.
+- Browser inference feasibility: [run 45352377462](https://github.com/mihika-3159/OneBoard/actions/runs/45352377462)
+  was in progress. This legacy experiment remains isolated and is
+  neither a default user-hosted inference plan nor hosting approval.
+
+**Final strict gate:** this TEST_REPORT.md edit creates another PR head.
+It must separately pass all applicable workflows on **that exact new
+head** before any new engineering priority batch begins. A pending,
+failed, skipped or unavailable check is not green. Do not close any of
+the seven GitHub issue acceptance criteria without full proof.
