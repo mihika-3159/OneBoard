@@ -544,11 +544,32 @@ def _require_active_membership(user: User, db: Session) -> None:
         )
 
 
-def require_founder_role(current_user: User = Depends(get_current_user)) -> User:
-    """Ensure the authenticated user has founder or admin permissions."""
+def require_founder_role(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """Authorize privileged mutations using live production membership roles.
+
+    A persisted User.role alone is insufficient: demoting a membership from
+    founder to member must immediately remove write/approval privileges from
+    already-issued sessions and API keys. The business owner is independently
+    authorized through the live ownership record.
+    """
+    forbidden = HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Forbidden: This operation requires founder privileges."
+    )
     if current_user.role not in ("founder", "admin", "owner"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: This operation requires founder privileges."
-        )
+        raise forbidden
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        business = db.query(Business).filter(Business.id == current_user.business_id).first()
+        if business is None:
+            raise forbidden
+        if business.owner_id != current_user.id:
+            membership = db.query(BusinessMembership).filter(
+                BusinessMembership.user_id == current_user.id,
+                BusinessMembership.business_id == current_user.business_id,
+            ).first()
+            if membership is None or membership.role not in ("founder", "admin", "owner"):
+                raise forbidden
     return current_user
