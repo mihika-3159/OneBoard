@@ -64,6 +64,22 @@ def _run_command(args, env):
         )
 
 
+def verify_backup_manifest(archive: Path, manifest: Path) -> None:
+    """Fail closed before restore if the archive differs from its manifest."""
+    try:
+        metadata = json.loads(manifest.read_text())
+        expected = metadata["archive_sha256"]
+        if (metadata.get("source_database") != SOURCE_DB or
+                not isinstance(expected, str) or len(expected) != 64 or
+                any(ch not in "0123456789abcdef" for ch in expected)):
+            raise ValueError("Unsafe backup manifest")
+        actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if actual != expected:
+            raise ValueError("Corrupted backup archive")
+    except (OSError, KeyError, ValueError, TypeError) as exc:
+        raise RuntimeError("Backup integrity verification failed") from exc
+
+
 def _table_hashes(connection):
     """Hash every row of every public application table without exposing data."""
     metadata = MetaData()
@@ -126,9 +142,7 @@ def verify_disposable_restore():
             manifest.write_text(
                 json.dumps({"archive_sha256": archive_digest, "source_database": SOURCE_DB})
             )
-            manifest_data = json.loads(manifest.read_text())
-            if archive_digest != manifest_data["archive_sha256"]:
-                raise RuntimeError("Backup archive digest mismatch")
+            verify_backup_manifest(archive, manifest)
             with admin.connect() as conn:
                 conn.execute(text("CREATE DATABASE oneboard_restore_ci"))
                 created_restore = True
