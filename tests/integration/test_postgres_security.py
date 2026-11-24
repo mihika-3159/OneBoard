@@ -585,3 +585,208 @@ def test_12_postgres_shared_nat_registration_quota_across_workers(monkeypatch):
                 {"a": keys[0], "b": keys[1]},
             )
         engine.dispose()
+
+
+def test_13_postgres_shared_login_source_quota_blocks_email_rotation(monkeypatch):
+    """Distinct account names cannot bypass one source's shared Argon2 budget."""
+    monkeypatch.setattr(settings, "LOGIN_SOURCE_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(settings, "LOGIN_MAX_ATTEMPTS", 5)
+    engine = _engine()
+    source = "login-source:198.51.100.170"
+    key = hashlib.sha256(source.encode()).hexdigest()
+    with engine.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM login_throttle_states WHERE identifier_hash=:key"
+        ), {"key": key})
+    barrier = Barrier(14)
+    make_session = sessionmaker(bind=engine, autoflush=False)
+
+    def attempt(i):
+        db = make_session()
+        try:
+            barrier.wait(timeout=20)
+            try:
+                # The source-wide budget is shared regardless of the
+                # different account email that follows in the login route.
+                check_login_throttle(source, db)
+                record_failed_login(source, db)
+                return "admitted"
+            except HTTPException as exc:
+                db.rollback()
+                assert exc.status_code == 429
+                return "limited"
+        finally:
+            db.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=14) as pool:
+            results = list(pool.map(attempt, range(14)))
+        assert results.count("admitted") == 10, results
+        assert results.count("limited") == 4, results
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT attempt_count FROM login_throttle_states WHERE identifier_hash=:key"),
+                {"key": key},
+            ).scalar_one() == 10
+        # A distinct source remains independently available.
+        db = make_session()
+        try:
+            check_login_throttle("login-source:203.0.113.170", db)
+            db.rollback()
+        finally:
+            db.close()
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM login_throttle_states WHERE identifier_hash=:key"
+            ), {"key": key})
+        engine.dispose()
+
+
+def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch):
+    """Canonical legacy keys are migrated, not disclosed or discarded.
+
+    Downgrading while a hashed active key exists is deliberately refused:
+    plaintext secrets cannot be reconstructed for older application versions.
+    """
+    from uuid import uuid4
+    from apps.api.core import auth
+    from apps.api.models.business import BusinessMembership, User
+    from starlette.requests import Request
+
+    engine = _engine()
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+    business_id, user_id = str(uuid4()), str(uuid4())
+    old_raw = auth.generate_api_key()
+    old_digest = auth.hash_api_key(old_raw)
+
+    def migrate(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    try:
+        # A disposable, isolated CI schema without active hashed keys can
+        # safely return to 005 for a representative legacy upgrade.
+        result = migrate("downgrade", "-1")
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "005_auth_foreign_keys"
+            conn.execute(
+                text("INSERT INTO businesses (id,name) VALUES (:id,'Synthetic API migration')"),
+                {"id": business_id}
+            )
+            conn.execute(text(
+                """INSERT INTO users (id,email,name,hashed_password,business_id,
+                           role,is_active,api_key)
+                   VALUES (:id,:email,'Synthetic','none',:business,'founder',
+                           true,:api_key)"""
+            ), {
+                "id": user_id,
+                "email": f"key-migration-{user_id}@example.invalid",
+                "business": business_id,
+                "api_key": old_raw,
+            })
+            conn.execute(
+                text("UPDATE businesses SET owner_id=:user WHERE id=:id"),
+                {"user": user_id, "id": business_id},
+            )
+        result = migrate("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+
+        with engine.connect() as conn:
+            stored = conn.execute(
+                text("SELECT api_key FROM users WHERE id=:id"), {"id": user_id}
+            ).scalar_one()
+            assert stored == old_digest
+            assert stored != old_raw
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "006_api_key_hashing"
+
+        monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+        db = sessionmaker(bind=engine)()
+        try:
+            request = Request({
+                "type": "http", "method": "GET", "path": "/api/auth/me",
+                "headers": [(b"x-api-key", old_raw.encode())],
+                "scheme": "https", "server": ("api.example.test", 443),
+                "query_string": b"",
+            })
+            assert auth.get_current_user(request, None, db).id == user_id
+        finally:
+            db.close()
+
+        blocked = migrate("downgrade", "-1")
+        assert blocked.returncode != 0, "Credential downgrade must fail closed"
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "006_api_key_hashing"
+            assert conn.execute(
+                text("SELECT api_key FROM users WHERE id=:id"), {"id": user_id}
+            ).scalar_one() == old_digest
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": business_id})
+        result = migrate("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+        engine.dispose()
+
+
+def test_15_postgres_rejects_weak_legacy_api_key_without_data_loss():
+    """Weak demo API secrets block upgrade instead of gaining production trust."""
+    from uuid import uuid4
+
+    engine = _engine()
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+    business_id, user_id = str(uuid4()), str(uuid4())
+    weak_key = "obk_northstar_demo_local_key"
+
+    def migrate(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    try:
+        result = migrate("downgrade", "-1")
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO businesses (id,name) VALUES (:id,'Weak synthetic key tenant')"),
+                {"id": business_id},
+            )
+            conn.execute(text(
+                """INSERT INTO users (id,email,name,hashed_password,business_id,
+                           role,is_active,api_key)
+                   VALUES (:id,:email,'Synthetic','none',:business,'founder',
+                           true,:api_key)"""
+            ), {
+                "id": user_id,
+                "email": f"weak-key-{user_id}@example.invalid",
+                "business": business_id,
+                "api_key": weak_key,
+            })
+        result = migrate("upgrade", "head")
+        assert result.returncode != 0
+        assert "Noncanonical legacy plaintext API key" in result.stderr
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "005_auth_foreign_keys"
+            assert conn.execute(
+                text("SELECT api_key FROM users WHERE id=:id"),
+                {"id": user_id},
+            ).scalar_one() == weak_key
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": business_id})
+        result = migrate("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+        engine.dispose()
