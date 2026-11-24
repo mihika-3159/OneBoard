@@ -62,7 +62,7 @@ export const SettingsTab: React.FC = () => {
             <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               Centralized AI Gateway
             </span>
-            <span className="text-xs text-slate-400">Zero Cloud Subscriptions • Local Ollama Gateway</span>
+            <span className="text-xs text-slate-400">Operator-hosted server-side Ollama • No guaranteed uptime</span>
           </div>
           <h1 className="text-xl font-bold text-white">System Settings & Model Configuration</h1>
         </div>
@@ -89,7 +89,7 @@ export const SettingsTab: React.FC = () => {
           <div className="flex items-center gap-2.5">
             <Server className="w-5 h-5 text-indigo-400" />
             <div>
-              <span className="text-sm font-bold text-white block">Local Ollama Inference Daemon</span>
+              <span className="text-sm font-bold text-white block">Server-Side Ollama Inference Daemon</span>
               <span className="text-slate-400 font-mono text-[11px]">{gatewayStatus?.base_url || 'http://127.0.0.1:11434'}</span>
             </div>
           </div>
@@ -107,7 +107,9 @@ export const SettingsTab: React.FC = () => {
             ) : (
               <>
                 <AlertTriangle className="w-3.5 h-3.5" />
-                {gatewayStatus?.status === 'connected' ? 'No models installed (simulation only)' : 'Ollama offline (simulation only)'}
+                {gatewayStatus?.status === 'connected'
+                  ? 'Selected model unavailable (fallback only)'
+                  : 'Ollama offline (fallback only)'}
               </>
             )}
           </span>
@@ -115,14 +117,14 @@ export const SettingsTab: React.FC = () => {
 
         {gatewayStatus?.status === 'connected' && !gatewayStatus?.inference_available && (
           <div role="status" className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300">
-            Ollama is reachable, but no models are installed. Install a model before expecting real inference.
+            Ollama is reachable, but the selected model ({gatewayStatus?.requested_model || 'unknown'}) is not installed. Other installed models do not make this workspace inference-ready.
           </div>
         )}
 
         {gatewayStatus?.offline_mode && (
           <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 leading-relaxed">
             <span className="font-semibold block mb-0.5">Local Daemon Notice:</span>
-            Ollama is unavailable. Responses may use a labeled deterministic fallback, not real AI inference. To enable real local inference, install and launch Ollama:
+            Ollama is unavailable on the configured server. Responses may use a labeled deterministic fallback, not real AI inference. An authorized operator must provide server-side Ollama before real inference is available:
             <code className="block mt-2 p-2 rounded-lg bg-slate-900 border border-slate-800 font-mono text-[11px] text-white">
               ollama run qwen2.5:7b
             </code>
@@ -131,7 +133,7 @@ export const SettingsTab: React.FC = () => {
 
         <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="text-slate-400">
-            Available Local Models: <span className="text-white font-mono">{gatewayStatus?.available_models?.join(', ') || 'None (using local fallback adapter)'}</span>
+            Available Server Models: <span className="text-white font-mono">{gatewayStatus?.available_models?.join(', ') || 'None (using local fallback adapter)'}</span>
           </div>
           <button
             onClick={handleBenchmark}
@@ -139,7 +141,7 @@ export const SettingsTab: React.FC = () => {
             className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl transition shadow-md shadow-indigo-600/20"
           >
             <Zap className="w-3.5 h-3.5" />
-            {isBenchmarking ? 'Testing...' : 'Run Compatibility Benchmark'}
+            {isBenchmarking ? 'Testing...' : 'Test Selected Model Inference'}
           </button>
         </div>
 
