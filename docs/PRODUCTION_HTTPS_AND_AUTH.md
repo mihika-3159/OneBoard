@@ -18,6 +18,7 @@ AUTH_SECRET_KEY=<independently generated high-entropy signing secret>
 DATABASE_URL=postgresql+psycopg://<dedicated private connection>
 PUBLIC_API_ORIGIN=https://api.example.test
 CORS_ORIGINS=https://app.example.test
+TRUSTED_PROXY_IPS=127.0.0.1
 LOGIN_MAX_ATTEMPTS=5
 LOGIN_SOURCE_MAX_ATTEMPTS=60
 REGISTRATION_SOURCE_MAX_ATTEMPTS=30
@@ -152,3 +153,31 @@ production authentication by the original raw key, rejection of unsafe
 downgrade, and failure with weak legacy keys without data loss.
 
 Production secrets must not be committed to this repository.
+
+
+## Audited local-proxy entrypoint, remote database TLS and limits
+
+Run the API behind an **owner-approved local HTTPS reverse proxy** using
+`python -m scripts.serve_secure_api`. The code's `secure_uvicorn_options`
+enforces loopback binding (`127.0.0.1:8000`), disables hot reload, and passes
+only explicit `TRUSTED_PROXY_IPS` to Uvicorn's forwarding-header trust
+mechanism. Production configuration rejects missing, wildcard, CIDR,
+multicast, duplicate, or hostname-based proxy trust settings. This is an
+application-side guard, not proof that an upstream firewall, TLS certificate,
+load balancer or proxy has been configured correctly.
+
+Remote PostgreSQL URLs must include `sslmode=verify-full` so the
+production application verifies the database's TLS server identity, rather
+than trusting an encrypted connection to an arbitrary host. Host-local
+PostgreSQL access may use a private transport, which must be verified as
+private in the deployment network. No production database address, account
+or certificate is included in this repository.
+
+**External deployment acceptance remains unproven:** the owner must approve
+an eligible no-card zero-cost provider; verify its age and usage terms;
+deploy with synthetic data only; confirm actual TLS termination, trusted
+proxy peer IPs, Host forwarding, direct-backend isolation and remote database
+certificate verification; record repeatable external requests and failure
+results. Never enable public multi-tenant use solely because local ASGI
+tests pass. Do not trust browser-side LLM downloads as an alternative to
+server-side inference.
