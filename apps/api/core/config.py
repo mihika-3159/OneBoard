@@ -3,6 +3,8 @@ from pydantic import ConfigDict
 from pathlib import Path
 from typing import Dict, Any
 from urllib.parse import urlsplit
+from ipaddress import ip_address
+from sqlalchemy.engine import make_url
 
 class Settings(BaseSettings):
     model_config = ConfigDict(env_file=".env", extra="allow")
@@ -24,6 +26,9 @@ class Settings(BaseSettings):
     # Exact public API origin, including optional port. Never trust client
     # X-Forwarded-Host/Proto directly to construct redirects or cookies.
     PUBLIC_API_ORIGIN: str = ""
+    # Exact IP addresses of the owner's trusted TLS terminator, never '*'.
+    # Only the owner-approved loopback-bound entrypoint consumes this list.
+    TRUSTED_PROXY_IPS: str = ""
     COOKIE_SECURE: bool = False
     SESSION_EXPIRY_SECONDS: int = 7 * 24 * 3600  # 7 days
     LOGIN_MAX_ATTEMPTS: int = 5
@@ -104,6 +109,30 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("LOGIN_LOCKOUT_SECONDS must be between 10 seconds and 24 hours")
     if not config.DATABASE_URL.startswith(("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://")):
         errors.append("Production multi-tenant mode requires PostgreSQL; SQLite is development-only")
+    else:
+        # Publicly reachable managed PostgreSQL must authenticate both the
+        # TLS channel and server identity. Local disposable/sidecar databases
+        # may use private transport, but this does not certify an actual
+        # deployment's private network.
+        try:
+            db_url = make_url(config.DATABASE_URL)
+            if db_url.host not in ("localhost", "127.0.0.1", "::1", None):
+                if db_url.query.get("sslmode") != "verify-full":
+                    errors.append("Remote production PostgreSQL must use sslmode=verify-full")
+        except Exception:
+            errors.append("Invalid production PostgreSQL DATABASE_URL")
+    trusted = [item.strip() for item in config.TRUSTED_PROXY_IPS.split(",") if item.strip()]
+    try:
+        if not trusted or len(trusted) != len(set(trusted)):
+            raise ValueError("Missing or duplicate trusted proxy addresses")
+        for item in trusted:
+            address = ip_address(item)
+            if address.is_unspecified or address.is_multicast:
+                raise ValueError("Unsafe trusted proxy address")
+            # A literal proxy IP must be selected by the operator. Never
+            # accept a CIDR, wildcard, hostname or unbounded trusted network.
+    except ValueError:
+        errors.append("TRUSTED_PROXY_IPS must list unique explicit IP addresses, never a wildcard or CIDR")
     origins = [origin.strip() for origin in config.CORS_ORIGINS.split(",") if origin.strip()]
     def valid_https_origin(origin: str) -> bool:
         """Allow only a complete HTTPS origin, not an arbitrary URL prefix."""
