@@ -1,8 +1,10 @@
 import os
 import logging
+from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from apps.api.core.config import settings, validate_production_configuration
 from apps.api.core.database import init_db, SessionLocal
@@ -71,14 +73,43 @@ app.add_middleware(
 # Security response headers apply to every API response, including errors.
 @app.middleware("http")
 async def security_response_headers(request, call_next):
-    response = await call_next(request)
+    # Production TLS is terminated by the owner's trusted HTTPS reverse
+    # proxy. Only the ASGI server's *validated* scope scheme is authoritative.
+    # Never infer HTTPS from X-Forwarded-Proto or trust X-Forwarded-Host.
+    # Reject plaintext and Host-header poisoning instead of redirecting
+    # sensitive requests to attacker-controlled origins. The deployment must
+    # configure the ASGI server's forwarded-allow-ips to its actual proxy IP,
+    # never a wildcard; this guard alone cannot verify external TLS.
+    secure_external_request = False
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        expected_host = urlsplit(settings.PUBLIC_API_ORIGIN).netloc
+        supplied_hosts = request.headers.getlist("host")
+        valid_host = (
+            len(supplied_hosts) == 1
+            and supplied_hosts[0] == expected_host
+        )
+        secure_external_request = request.scope.get("scheme") == "https"
+        if not valid_host:
+            response = JSONResponse(
+                {"detail": "Unrecognized API host."}, status_code=421
+            )
+        elif not secure_external_request:
+            response = JSONResponse(
+                {"detail": "HTTPS is required for production requests."},
+                status_code=403,
+            )
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
+
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     if request.url.path.startswith("/api/auth/"):
         response.headers["Cache-Control"] = "no-store"
-    if settings.ONEBOARD_PRODUCTION_MODE:
+    if settings.ONEBOARD_PRODUCTION_MODE and secure_external_request:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
 
