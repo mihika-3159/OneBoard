@@ -45,8 +45,8 @@ class MemoryEngine:
             raise ValueError("Business ID is required")
         if not isinstance(query, str) or not 1 <= len(query.strip()) <= 2048:
             raise ValueError("Search query length must be between 1 and 2048")
-        if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 20:
-            raise ValueError("top_k must be between 1 and 20")
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or not 1 <= top_k <= 50:
+            raise ValueError("top_k must be between 1 and 50 for internal callers")
         max_candidates = 1000
         entries = (
             db.query(MemoryChunk, MemoryDocument.title)
