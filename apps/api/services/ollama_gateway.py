@@ -1,4 +1,5 @@
 import httpx
+import asyncio
 import json
 import logging
 import time
@@ -11,6 +12,11 @@ class OllamaGateway:
     def __init__(self, base_url: str = settings.OLLAMA_BASE_URL):
         self.base_url = base_url.rstrip("/")
         self.active_profile = settings.DEFAULT_MODEL_PROFILE
+        # An unbounded burst of founder requests can saturate a free CPU
+        # Ollama server and starve unrelated tenants. Fail busy requests
+        # explicitly rather than consuming unbounded worker resources.
+        self._inference_slots = asyncio.Semaphore(2)
+        self._queue_timeout_seconds = 3.0
         
     async def check_health(self) -> Dict[str, Any]:
         """Check if local Ollama daemon is reachable and list downloaded models."""
@@ -36,7 +42,7 @@ class OllamaGateway:
                         "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {})
                     }
         except Exception as e:
-            logger.info(f"Ollama server not reachable at {self.base_url}: {e}")
+            logger.info("Ollama health unavailable (%s)", type(e).__name__)
             
         return {
             "status": "offline",
@@ -68,69 +74,94 @@ class OllamaGateway:
         task_type: str = "chat",
         format_json: bool = False
     ) -> Dict[str, Any]:
-        """Execute chat completion via local Ollama with fallback simulation."""
+        """Run bounded local server-side inference, with explicit fallback status.
+
+        The process permits at most two simultaneous CPU generation requests.
+        Unavailable, incomplete, malformed, or overloaded Ollama responses
+        must never be reported as completed real inference. No prompts or
+        provider response bodies are logged.
+        """
         target_model = model or self.get_model_for_task(task_type)
         payload: Dict[str, Any] = {
             "model": target_model,
             "messages": [],
             "stream": False,
         }
-        
         if system_prompt:
             payload["messages"].append({"role": "system", "content": system_prompt})
-        for msg in messages:
-            payload["messages"].append(msg)
-            
+        payload["messages"].extend(messages)
         if format_json:
             payload["format"] = "json"
 
-        start_time = time.time()
-        fallback_reason = "provider_unavailable"
+        start_time = time.monotonic()
+        reason = "provider_unavailable"
+        acquired = False
         try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                res = await client.post(f"{self.base_url}/api/chat", json=payload)
-                if res.status_code == 200:
-                    try:
-                        data = res.json()
-                        message = data.get("message") if isinstance(data, dict) else None
-                        content = message.get("content") if isinstance(message, dict) else None
-                        if not isinstance(content, str) or not content.strip():
-                            raise ValueError("Missing model response content")
-                        if format_json:
-                            json.loads(content)  # Invalid structured output is not a successful completion.
-                    except (ValueError, TypeError, AttributeError):
-                        fallback_reason = "invalid_model_response"
+            try:
+                await asyncio.wait_for(
+                    self._inference_slots.acquire(),
+                    timeout=self._queue_timeout_seconds,
+                )
+                acquired = True
+            except asyncio.TimeoutError:
+                reason = "capacity_exceeded"
+            if acquired:
+                try:
+                    async with httpx.AsyncClient(timeout=45.0) as client:
+                        response = await client.post(
+                            f"{self.base_url}/api/chat", json=payload
+                        )
+                    if response.status_code == 200:
+                        try:
+                            data = response.json()
+                            if not isinstance(data, dict):
+                                raise ValueError("Invalid provider envelope")
+                            message = data.get("message")
+                            content = message.get("content") if isinstance(message, dict) else None
+                            if not isinstance(content, str) or not content.strip():
+                                raise ValueError("Incomplete model output")
+                            if data.get("done") is not True:
+                                raise ValueError("Incomplete generation")
+                            if data.get("model") not in (None, target_model):
+                                raise ValueError("Wrong model returned")
+                            if format_json:
+                                parsed = json.loads(content)
+                                if not isinstance(parsed, dict):
+                                    raise ValueError("Structured model output must be an object")
+                        except (ValueError, TypeError, AttributeError):
+                            reason = "invalid_model_response"
+                        else:
+                            return {
+                                "content": content,
+                                "model": target_model,
+                                "simulated": False,
+                                "duration_ms": int((time.monotonic() - start_time) * 1000),
+                            }
+                    elif response.status_code == 404:
+                        reason = "model_unavailable"
                     else:
-                        duration_ms = int((time.time() - start_time) * 1000)
-                        return {
-                            "content": content,
-                            "model": target_model,
-                            "simulated": False,
-                            "duration_ms": duration_ms
-                        }
-                elif res.status_code == 404:
-                    fallback_reason = "model_unavailable"
-                else:
-                    fallback_reason = "provider_http_error"
-        except httpx.TimeoutException:
-            fallback_reason = "timeout"
-        except Exception:
-            # Invalid URL/port and transport ExceptionGroup must fail safely too.
-            # asyncio cancellation is BaseException and is not swallowed here.
-            fallback_reason = "provider_unavailable"
+                        reason = "provider_http_error"
+                except httpx.TimeoutException:
+                    reason = "timeout"
+                except Exception:
+                    # asyncio.CancelledError inherits BaseException and must
+                    # propagate; no untrusted error body or prompt is logged.
+                    reason = "provider_unavailable"
+        finally:
+            if acquired:
+                self._inference_slots.release()
 
-        # Never log prompts, response bodies or credentials on inference failure.
-        logger.warning("Ollama inference unavailable (reason=%s); using labeled fallback.", fallback_reason)
-
-        # Deterministic simulation fallback
-        duration_ms = int((time.time() - start_time) * 1000)
-        simulated_response = self._generate_simulated_response(messages, system_prompt, format_json)
+        logger.warning(
+            "Ollama inference unavailable (reason=%s); returning labeled fallback.",
+            reason,
+        )
+        content = self._generate_simulated_response(messages, system_prompt, format_json)
         return {
-            "content": simulated_response,
+            "content": content,
             "model": f"{target_model} (local simulated fallback)",
             "simulated": True,
-            "fallback_reason": fallback_reason,
-            "duration_ms": max(duration_ms, 85)
+            "fallback_reason": reason,
+            "duration_ms": max(int((time.monotonic() - start_time) * 1000), 0),
         }
 
     async def generate_embedding(self, text: str, model: Optional[str] = None) -> List[float]:
