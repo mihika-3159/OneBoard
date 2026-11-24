@@ -1,5 +1,6 @@
 import pytest
 
+from fastapi import HTTPException
 from apps.api.core.config import Settings, validate_production_configuration
 
 
@@ -149,7 +150,7 @@ def test_shared_network_signup_budget_is_separate_from_password_guess_budget(mon
         auth.record_failed_login(login_source)
 
     # The login key has exhausted its own password-guessing allowance.
-    with pytest.raises(Exception) as throttled:
+    with pytest.raises(HTTPException) as throttled:
         auth.check_login_throttle(login_source)
     assert throttled.value.status_code == 429
 
@@ -159,7 +160,7 @@ def test_shared_network_signup_budget_is_separate_from_password_guess_budget(mon
         auth.check_login_throttle(shared_source)
         auth.record_failed_login(shared_source)
 
-    with pytest.raises(Exception) as throttled:
+    with pytest.raises(HTTPException) as throttled:
         auth.check_login_throttle(shared_source)
     assert throttled.value.status_code == 429
     # Different source is unaffected.
