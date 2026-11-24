@@ -790,3 +790,46 @@ def test_15_postgres_rejects_weak_legacy_api_key_without_data_loss():
         result = migrate("upgrade", "head")
         assert result.returncode == 0, result.stderr[-2000:]
         engine.dispose()
+
+
+def test_16_postgres_production_guard_rejects_stamped_plaintext_api_key(monkeypatch):
+    """Revision 006 stamp is insufficient when an admin reintroduces raw keys."""
+    from uuid import uuid4
+    from apps.api.core.database import init_db
+
+    engine = _engine()
+    business_id, user_id = str(uuid4()), str(uuid4())
+    try:
+        with engine.begin() as conn:
+            assert conn.execute(text(
+                "SELECT version_num FROM alembic_version"
+            )).scalar_one() == "006_api_key_hashing"
+            conn.execute(
+                text("INSERT INTO businesses (id,name) VALUES (:id,'Tampered synthetic tenant')"),
+                {"id": business_id},
+            )
+            conn.execute(text(
+                """INSERT INTO users (id,email,name,hashed_password,business_id,
+                           role,is_active,api_key)
+                   VALUES (:id,:email,'Synthetic','none',:business,'founder',
+                           true,:raw_key)"""
+            ), {
+                "id": user_id,
+                "email": f"raw-key-stamp-{user_id}@example.invalid",
+                "business": business_id,
+                "raw_key": "obk_" + "c" * 56,
+            })
+        monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+        with pytest.raises(RuntimeError, match="non-hashed API credentials"):
+            init_db()
+        with engine.connect() as conn:
+            assert conn.execute(text(
+                "SELECT api_key FROM users WHERE id=:id"
+            ), {"id": user_id}).scalar_one() == "obk_" + "c" * 56
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": business_id})
+        engine.dispose()
+    # Once the synthetic corruption is removed, startup is allowed.
+    init_db()
