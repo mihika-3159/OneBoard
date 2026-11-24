@@ -910,3 +910,90 @@ def test_17_postgres_concurrent_idempotent_workflow_execution():
             db.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": biz_id})
             db.commit()
         engine.dispose()
+
+
+def test_18_postgres_concurrent_approval_claim_prevents_duplicate_resume():
+    """Only one PostgreSQL worker may resume a high-risk approval checkpoint."""
+    from uuid import uuid4
+    from apps.api.models.workflow import (
+        WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog,
+    )
+    from apps.api.services.workflow_engine import workflow_engine
+
+    engine = _engine()
+    biz_id, workflow_id = str(uuid4()), str(uuid4())
+    factory = sessionmaker(bind=engine, autoflush=False)
+    try:
+        with factory() as db:
+            db.execute(text(
+                "INSERT INTO businesses (id,name) VALUES (:id,'Approval concurrency tenant')"
+            ), {"id": biz_id})
+            wf = WorkflowDefinition(
+                id=workflow_id, business_id=biz_id, name="CI guarded workflow",
+                nodes=[
+                    {"id": "before", "type": "trigger", "data": {}},
+                    {"id": "gate", "type": "approval", "data": {}},
+                    {"id": "after", "type": "trigger", "data": {}},
+                ],
+                edges=[
+                    {"source": "before", "target": "gate"},
+                    {"source": "gate", "target": "after"},
+                ],
+                is_valid=True,
+            )
+            db.add(wf)
+            db.commit()
+            run = workflow_engine.execute_workflow(
+                db, biz_id, workflow_id, idempotency_key="concurrent_approve_001"
+            )
+            assert run.status == "awaiting_approval"
+            run_id = run.id
+            request_id = db.query(ApprovalRequest).filter(
+                ApprovalRequest.workflow_run_id == run_id
+            ).one().id
+
+        barrier = Barrier(2)
+
+        def attempt(_):
+            db = factory()
+            try:
+                barrier.wait(timeout=20)
+                try:
+                    result = workflow_engine.approve_and_resume_run(
+                        db, run_id, request_id, business_id=biz_id
+                    )
+                    return result.status
+                except ValueError:
+                    db.rollback()
+                    return "duplicate_rejected"
+            finally:
+                db.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(attempt, range(2)))
+        assert statuses.count("completed") == 1, statuses
+        assert statuses.count("duplicate_rejected") == 1, statuses
+        with factory() as db:
+            run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).one()
+            assert run.status == "completed"
+            assert run.step_results["after"]["status"] == "success"
+            assert db.query(AuditLog).filter(
+                AuditLog.business_id == biz_id,
+                AuditLog.action == "resume_workflow",
+            ).count() == 1
+            assert db.query(ApprovalRequest).filter(
+                ApprovalRequest.id == request_id
+            ).one().status == "approved"
+    finally:
+        with factory() as db:
+            db.query(AuditLog).filter(AuditLog.business_id == biz_id).delete()
+            db.query(ApprovalRequest).filter(
+                ApprovalRequest.business_id == biz_id
+            ).delete()
+            db.query(WorkflowRun).filter(WorkflowRun.business_id == biz_id).delete()
+            db.query(WorkflowDefinition).filter(
+                WorkflowDefinition.business_id == biz_id
+            ).delete()
+            db.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": biz_id})
+            db.commit()
+        engine.dispose()
