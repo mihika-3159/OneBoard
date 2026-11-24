@@ -107,6 +107,33 @@ def init_db():
                     "Production database missing required indexes/unique constraints: "
                     + ", ".join(sorted(missing_indexes + missing_uniques))
                 )
+            # The legacy auth migration omitted foreign keys entirely.
+            # Revision parity and indexes are not proof that session/user
+            # ownership is enforced by the production database.
+            missing_foreign_keys = []
+            for name, table in Base.metadata.tables.items():
+                reflected = inspector.get_foreign_keys(name)
+                for constraint in table.foreign_key_constraints:
+                    local_cols = tuple(element.parent.name for element in constraint.elements)
+                    remote_cols = tuple(element.column.name for element in constraint.elements)
+                    remote_table = constraint.elements[0].column.table.name
+                    expected_delete = (constraint.ondelete or "").upper()
+                    if not any(
+                        tuple(fk.get("constrained_columns") or ()) == local_cols
+                        and fk.get("referred_table") == remote_table
+                        and tuple(fk.get("referred_columns") or ()) == remote_cols
+                        and ((fk.get("options") or {}).get("ondelete") or "").upper() == expected_delete
+                        for fk in reflected
+                    ):
+                        missing_foreign_keys.append(
+                            f"{name}:{local_cols}->{remote_table}{remote_cols} "
+                            f"ON DELETE {expected_delete or 'DEFAULT'}"
+                        )
+            if missing_foreign_keys:
+                raise RuntimeError(
+                    "Production database missing required foreign-key constraints: "
+                    + ", ".join(sorted(missing_foreign_keys))
+                )
         return
 
     Base.metadata.create_all(bind=engine)
