@@ -796,3 +796,48 @@ success from the old green head. Keep PR #8 draft, unmerged and all
 partially evidenced issue acceptance criteria open. No real customer
 data, payment, service signup, external provider action or deployment.
 
+
+### 24 November 2026: actual CI results and fixes for the four acceptance controls
+
+**Verified code head before report update:** cb666da3edd58089731f617a526f9c9c7bf1417d.
+All FIVE applicable workflows completed successfully on this exact head:
+- OneBoard verification run 45376440122: API 554 passed, 42 skipped, 4 warnings;
+  frontend TypeScript build passed; real small-model Ollama CPU inference
+  passed; disposable PostgreSQL 21 integration/concurrency/migration tests
+  passed. PostgreSQL full dump/restore recovered 40 application tables,
+  42 synthetic records, verified SHA-256, schema revision 009.
+- Windows clean installation run 45376440153: fresh Windows Python 3.11
+  and Node 20 dependencies installed, frontend built, Alembic upgraded a
+  disposable SQLite database, 20 focused financial/budget tests passed,
+  and real local Uvicorn startup/HTTP registration, two-tenant isolation,
+  unverified finance reconciliation and JSON receipt passed.
+- Browser E2E run 45376440177: completed success.
+- Isolated browser inference feasibility run 45376440145: completed
+  success. This experiment is NOT an approved default model architecture.
+- Acceptance-evidence run 45376439962: completed success; its artifact
+  intentionally records production_level_3=NO_GO, not an independent audit.
+
+**Fixes made while testing:** initial code commit
+3c20bc12070faf3c7a991880167f502f29fb427c had a test using NaN in
+a NOT NULL SQLite invoice column. SQLite converted the NaN to NULL
+before the validation logic ran. Commit
+16bd3c5036a069d70e9b734f3c706a58204ac234 changed the synthetic
+fixture to infinity, preserving the nonfinite adversarial assertion.
+The first Windows smoke then found a real Win32 file-handle lifecycle
+error: the parent process attempted to delete its still-open Uvicorn
+log. Commit cb666da3edd58089731f617a526f9c9c7bf1417d explicitly
+closes the parent handle before unlink. No tests or checks were removed.
+
+**What CI supports:** source-file comparison with discrepancy flags,
+tenant-scoped cross-worker request budgets, genuine clean Windows
+start/build and synthetic end-to-end smoke, and reproducible transparent
+automated acceptance evidence. None of these prove independently
+authenticated bank records, full deployed host resource fairness,
+a third-party security audit, real financial settlement or independent
+production acceptance. Those external requirements remain open.
+No live provider, customer data, payment, deployment or third-party
+action was used.
+
+**Exact-head caution:** this report-only commit changes the PR SHA and
+must pass all five applicable workflows again before any further batch
+can begin. Keep PR #8 draft, unmerged and Level 3 release NO-GO.
