@@ -137,6 +137,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
+// Preserve the same request identity when a network/5xx error leaves the
+// outcome unknown. A deliberate new execution receives a new UUID only after
+// the previous outcome has been confirmed.
+const pendingWorkflowKeys = new Map<string, string>();
+
 // ---------------------------------------------------------------------------
 // Exported API Client
 // ---------------------------------------------------------------------------
@@ -288,9 +293,27 @@ export const api = {
   },
 
   executeWorkflow: async (workflowId: string, dryRun: boolean = false): Promise<any> => {
-    return request<any>(`/workflows/${workflowId}/execute?dry_run=${dryRun}`, {
-      method: 'POST',
-    });
+    const requestIdentity = `${workflowId}:${dryRun}`;
+    let key = pendingWorkflowKeys.get(requestIdentity);
+    if (!key) {
+      key = crypto.randomUUID();
+      pendingWorkflowKeys.set(requestIdentity, key);
+    }
+    try {
+      const result = await request<any>(`/workflows/${workflowId}/execute?dry_run=${dryRun}`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': key },
+      });
+      pendingWorkflowKeys.delete(requestIdentity);
+      return result;
+    } catch (error) {
+      // 4xx is a definite refusal. For lost responses and 5xx, preserve the
+      // original key so a retry checks the previous durable run.
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        pendingWorkflowKeys.delete(requestIdentity);
+      }
+      throw error;
+    }
   },
 
   generateWorkflowPrompt: async (prompt: string): Promise<any> => {
