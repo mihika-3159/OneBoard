@@ -355,7 +355,7 @@ def test_09_postgres_rejects_orphan_auth_session():
 def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
     """Dirty legacy rows cannot be silently deleted or accepted during FK repair.
 
-    Roll back *only* migration 005 on disposable CI PostgreSQL, introduce an
+    Roll back migrations 006 and 005 on disposable CI PostgreSQL, introduce an
     orphaned session, require 005 to fail atomically, then remove synthetic
     corruption and prove that a clean recovery upgrade succeeds.
     """
@@ -410,7 +410,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
     with _engine().connect() as conn:
         assert conn.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "005_auth_foreign_keys"
+        ).scalar_one() == "006_api_key_hashing"
 
 
 def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypatch):
