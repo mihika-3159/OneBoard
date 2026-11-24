@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from apps.api.core.auth import (
+    _require_active_membership,
     TOKEN_EXPIRY_SECONDS,
     check_login_throttle,
     clear_auth_cookies,
@@ -201,6 +202,14 @@ def login(
         and verify_password(req.password, user.hashed_password)
         and user.is_active
     )
+    if valid_credentials:
+        # A revoked membership must not mint a fresh signed session merely
+        # because the user's password is still correct. Return the same
+        # response as an invalid password and preserve failed-login throttling.
+        try:
+            _require_active_membership(user, db)
+        except HTTPException:
+            valid_credentials = False
 
     if not valid_credentials:
         # Persist a source-scoped failure before attempting the account-wide
