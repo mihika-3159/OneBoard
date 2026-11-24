@@ -30,6 +30,7 @@ def multiple_memberships():
     secondary = Business(id=str(uuid4()), name=f"Secondary {suffix}")
     db.add_all([primary, secondary])
     db.flush()
+    raw_api_key = auth.generate_api_key()
     founder = User(
         id=str(uuid4()),
         email=f"multi-{suffix}@example.invalid",
@@ -37,7 +38,7 @@ def multiple_memberships():
         role="founder",
         business_id=primary.id,
         hashed_password="synthetic-no-password",
-        api_key=f"obk_{uuid4().hex}{uuid4().hex[:16]}",
+        api_key=auth.hash_api_key(raw_api_key),
         is_active=True,
     )
     db.add(founder)
@@ -54,6 +55,8 @@ def multiple_memberships():
     db.add_all([first, other, session])
     db.commit()
     token = auth.create_access_token(founder.id, primary.id, role="founder", jti=session.id)
+    # Raw key is held by the test client, never by the persistent User record.
+    founder.raw_api_key = raw_api_key
     try:
         yield db, founder, primary, secondary, first, other, token
     finally:
@@ -91,12 +94,12 @@ def test_removed_primary_membership_revokes_existing_signed_session_and_api_key(
 
     signed = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     assert auth.get_current_user(_request(), signed, db).id == user.id
-    assert auth.get_current_user(_request(api_key=user.api_key), None, db).id == user.id
+    assert auth.get_current_user(_request(api_key=user.raw_api_key), None, db).id == user.id
 
     # Secondary membership remains. It must not rescue access to the primary.
     db.delete(first)
     db.commit()
-    for req, bearer in ((_request(), signed), (_request(api_key=user.api_key), None)):
+    for req, bearer in ((_request(), signed), (_request(api_key=user.raw_api_key), None)):
         with pytest.raises(HTTPException) as exc:
             auth.get_current_user(req, bearer, db)
         assert exc.value.status_code == 401
@@ -105,7 +108,7 @@ def test_removed_primary_membership_revokes_existing_signed_session_and_api_key(
     db.add(BusinessMembership(user_id=user.id, business_id=primary.id, role="member"))
     db.commit()
     assert auth.get_current_user(_request(), signed, db).id == user.id
-    assert auth.get_current_user(_request(api_key=user.api_key), None, db).id == user.id
+    assert auth.get_current_user(_request(api_key=user.raw_api_key), None, db).id == user.id
 
 
 def test_business_owner_remains_authorized_without_membership_row(
@@ -128,7 +131,7 @@ def test_inactive_identity_stays_denied_even_with_membership(
     user.is_active = False
     db.commit()
     signed = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-    for req, bearer in ((_request(), signed), (_request(api_key=user.api_key), None)):
+    for req, bearer in ((_request(), signed), (_request(api_key=user.raw_api_key), None)):
         with pytest.raises(HTTPException) as exc:
             auth.get_current_user(req, bearer, db)
         assert exc.value.status_code == 401
@@ -149,7 +152,7 @@ def test_member_role_demotion_revokes_privileged_mutations_without_revoking_read
     membership.role = "member"
     db.commit()
     assert auth.get_current_user(_request(), signed, db).id == user.id
-    assert auth.get_current_user(_request(api_key=user.api_key), None, db).id == user.id
+    assert auth.get_current_user(_request(api_key=user.raw_api_key), None, db).id == user.id
     with pytest.raises(HTTPException) as exc:
         auth.require_founder_role(current_user=user, db=db)
     assert exc.value.status_code == 403
