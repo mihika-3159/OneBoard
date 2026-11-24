@@ -71,14 +71,18 @@ def test_invoice_tool_rejects_negative_and_nonfinite_totals(records, invalid):
         ToolRegistry.calculate_invoice_totals(db, a)
 
 
-def test_invoice_tool_rejects_corrupt_null_record_without_guessing_zero(records):
-    db, a, _ = records
-    db.execute(text(
-        "UPDATE invoices SET amount = NULL WHERE business_id=:tenant AND status='overdue'"
-    ), {"tenant": a})
-    db.commit()
+def test_invoice_tool_rejects_null_record_without_guessing_zero():
+    # The actual database has a NOT NULL constraint. Simulate malformed
+    # data coming from a mocked adapter or an older schema without
+    # weakening real database constraints merely for this regression.
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    db = MagicMock()
+    db.query.return_value.filter.return_value.all.return_value = [
+        SimpleNamespace(amount=None)
+    ]
     with pytest.raises(ValueError, match="invoice.amount"):
-        ToolRegistry.calculate_invoice_totals(db, a)
+        ToolRegistry.calculate_invoice_totals(db, "tenant-a")
 
 
 def test_invalid_invoice_causes_workflow_failure_instead_of_action_success(records):
