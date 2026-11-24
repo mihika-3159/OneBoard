@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from apps.api.core.config import settings
 import os
@@ -134,6 +134,23 @@ def init_db():
                     "Production database missing required foreign-key constraints: "
                     + ", ".join(sorted(missing_foreign_keys))
                 )
+            # A manually stamped revision 006 could still contain raw bearer
+            # API credentials. Verify the data invariant, not only the stamp.
+            # Postgres regex queries a single matching row and never includes
+            # or logs sensitive keys in a startup exception.
+            if connection.dialect.name == "postgresql":
+                unsafe_key = connection.execute(text(
+                    "SELECT 1 FROM users WHERE api_key IS NOT NULL "
+                    "AND api_key !~ '^sha256:[0-9a-f]{64}
+
+    Base.metadata.create_all(bind=engine)
+ LIMIT 1"
+                )).first()
+                if unsafe_key is not None:
+                    raise RuntimeError(
+                        "Production database contains non-hashed API credentials; "
+                        "complete migration 006 and rotate invalid legacy keys"
+                    )
         return
 
     Base.metadata.create_all(bind=engine)
