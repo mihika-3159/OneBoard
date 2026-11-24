@@ -5,7 +5,7 @@ from typing import Optional, List
 import time
 from apps.api.core.database import get_db
 from apps.api.core.config import settings
-from apps.api.core.auth import get_current_user
+from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.models.business import User, Business
 from apps.api.services.ollama_gateway import ollama_gateway
 from apps.api.models.entities import Commitment
@@ -45,7 +45,7 @@ async def get_gateway_status(
 @router.post("/profile")
 def switch_model_profile(
     req: SwitchProfileRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
     """Persist model preferences per business, never in process-global state."""
