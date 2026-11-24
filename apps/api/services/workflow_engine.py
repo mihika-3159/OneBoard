@@ -1,6 +1,8 @@
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-from datetime import datetime
+from sqlalchemy import text
+import re
+from datetime import datetime, timedelta
 import json
 import logging
 import hashlib
@@ -276,7 +278,35 @@ class WorkflowEngine:
         workflow_id: str,
         trigger_source: str = "manual",
         dry_run: bool = False,
+        idempotency_key: Optional[str] = None,
     ) -> WorkflowRun:
+        # A key is a non-secret client-supplied request identity. PostgreSQL
+        # advisory transaction locking serializes first-use checks across
+        # independent API processes, while the DB unique constraint is the
+        # definitive integrity barrier.
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{8,128}", idempotency_key
+            ):
+                raise ValueError("Invalid workflow idempotency key")
+            if db.get_bind().dialect.name == "postgresql":
+                lock_hash = hashlib.sha256(
+                    (business_id + ":" + idempotency_key).encode("utf-8")
+                ).digest()[:8]
+                db.execute(
+                    text("SELECT pg_advisory_xact_lock(:key)"),
+                    {"key": int.from_bytes(lock_hash, "big", signed=True)},
+                )
+            previous = db.query(WorkflowRun).filter(
+                WorkflowRun.business_id == business_id,
+                WorkflowRun.idempotency_key == idempotency_key,
+            ).first()
+            if previous:
+                if (previous.workflow_id != workflow_id or
+                        (previous.verification_details or {}).get("dry_run") != dry_run):
+                    raise ValueError("Workflow idempotency key conflicts with a different request")
+                return previous
+
         wf = db.query(WorkflowDefinition).filter(
             WorkflowDefinition.id == workflow_id,
             WorkflowDefinition.business_id == business_id,
@@ -288,6 +318,7 @@ class WorkflowEngine:
         run = WorkflowRun(
             workflow_id=wf.id,
             business_id=business_id,
+            idempotency_key=idempotency_key,
             workflow_name=wf.name,
             status="running",
             trigger_source=trigger_source,
@@ -296,6 +327,50 @@ class WorkflowEngine:
         db.add(run)
         db.flush()
         return self._execute_steps(db, run, wf, ordered_nodes, 0, {}, dry_run=dry_run)
+
+    def reconcile_interrupted_runs(
+        self, db: Session, business_id: str, older_than_seconds: int = 900
+    ) -> int:
+        """Quarantine stale running records, never replay uncertain effects.
+
+        After a crash between a durable approval claim and final commit, the
+        run may be 'running' while a tool's effect is unknown. Automatic retry
+        is unsafe. An authorized operator may mark only sufficiently old
+        records as paused for manual review, without dispatching any tool.
+        """
+        if not business_id or not 300 <= older_than_seconds <= 86400:
+            raise ValueError("Recovery requires a tenant and age between 5 minutes and 1 day")
+        cutoff = datetime.utcnow() - timedelta(seconds=older_than_seconds)
+        stale = db.query(WorkflowRun).filter(
+            WorkflowRun.business_id == business_id,
+            WorkflowRun.status == "running",
+            WorkflowRun.started_at < cutoff,
+        ).all()
+        changed = 0
+        for run in stale:
+            # Conditional transition avoids resurrecting or pausing a run
+            # that another worker has already completed.
+            claimed = db.query(WorkflowRun).filter(
+                WorkflowRun.id == run.id,
+                WorkflowRun.business_id == business_id,
+                WorkflowRun.status == "running",
+            ).update({
+                "status": "paused",
+                "error_message": "Execution interrupted; manual review required before any retry",
+                "verified_success": False,
+            }, synchronize_session=False)
+            if claimed:
+                db.add(AuditLog(
+                    business_id=business_id,
+                    actor="Workflow recovery",
+                    action="quarantine_interrupted_workflow",
+                    target_entity="WorkflowRun",
+                    details={"run_id": run.id, "automatic_replay": False},
+                    risk_level="high",
+                ))
+                changed += 1
+        db.commit()
+        return changed
 
     def _dispatch_node_tool(
         self, db: Session, business_id: str, node_type: str, node_data: Dict[str, Any]
