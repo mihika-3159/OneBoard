@@ -22,6 +22,7 @@ from apps.api.core.auth import (
     generate_csrf_token,
     get_current_user,
     hash_password,
+    hash_api_key,
     record_failed_login,
     reset_login_throttle,
     set_auth_cookies,
@@ -113,7 +114,7 @@ def register(
         hashed_password=hashed_pw,
         role="founder",
         business_id=business.id,
-        api_key=generate_api_key(),
+        api_key=hash_api_key(generate_api_key()),
         is_active=True
     )
     db.add(user)
@@ -371,6 +372,6 @@ def regenerate_api_key_endpoint(
 ) -> Dict[str, str]:
     """Regenerate a new high-entropy API key for the authenticated user."""
     new_key = generate_api_key()
-    current_user.api_key = new_key
+    current_user.api_key = hash_api_key(new_key)
     db.commit()
     return {"api_key": new_key, "message": "API key successfully regenerated."}
