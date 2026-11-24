@@ -61,6 +61,28 @@ def register(
         )
 
     clean_email = req.email.strip().lower()
+
+    # Registration is an expensive anonymous write path: Argon2id hashing,
+    # workspace creation, and initial session issuance. Production must rate
+    # limit the transport source *across different email addresses*, before
+    # any password hashing or database writes. The existing shared PostgreSQL
+    # advisory-lock throttle serializes check+record across API workers.
+    #
+    # This is a conservative per-source budget; shared NATs may exhaust it.
+    # Never trust X-Forwarded-For supplied directly by the client.
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        if not request.client or not request.client.host:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Registration requires a verified client transport address."
+            )
+        source_key = f"registration-source:{request.client.host}"
+        check_login_throttle(source_key, db)
+        # Count ALL admitted attempts (including duplicates and failures).
+        # This commits the counter *before* a costly hash or account creation,
+        # so a failed transaction cannot silently reset the abuse budget.
+        record_failed_login(source_key, db)
+
     existing_user = db.query(User).filter(User.email == clean_email).first()
     if existing_user:
         raise HTTPException(
