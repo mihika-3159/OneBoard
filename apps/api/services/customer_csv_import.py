@@ -20,7 +20,7 @@ _STATES = {"active", "onboarding", "churn_risk", "churned"}
 _MAX_ROWS = 250
 
 
-def parse_customer_csv(csv_text: str) -> list[dict]:
+def parse_customer_csv(csv_text: str,scale=2) -> list[dict]:
     if not isinstance(csv_text, str) or not csv_text or len(csv_text.encode("utf-8")) > 1024 * 1024:
         raise ValueError("CSV must be nonempty and at most 1 MiB")
     try:
@@ -45,8 +45,8 @@ def parse_customer_csv(csv_text: str) -> list[dict]:
                 number = Decimal(row["mrr"].strip())
                 if not number.is_finite() or number < 0 or number > Decimal("100000000"):
                     raise ValueError("MRR must be a finite nonnegative number")
-                if number.as_tuple().exponent < -2:
-                    raise ValueError("MRR must have at most two decimal places")
+                if number!=number.quantize(Decimal(1).scaleb(-scale)):
+                    raise ValueError("MRR exceeds currency precision")
             except (InvalidOperation, ValueError, TypeError) as exc:
                 raise ValueError("Invalid customer MRR") from exc
             status = (row.get("status") or "active").strip().lower()
@@ -79,7 +79,10 @@ def import_customer_csv(
         raise ValueError("Invalid import idempotency key")
     if not 1 <= len(source_name) <= 100:
         raise ValueError("Source name must be 1-100 characters")
-    parsed = parse_customer_csv(csv_text)
+    from apps.api.models.business import Business
+    from apps.api.services.finance_ledger import precision
+    biz=db.query(Business).filter_by(id=business_id).first()
+    parsed = parse_customer_csv(csv_text,precision(biz.currency) if biz else 2)
     digest = hashlib.sha256(csv_text.encode("utf-8")).hexdigest()
     if dry_run:
         return {

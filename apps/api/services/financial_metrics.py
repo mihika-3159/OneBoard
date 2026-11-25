@@ -35,32 +35,34 @@ def _money(value: Any, label: str, scale=2) -> Decimal:
         raise ValueError(label + " is not a valid nonnegative amount") from exc
 
 
-def monthly_expense_amount(expense: Expense,scale=2) -> float:
+def monthly_expense_decimal(expense: Expense,scale=2) -> Decimal:
     """Normalize only known recurring periods; never guess unknown periods."""
     period = (expense.billing_period or "").strip().lower()
     amount = _money(expense.amount, "expense.amount",scale)
     if period == "annual":
-        return float((amount / Decimal(12)).quantize(
-            Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP
-        ))
+        return (amount / Decimal(12)).quantize(Decimal(1).scaleb(-scale),rounding=ROUND_HALF_UP)
     if period == "monthly":
-        return float(amount)
+        return amount
     if period in ("one-off", "one_time", "one-time"):
-        return 0.0
+        return Decimal(0)
     raise ValueError("Unrecognized expense billing period")
+
+def monthly_expense_amount(expense:Expense,scale=2)->float:
+    return float(monthly_expense_decimal(expense,scale))
 
 
 def runway_from_records(cash: float, monthly_burn: float, mrr: float,scale=2) -> tuple[float | None, str, float]:
     """Return months, status and signed net burn without an invented 999-month runway."""
     net_burn_decimal = Decimal(str(monthly_burn)) - Decimal(str(mrr))
-    net_burn = float(net_burn_decimal.quantize(Decimal(1).scaleb(-scale),rounding=ROUND_HALF_UP))
+    net_burn_decimal=net_burn_decimal.quantize(Decimal(1).scaleb(-scale),rounding=ROUND_HALF_UP)
+    net_burn = float(net_burn_decimal)
     if net_burn < 0:
         return None, "profitable", net_burn
     if net_burn == 0:
         return None, "breakeven", net_burn
     if cash <= 0:
         return 0.0, "critical_depleted", net_burn
-    exact_months = Decimal(str(cash)) / Decimal(str(net_burn))
+    exact_months = Decimal(str(cash)) / net_burn_decimal
     months = float(round(exact_months, 1))
     return months, ("healthy" if exact_months >= 12 else "warning" if exact_months >= 6 else "critical"), net_burn
 
@@ -105,7 +107,7 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
             issues.append(f"invalid_customer_mrr:{customer.id}")
     for expense in expenses:
         try:
-            expense_total += Decimal(str(monthly_expense_amount(expense,scale)))
+            expense_total += monthly_expense_decimal(expense,scale)
         except ValueError:
             issues.append(f"invalid_expense_period_or_amount:{expense.id}")
     for invoice in invoices:
@@ -128,7 +130,7 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     mrr = float(customer_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
     monthly_burn = float(expense_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
     overdue = float(overdue_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
-    runway, runway_status, net_burn = runway_from_records(cash, monthly_burn, mrr,scale)
+    runway, runway_status, net_burn = runway_from_records(cash, expense_total, customer_total,scale)
     configured = bool(customers or invoices or expenses or cash)
     if issues:
         # Partial figures are not a valid basis for a positive health claim.

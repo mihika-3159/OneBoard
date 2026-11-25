@@ -219,11 +219,13 @@ class SchedulerService:
                     else:
                         total_overdue = sum(amounts)
                         currency = (biz.currency or "USD").upper()
+                        from apps.api.services.finance_ledger import precision
+                        digits=precision(currency)
                         alerts.append({
                             "id": f"alert_overdue_invoices_{b_id}",
                             "type": "receivables_overdue",
                             "severity": "medium",
-                            "title": f"{len(overdue_invs)} Overdue Invoices ({currency} {total_overdue:,.2f})",
+                            "title": f"{len(overdue_invs)} Overdue Invoices ({currency} {total_overdue:,.{digits}f})",
                             "description": (
                                 "User-recorded overdue invoice amounts, not verified bank balances. "
                                 "Review settlement before issuing reminders."

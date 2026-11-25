@@ -276,9 +276,19 @@ def journal_list(period:str,offset:int=0,current_user:User=Depends(get_current_u
 def finance_invoices(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
     tenant=current_user.business_id;_lock(db,tenant)
     rows=db.query(Invoice).filter_by(business_id=tenant).order_by(Invoice.id).limit(501).all()
-    return {"records":[{"id":r.id,"invoice_number":r.invoice_number,"customer_name":r.customer_name,"status":r.status,
-        "amount":str(r.amount),"outstanding":str(ledger.invoice_balance(db,tenant,r)) if r.amount is not None else None,
-        "enrolled":bool(ledger.invoice_entries(db,tenant,r.id))} for r in rows[:500]],"truncated":len(rows)>500}
+    records=[]
+    for r in rows[:500]:
+        entries=ledger.invoice_entries(db,tenant,r.id)
+        origin=next((e for e in entries if e.kind in ledger.RECOGNITION),None)
+        try:balance=str(ledger.invoice_balance(db,tenant,r));issue=None
+        except ValueError as exc:balance=None;issue=str(exc)
+        original_outstanding=None
+        if origin and origin.currency!=origin.base_currency:
+            original_outstanding=ledger.major(sum(e.invoice_minor_delta or 0 for e in entries),origin.currency)
+        records.append({"id":r.id,"invoice_number":r.invoice_number,"customer_name":r.customer_name,"status":r.status,
+          "amount":str(r.amount),"outstanding":balance,"enrolled":bool(entries),"issue":issue,
+          "denomination":origin.currency if origin else None,"original_outstanding":original_outstanding})
+    return {"records":records,"truncated":len(rows)>500}
 
 class InvoiceCreateRequest(BaseModel):
     reference:str=Field(min_length=8,max_length=128)

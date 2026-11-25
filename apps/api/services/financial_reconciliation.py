@@ -24,14 +24,14 @@ _MAX_BYTES = 256 * 1024
 _MAX_ROWS = 500
 
 
-def money(value) -> Decimal:
+def money(value,scale=2) -> Decimal:
     try:
         result = Decimal(str(value))
         if not result.is_finite() or result < 0 or result > Decimal("100000000000"):
             raise ValueError("Nonfinite, negative or excessive financial amount")
-        if result.as_tuple().exponent < -2:
-            raise ValueError("Evidence amounts cannot have more than 2 decimal places")
-        return result.quantize(Decimal("0.01"))
+        quantum=Decimal(1).scaleb(-scale)
+        if result!=result.quantize(quantum):raise ValueError("Evidence amount exceeds currency precision")
+        return result.quantize(quantum)
     except (InvalidOperation, ValueError, TypeError) as exc:
         raise ValueError("Invalid financial evidence amount") from exc
 
@@ -70,8 +70,9 @@ def parse_evidence(csv_text: str) -> list[dict]:
                 raise ValueError("Evidence date must be YYYY-MM-DD") from exc
             if as_of > date.today():
                 raise ValueError("Evidence cannot be dated in the future")
+            from apps.api.services.finance_ledger import precision
             out.append({
-                "type": kind, "id": identity, "amount": money(row["amount"].strip()),
+                "type": kind, "id": identity, "amount": money(row["amount"].strip(),precision(currency)),
                 "currency": currency, "as_of": as_of.isoformat()
             })
         if not out:
@@ -120,7 +121,8 @@ def reconcile_financial_evidence(
         else:
             amount = (business.current_cash_balance if kind == "cash" else found.amount)
             try:
-                expected = money(amount)
+                from apps.api.services.finance_ledger import precision
+                expected = money(amount,precision(currency))
                 status = "matched_recorded_amount" if expected == row["amount"] else "amount_mismatch"
             except ValueError:
                 expected = None

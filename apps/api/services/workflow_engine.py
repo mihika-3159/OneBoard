@@ -24,6 +24,7 @@ class ToolRegistry:
     
     @staticmethod
     def read_overdue_invoices(db: Session, business_id: str, **kwargs) -> Dict[str, Any]:
+        from apps.api.services.finance_ledger import invoice_balance
         invoices = db.query(Invoice).filter(
             Invoice.business_id == business_id,
             or_(Invoice.status == "overdue", (Invoice.status == "sent") & (Invoice.due_date < datetime.utcnow()))
@@ -31,7 +32,7 @@ class ToolRegistry:
         return {
             "count": len(invoices),
             "invoices": [
-                {"id": i.id, "number": i.invoice_number, "customer": i.customer_name, "amount": float(i.amount) if i.amount is not None else None, "due_date": str(i.due_date)}
+                {"id": i.id, "number": i.invoice_number, "customer": i.customer_name, "amount": float(invoice_balance(db,business_id,i)) if i.amount is not None else None, "due_date": str(i.due_date)}
                 for i in invoices
             ]
         }
@@ -45,9 +46,12 @@ class ToolRegistry:
         # A financial workflow must not bypass the dashboard's data
         # quality checks: a negative, NaN, or missing amount must fail the
         # workflow visibly, never become an actionable collection total.
-        from apps.api.services.finance_ledger import invoice_balance
+        from apps.api.services.finance_ledger import invoice_balance,precision
+        from apps.api.models.business import Business
+        biz=db.query(Business).filter_by(id=business_id).first() if isinstance(db,Session) else None
+        scale=precision(biz.currency) if biz else 2
         total = sum(
-            (_money(invoice_balance(db,business_id,invoice) if hasattr(invoice,"id") else invoice.amount, "invoice.amount") for invoice in invoices),
+            (_money(invoice_balance(db,business_id,invoice) if hasattr(invoice,"id") else invoice.amount, "invoice.amount",scale) for invoice in invoices),
             Decimal("0.00"),
         )
         return {
@@ -65,11 +69,11 @@ class ToolRegistry:
         ).order_by(Invoice.id).all()
         drafts = []
         for inv in invoices:
-            from apps.api.services.finance_ledger import invoice_balance
-            amount=_money(invoice_balance(db,business_id,inv),"invoice.amount")
+            from apps.api.services.finance_ledger import invoice_balance,precision
             from apps.api.models.business import Business
             biz=db.query(Business).filter_by(id=business_id).first()
             currency=biz.currency if biz else "USD"
+            amount=_money(invoice_balance(db,business_id,inv),"invoice.amount",precision(currency))
             drafts.append({
                 "invoice_id": inv.id,
                 "recipient": inv.customer_name,

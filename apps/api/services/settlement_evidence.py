@@ -24,7 +24,8 @@ def record_settlement(db, tenant, *, invoice_id, source_reference, source_sha256
     when = date.fromisoformat(settled_on)
     if when.isoformat() != settled_on or when > date.today() or period != settled_on[:7]:
         raise ValueError("Settlement date and accounting period must agree")
-    original = money(amount)
+    from apps.api.services.finance_ledger import precision
+    original = money(amount,precision(currency))
     if original <= 0:
         raise ValueError("Settlement must be positive")
     try:
@@ -46,7 +47,7 @@ def record_settlement(db, tenant, *, invoice_id, source_reference, source_sha256
             raise ValueError("Same-currency settlement requires rate 1 and same_currency source")
     elif not fx_source.strip() or fx_source == "same_currency" or len(fx_source)>200:
         raise ValueError("Cross-currency settlement requires an explicit FX source")
-    converted = (original * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    converted = (original * rate).quantize(Decimal(1).scaleb(-precision(base)), rounding=ROUND_HALF_UP)
     if converted <= 0:
         raise ValueError("Settlement rounds to zero")
     payload = [invoice_id,source_sha256,str(original),currency,base,str(rate.normalize()),fx_source,settled_on,period]
@@ -64,7 +65,7 @@ def record_settlement(db, tenant, *, invoice_id, source_reference, source_sha256
     existing = db.query(SettlementEvidence).filter_by(business_id=tenant,invoice_id=invoice_id).all()
     if any(row.base_currency != base for row in existing):
         raise ValueError("Invoice settlement currency history is inconsistent")
-    if sum((Decimal(row.base_amount) for row in existing),Decimal(0)) + converted > money(invoice.amount):
+    if sum((Decimal(row.base_amount) for row in existing),Decimal(0)) + converted > money(invoice.amount,precision(base)):
         raise ValueError("Recorded settlement exceeds invoice amount")
     row = SettlementEvidence(business_id=tenant,invoice_id=invoice_id,
         source_reference=source_reference,source_sha256=source_sha256,request_sha256=digest,
