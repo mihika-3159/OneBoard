@@ -179,11 +179,16 @@ async def test_batch_gateway_validates_order_and_charges_every_input(monkeypatch
     gw=OllamaGateway()
     post=AsyncMock(return_value=httpx.Response(200,json={"embeddings":[[1.,0.1],[0.1,1.]]}))
     monkeypatch.setattr(gw,"_post_inference",post)
-    result=await gw.genuine_embeddings(["first","second"],"fixture")
+    from apps.api.core.config import settings
+    from apps.api.services.inference_budget import inference_tenant
+    monkeypatch.setattr(settings,"OLLAMA_MODEL_DIGESTS",{"fixture":"sha256:"+("a"*64)})
+    with inference_tenant("synthetic"):
+        result=await gw.genuine_embeddings(["first","second"],"fixture")
     assert result==[[1.,0.1],[0.1,1.]]
     assert post.call_args.args[0]=="/api/embed"
     assert estimated_tokens(post.call_args.args[1])==11
-    assert await gw.genuine_embeddings(["second","first"],"fixture")==list(reversed(result))
+    with inference_tenant("synthetic"):
+        assert await gw.genuine_embeddings(["second","first"],"fixture")==list(reversed(result))
     assert post.await_count==1
     post.return_value=httpx.Response(200,json={"embeddings":[[1.],[1.,2.]]})
     assert await gw.genuine_embeddings(["third","fourth"],"fixture")==[None,None]

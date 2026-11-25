@@ -8,7 +8,7 @@ def main():
         resource.setrlimit(resource.RLIMIT_CPU,(20,20))
         resource.setrlimit(resource.RLIMIT_FSIZE,(0,0))
     try:
-        from apps.api.services.integrations.local_files import LocalFilesAdapter
+        from apps.api.services.integrations.local_files import LocalFilesAdapter,SAFE_ERRORS
         data=sys.stdin.buffer.read(10*1024*1024+1)
         if not 1<=len(data)<=10*1024*1024:return 2
         parsed=LocalFilesAdapter._extract(data,"source"+sys.argv[1])
@@ -16,6 +16,9 @@ def main():
         if len(encoded)>8*1024*1024:return 2
         sys.stdout.buffer.write(encoded)
         return 0
-    except Exception:
+    except Exception as exc:
+        reason=str(exc)
+        if "SAFE_ERRORS" in locals() and reason in SAFE_ERRORS:
+            sys.stdout.buffer.write(json.dumps({"error":reason}).encode())
         return 2
 if __name__=="__main__":sys.exit(main())

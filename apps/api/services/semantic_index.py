@@ -219,14 +219,15 @@ async def retrieve(db, tenant, query, top_k, filters=None):
              or_(*(col.in_(near) for col,near in zip(columns,probes)))
     )
     from apps.api.services.memory_ranking import filter_scope
-    rows=filter_scope(rows,filters).order_by(priority.desc(),SemanticVector.chunk_id).limit(201).all()
+    candidate_cap=600
+    rows=filter_scope(rows,filters).order_by(priority.desc(),SemanticVector.chunk_id).limit(candidate_cap+1).all()
     scored = [{"chunk_id": c.id, "document_id": c.document_id, "source_title": title,
                "content": c.content, "score": round(cosine(vector, v.vector),4),
                "score_kind": "genuine_model_cosine_not_verified_relevance",
                "search_strategy": "indexed_angular_lsh_approximate",
-               "candidate_limit_applied": len(rows)>200, "candidate_count": min(len(rows),200),
+               "candidate_limit_applied": len(rows)>candidate_cap, "candidate_count": min(len(rows),candidate_cap),
                "embedding_model": model, "metadata": c.metadata_tags or {}}
-              for v,c,title in rows[:200]]
+              for v,c,title in rows[:candidate_cap]]
     return sorted(scored, key=lambda row: row["score"], reverse=True)[:top_k]
 
 

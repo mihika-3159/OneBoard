@@ -19,6 +19,7 @@ MAX_XLSX_ROWS = 1_000
 MAX_XLSX_COLUMNS = 100
 MAX_PDF_PAGES = 100
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
+SAFE_ERRORS={"Invalid PDF signature","Encrypted PDF unsupported","PDF page limit exceeded","PDF text extraction limit exceeded","Spreadsheet archive exceeds extraction limit","Spreadsheet row limit exceeded","Spreadsheet column limit exceeded","Workbook sheet limit exceeded","Workbook row limit exceeded","Workbook text limit exceeded","Invalid workbook archive","Extracted document text exceeds processing limit"}
 
 
 def _bounded_text(text: str) -> str:
@@ -36,23 +37,29 @@ class LocalFilesAdapter:
             raise ValueError("Invalid upload length")
         ext=Path(filename.replace("\\","/")).suffix.lower()
         if ext not in (".pdf",".xlsx"):
-            return LocalFilesAdapter._extract(file_bytes,filename)
+            try:return LocalFilesAdapter._extract(file_bytes,filename)
+            except csv.Error as exc:raise ValueError("Malformed CSV") from exc
         # Untrusted compressed document parsing is isolated from the API
         # process. Bound concurrency and kill timed-out parser workers.
         if not _PARSE_SLOTS.acquire(timeout=2):
             raise ValueError("Parser busy; retry")
         try:
             env={key:os.environ[key] for key in ("PATH","SYSTEMROOT","WINDIR","TEMP","TMP","PYTHONPATH","LANG","LC_ALL") if key in os.environ}
+            env.update(OPENBLAS_NUM_THREADS="1",OMP_NUM_THREADS="1",MKL_NUM_THREADS="1")
             result=subprocess.run([sys.executable,"-m","apps.api.services.integrations.local_file_worker",ext],
                 input=file_bytes,capture_output=True,timeout=25,env=env,check=False)
-            if result.returncode or len(result.stdout)>8*1024*1024:
-                raise ValueError("Document parser rejected input")
+            if len(result.stdout)>8*1024*1024:raise ValueError("Document parser rejected input")
             parsed=json.loads(result.stdout)
+            if result.returncode:
+                reason=parsed.get("error") if isinstance(parsed,dict) else None
+                if reason in SAFE_ERRORS:raise ValueError(reason)
+                raise ValueError("Document parser rejected input")
             if not isinstance(parsed,dict) or parsed.get("file_type")!=ext[1:] or not isinstance(parsed.get("text"),str):
                 raise ValueError("Invalid parser result")
             parsed["metadata"]={**parsed.get("metadata",{}),"filename":Path(filename.replace("\\","/")).name}
             return parsed
-        except (subprocess.TimeoutExpired,OSError,ValueError):
+        except (subprocess.TimeoutExpired,OSError,ValueError) as exc:
+            if str(exc) in SAFE_ERRORS:raise ValueError(str(exc)) from None
             raise ValueError("Document could not be parsed within resource limits") from None
         finally:
             _PARSE_SLOTS.release()
