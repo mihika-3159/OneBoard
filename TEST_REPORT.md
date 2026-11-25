@@ -1013,3 +1013,10 @@ certified. Sensitive validation responses are redacted. New CI pending.
 Batch C increment 4: automatic bounded genuine embedding backfill, validated
 evidence-content SHA-256, local provider credential revocation/cancelled
 intents, additional quotas and no-store sensitive endpoints. CI pending.
+
+
+Batch C increment 5: adversarial SQLite tests, PostgreSQL old-synonym/index
+and tenant deletion tests, and browser owner export/deletion regression.
+No external provider was registered or called by this engineering run.
+Model semantic quality/recall, real provider authorization, external backup
+erasure and independent certification remain unverified. CI pending.

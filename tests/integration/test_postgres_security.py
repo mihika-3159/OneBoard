@@ -1242,3 +1242,70 @@ def test_25_postgres_rls_scoped_reads_and_writes_with_non_superuser():
             conn.execute(text(f"DROP OWNED BY {role}"))
             conn.execute(text(f"DROP ROLE {role}"))
         engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_26_postgres_indexed_semantic_retrieves_old_synonym_and_isolates_tenants(monkeypatch):
+    from uuid import uuid4
+    from unittest.mock import AsyncMock
+    from apps.api.models.memory import MemoryDocument,MemoryChunk
+    from apps.api.models.operations import SemanticVector
+    from apps.api.services import semantic_index
+    from apps.api.services.memory_engine import memory_engine
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    a,b=str(uuid4()),str(uuid4())
+    try:
+        with factory() as db:
+            old=memory_engine.add_document_with_chunks(db,a,"Old","quarterly revenue")
+            memory_engine.add_document_with_chunks(db,b,"Private","private revenue")
+            old_id=old.id
+            monkeypatch.setattr(semantic_index.ollama_gateway,"genuine_embedding",AsyncMock(return_value=[1.,0.1,0.2]))
+            assert (await semantic_index.index_pending(db,a))["indexed"]==1
+            assert (await semantic_index.index_pending(db,b))["indexed"]==1
+            db.add_all([MemoryChunk(business_id=a,document_id=old_id,content=f"new note {i}",chunk_index=i+1) for i in range(1100)])
+            db.commit()
+            result=await memory_engine.search_semantic_memory(db,a,"turnover",5)
+            assert len(result)==1 and result[0]["document_id"]==old_id
+            assert result[0]["search_strategy"]=="indexed_angular_lsh_approximate"
+            assert {x["name"] for x in inspect(engine).get_indexes("semantic_vectors")} >= {f"ix_semantic_band_{i}" for i in range(4)}
+    finally:
+        with factory() as db:
+            db.query(SemanticVector).filter(SemanticVector.business_id.in_([a,b])).delete(synchronize_session=False)
+            db.query(MemoryChunk).filter(MemoryChunk.business_id.in_([a,b])).delete(synchronize_session=False)
+            db.query(MemoryDocument).filter(MemoryDocument.business_id.in_([a,b])).delete(synchronize_session=False)
+            db.commit()
+        engine.dispose()
+
+
+def test_27_postgres_workspace_deletion_preserves_other_tenant():
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from apps.api.models.business import Business,User
+    from apps.api.models.memory import MemoryDocument
+    from apps.api.services.data_lifecycle import delete_workspace
+    from apps.api.services.memory_engine import memory_engine
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    a,b=str(uuid4()),str(uuid4())
+    owners={a:str(uuid4()),b:str(uuid4())}
+    try:
+        with factory() as db:
+            for tenant in (a,b):
+                db.add(Business(id=tenant,name="synthetic",owner_id=owners[tenant]))
+            db.flush()
+            for tenant in (a,b):
+                db.add(User(id=owners[tenant],business_id=tenant,email=tenant+"@example.test",name="synthetic",hashed_password="synthetic"))
+            db.commit()
+            for tenant in (a,b):
+                memory_engine.add_document_with_chunks(db,tenant,"synthetic","text")
+            receipt=delete_workspace(db,SimpleNamespace(id=owners[a],business_id=a),"DELETE "+a)
+            assert not receipt["backup_copies_deleted"]
+            assert db.get(Business,a) is None
+            assert db.query(MemoryDocument).filter_by(business_id=b).count()==1
+    finally:
+        with factory() as db:
+            for tenant in (a,b):
+                if db.get(Business,tenant):
+                    delete_workspace(db,SimpleNamespace(id=owners[tenant],business_id=tenant),"DELETE "+tenant)
+        engine.dispose()
