@@ -1605,3 +1605,60 @@ def test_33_webhook_dedup_and_dispatch_serialize_across_postgres_workers():
             assert event.status=="dispatched"
             assert db.query(WorkflowRun).filter_by(business_id=tenant_id).count()==1
     finally:engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_34_postgres_indexes_and_retrieves_full_20000_chunk_quota(monkeypatch):
+    """Capacity/storage/query-path stress using deterministic fixture vectors.
+    Genuine-model quality is evaluated separately in mandatory Ollama CI.
+    """
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from apps.api.models.memory import MemoryDocument,MemoryChunk,MemoryDocumentState,MemoryRelevanceFeedback
+    from apps.api.models.operations import SemanticVector
+    from apps.api.services import semantic_index as idx
+    from apps.api.services.memory_engine import memory_engine
+    from apps.api.services.data_lifecycle import delete_documents
+    from sqlalchemy.orm import Session
+    import time
+    tenant,foreign=str(uuid4()),str(uuid4())
+    engine=_engine()
+    def vector(body):
+        if "historicalneedle" in body:return [1.0]+[0.01]*15
+        return [-1.0]+[0.01]*15
+    async def batch(texts,model):return [vector(t) for t in texts]
+    async def single(query,model):return vector(query)
+    gateway=SimpleNamespace(get_model_for_task=lambda task:"synthetic-scale-test",genuine_embeddings=batch,genuine_embedding=single)
+    monkeypatch.setattr(idx,"ollama_gateway",gateway)
+    try:
+        with Session(engine) as db:
+            ids=[]
+            for i in range(200):
+                did=str(uuid4());ids.append(did)
+                db.add(MemoryDocument(id=did,business_id=tenant,title=f"Archive {i:03d}",
+                                      content_hash="a"*64,chunk_count=100,file_type="txt"))
+            db.flush()
+            for offset in range(0,20000,1000):
+                db.bulk_insert_mappings(MemoryChunk,[{"id":str(uuid4()),"business_id":tenant,"document_id":ids[i//100],
+                    "chunk_index":i%100,"content":f"historicalneedle confidential ledger {i}" if i==0 else f"routine operations note {i}","metadata_tags":{}}
+                    for i in range(offset,offset+1000)])
+            db.commit()
+            start=time.perf_counter();done=0
+            for _ in range(313):
+                result=await idx.index_pending(db,tenant,limit=64,gateway=gateway)
+                assert result["indexed"]==result["attempted"]>0
+                done+=result["indexed"]
+            assert done==20000
+            assert db.query(SemanticVector).filter_by(business_id=tenant).count()==20000
+            assert db.query(MemoryDocumentState).filter_by(business_id=tenant,status="ready").count()==200
+            assert (await idx.index_pending(db,tenant,gateway=gateway))["attempted"]==0
+            result=await memory_engine.search_semantic_memory(db,tenant,"historicalneedle",5)
+            assert result[0]["document_id"]==ids[0] and "historicalneedle" in result[0]["content"]
+            assert "semantic" in result[0]["channels"] and "lexical" in result[0]["channels"]
+            assert not await memory_engine.search_semantic_memory(db,foreign,"historicalneedle",5)
+            print("20k fixture indexed in",round(time.perf_counter()-start,2),"seconds")
+    finally:
+        with Session(engine) as db:
+            ids=[row[0] for row in db.query(MemoryDocument.id).filter_by(business_id=tenant)]
+            delete_documents(db,tenant,ids);db.commit()
+        engine.dispose()

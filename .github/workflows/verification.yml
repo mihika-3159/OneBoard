@@ -129,6 +129,8 @@ jobs:
         run: |
           python scripts/require_test_suite.py 20 ollama-full.xml tests/test_ollama_integration.py -k 'not TestLiveAPIEndpoints'
           python scripts/require_test_suite.py 5 ollama-smoke.xml tests/test_ollama_live_ci.py
+      - name: Evaluate real hybrid retrieval on 2048 embedded business records
+        run: python -m scripts.benchmark_memory --output memory-benchmark.json
       - name: Verify provider slot release on disconnect and worker termination
         run: python -m scripts.verify_provider_cancellation
       - name: Benchmark the real model with synthetic quality and resource cases
@@ -161,6 +163,7 @@ jobs:
           path: |
             ollama-full.xml
             ollama-smoke.xml
+            memory-benchmark.json
             model-benchmark.json
             council-benchmark.json
             live-api.xml
@@ -213,7 +216,7 @@ jobs:
           createdb -h 127.0.0.1 -U oneboard_ci queue_test
           python scripts/require_test_suite.py 2 queue.xml tests/test_inference_queue_postgres.py
       - name: Run disposable PostgreSQL migration and concurrency tests
-        run: python scripts/require_test_suite.py 33 postgres-required.xml tests/integration/test_postgres_security.py
+        run: python scripts/require_test_suite.py 34 postgres-required.xml tests/integration/test_postgres_security.py
       - name: Verify full PostgreSQL 16 logical backup and restore in disposable CI
         env:
           ONEBOARD_CI_DISPOSABLE_RESTORE: "1"
