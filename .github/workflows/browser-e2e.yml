@@ -12,6 +12,7 @@ jobs:
     env:
       AUTH_SECRET_KEY: "e2e-test-secret-only-0123456789abcdef0123456789abcdef"
       ONEBOARD_DEMO_MODE: "false"
+      CORS_ORIGINS: "http://127.0.0.1:4173"
       DATABASE_URL: "sqlite:///./oneboard_browser_e2e.sqlite3"
       PYTHONPATH: "."
     steps:

@@ -20,7 +20,7 @@ async function clickRequest(page:Page,button:string,path:string,method='POST') {
     page.waitForResponse(r=>new URL(r.url()).pathname===path&&r.request().method()===method),
     page.getByRole('button',{name:button,exact:true}).click()
   ]);
-  expect(response.status(),path).toBe(200);
+  expect(response.status(),path+': '+await response.text()).toBe(200);
   return response.json();
 }
 test('real buttons import CSV, search a stored document and refresh financial data',async({page})=>{
@@ -70,7 +70,7 @@ test('real command, workflow, agent, boardroom and settings controls operate on 
   const csrf=cookies.find(c=>c.name==='oneboard_csrf')?.value;
   expect(csrf).toBeTruthy();
   const created=await page.request.post('/api/workflows',{headers:{'X-CSRF-Token':csrf!,'Origin':'http://127.0.0.1:4173'},data:{name:'Synthetic button workflow',nodes:[{id:'start',type:'trigger',data:{}}],edges:[]}});
-  expect(created.status()).toBe(200);
+  expect(created.status(),await created.text()).toBe(200);
   const workflow=await created.json();
   await tab(page,'Overview');
   await tab(page,'Workflow Studio');

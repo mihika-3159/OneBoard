@@ -220,9 +220,11 @@ jobs:
       - name: Python dependency vulnerability audit
         run: |
           python -m venv /tmp/oneboard-audit
-          /tmp/oneboard-audit/bin/pip install -r apps/api/requirements.txt pip-audit
+          /tmp/oneboard-audit/bin/python -m pip install --upgrade 'pip>=26.2.0' 'setuptools>=84.1.0'
+          /tmp/oneboard-audit/bin/python -m pip install -r apps/api/requirements.txt pip-audit
           /tmp/oneboard-audit/bin/pip-audit --strict --format json --output pip-audit.json
       - name: Locked Node dependency vulnerability audit (high or critical fail)
+        if: success() || failure()
         working-directory: apps/web
         run: |
           npm ci --ignore-scripts --no-audit --no-fund

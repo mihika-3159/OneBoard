@@ -1077,3 +1077,18 @@ test-gate fault tests. Required Python dependency audit, locked Node audit
 Dependabot update configuration. Secret scan is checkout-only, not a
 complete history audit. Existing disposable restore safety and fault
 checks preserved. CI pending.
+
+
+Batch D repair: the full Ollama gateway and smoke suites passed 20/20 and
+5/5 (zero skips) on d147de9. Its live API mutation failures exposed missing
+CI cookie Origin allowlist; corrected in 8068c38. On 8068c38, PostgreSQL
+27/27 and both restores passed, plus measured 2,324 HTTPS requests over
+20.17 seconds (six tenants, two workers, 401 expected quota denials, zero
+unexpected errors, median 13.7 ms and p95 22.5 ms), with restart verified.
+Expanded browser tests exposed real upload CSRF defect: now uses the
+central authenticated multipart client. Browser fixture Origin explicitly
+allowlisted only in CI. Removed hardcoded demo resolution text; founder
+must supply actual resolution. Audit reported vulnerable cryptography
+48.0.1, pip 24.0 and setuptools 79.0.1; minimum fixed versions from its
+advisory output are cryptography 50, pip 26.2 and setuptools 84.1.
+No advisory ignored. Mandatory exact-head rerun required.

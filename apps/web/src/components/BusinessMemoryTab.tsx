@@ -22,6 +22,8 @@ export const BusinessMemoryTab: React.FC = () => {
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
   const [isResolving, setIsResolving] = useState<string | null>(null);
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [resolutionDrafts, setResolutionDrafts] = useState<Record<string, string>>({});
 
   // File Upload State
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -56,16 +58,15 @@ export const BusinessMemoryTab: React.FC = () => {
   };
 
   const handleResolveConflict = async (conflictId: string) => {
+    const resolution = (resolutionDrafts[conflictId] || '').trim();
+    if (!resolution) return;
+    setResolutionError(null);
     setIsResolving(conflictId);
     try {
-      await api.resolveConflict(
-        conflictId,
-        'Confirmed: Public tier remains $59/mo, Acme contract grandfathered at promotional $49/mo.',
-        'custom'
-      );
+      await api.resolveConflict(conflictId, resolution, 'custom');
       await loadMemoryData();
     } catch (e) {
-      console.error('Conflict resolution failed', e);
+      setResolutionError(e instanceof Error ? e.message : 'Resolution failed. Please retry.');
     } finally {
       setIsResolving(null);
     }
@@ -77,22 +78,11 @@ export const BusinessMemoryTab: React.FC = () => {
 
     setIsUploading(true);
     setUploadStatus(null);
-    const formData = new FormData();
-    formData.append('file', uploadFile);
-
     try {
-      const res = await fetch('/api/memory/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks stored; semantic embeddings are indexed separately).`);
-        setUploadFile(null);
-        await loadMemoryData();
-      } else {
-        setUploadStatus(`Error: ${data.detail}`);
-      }
+      const data = await api.uploadDocument(uploadFile);
+      setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks stored; semantic embeddings are indexed separately).`);
+      setUploadFile(null);
+      await loadMemoryData();
     } catch (err: any) {
       setUploadStatus(`Upload failed: ${err.message}`);
     } finally {
@@ -143,6 +133,7 @@ export const BusinessMemoryTab: React.FC = () => {
       {/* 1. Conflict Detection View (Demo Scenario A) */}
       {activeSubTab === 'conflicts' && (
         <div className="space-y-4">
+          {resolutionError && <p role="alert" className="text-red-300">{resolutionError}</p>}
           <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200">
             <span className="font-bold block mb-0.5">Automated Discrepancy & Provenance Audit:</span>
             When multiple connected documents disagree, OneBoard prevents silent data overwrites by classifying the discrepancy and requesting founder ratification.
@@ -172,13 +163,13 @@ export const BusinessMemoryTab: React.FC = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source A (Official Catalog)</span>
+                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source A</span>
                     <div className="font-semibold text-slate-200">{conf.source_a.name}</div>
                     <div className="text-indigo-400 font-mono text-sm">{conf.source_a.value}</div>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source B (Customer Contract)</span>
+                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source B</span>
                     <div className="font-semibold text-slate-200">{conf.source_b.name}</div>
                     <div className="text-amber-400 font-mono text-sm">{conf.source_b.value}</div>
                   </div>
@@ -195,13 +186,23 @@ export const BusinessMemoryTab: React.FC = () => {
                     <span className="text-slate-300">{conf.suggested_resolution}</span>
                   </div>
                   {conf.status === 'unresolved' && (
+                    <div className="space-y-2 w-full">
+                    <textarea
+                      aria-label="Founder resolution"
+                      value={resolutionDrafts[conf.id] || ''}
+                      onChange={event => setResolutionDrafts(old => ({...old, [conf.id]:event.target.value}))}
+                      placeholder="Record your evidence-based resolution"
+                      maxLength={4000}
+                      className="w-full p-2 rounded-lg bg-slate-900 border border-slate-700"
+                    />
                     <button
                       onClick={() => handleResolveConflict(conf.id)}
-                      disabled={isResolving === conf.id}
+                      disabled={isResolving === conf.id || !resolutionDrafts[conf.id]?.trim()}
                       className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl transition whitespace-nowrap self-start sm:self-auto"
                     >
                       {isResolving === conf.id ? 'Applying...' : 'Approve Resolution'}
                     </button>
+                    </div>
                   )}
                 </div>
               </div>
