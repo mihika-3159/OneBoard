@@ -1,7 +1,7 @@
 """Bounded expiry cleanup, keyset browsing, and tenant-local query samples."""
 from datetime import datetime,timedelta
 import base64,hashlib,hmac,json,math,time
-from sqlalchemy import select,delete,update,func,and_,or_
+from sqlalchemy import select,delete,update,func,and_,or_,text
 from apps.api.core.database import Base
 from apps.api.models.business import LoginThrottleState,AccountSecurity
 from apps.api.models.operations import (PortableArchive,PortableArchivePage,ProviderAuthorization,TenantResourceWindow,ScheduledJobLease,DatabasePerformanceSample)
@@ -15,10 +15,21 @@ def cleanup_global(db,now=None):
     # The conditional delete rechecks the clock under concurrent row locks.
     cutoff=now-86400
     ids=[x[0] for x in db.query(LoginThrottleState.identifier_hash).filter(LoginThrottleState.window_started_at<cutoff).order_by(LoginThrottleState.window_started_at,LoginThrottleState.identifier_hash).limit(1000)]
-    count=db.execute(delete(LoginThrottleState).where(LoginThrottleState.identifier_hash.in_(ids),LoginThrottleState.window_started_at<cutoff)).rowcount
-    # Do not delete job coordination identities or active leases. Clear only
-    # expired owner tokens after generous grace; claim_job remains authoritative.
-    count+=db.execute(update(ScheduledJobLease).where(ScheduledJobLease.owner_token.is_not(None),ScheduledJobLease.lease_until<now-86400).values(owner_token=None,lease_until=0)).rowcount
+    count=0
+    for ident in ids:
+        if db.get_bind().dialect.name=="postgresql":
+            # Same advisory lock as authentication, reconstructable from hash.
+            lock_id=int.from_bytes(bytes.fromhex(ident)[:8],"big",signed=True)
+            if not db.execute(text("SELECT pg_try_advisory_xact_lock(:key)"),{"key":lock_id}).scalar_one():continue
+        count+=db.execute(delete(LoginThrottleState).where(LoginThrottleState.identifier_hash==ident,LoginThrottleState.window_started_at<cutoff)).rowcount
+    # Do not clear any lease while its execution lock may still be held.
+    from apps.api.services.durable_jobs import _key
+    jobs=[x[0] for x in db.query(ScheduledJobLease.job_key).filter(ScheduledJobLease.owner_token.is_not(None),ScheduledJobLease.lease_until<now-86400).limit(100)]
+    for job in jobs:
+        if db.get_bind().dialect.name=="postgresql":
+            if not db.execute(text("SELECT pg_try_advisory_xact_lock(:key)"),{"key":_key(job)}).scalar_one():continue
+            if not db.execute(text("SELECT pg_try_advisory_xact_lock(:key)"),{"key":_key(job+":claim")}).scalar_one():continue
+        count+=db.execute(update(ScheduledJobLease).where(ScheduledJobLease.job_key==job,ScheduledJobLease.lease_until<now-86400).values(owner_token=None,lease_until=0)).rowcount
     db.commit();return count
 
 def cleanup_tenant(db,tenant,now=None):

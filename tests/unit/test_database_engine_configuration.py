@@ -13,5 +13,6 @@ def test_postgresql_uses_connection_health_check_without_sqlite_arguments():
         "postgresql+psycopg://user:password@localhost/oneboard",
     ):
         options = engine_options(url)
-        assert options == {"pool_pre_ping": True}
+        from apps.api.core.config import settings
+        assert options == {"pool_pre_ping": True,"pool_size":settings.DB_POOL_SIZE,"max_overflow":settings.DB_MAX_OVERFLOW,"pool_timeout":settings.DB_POOL_TIMEOUT_SECONDS,"pool_recycle":settings.DB_POOL_RECYCLE_SECONDS}
         assert "connect_args" not in options

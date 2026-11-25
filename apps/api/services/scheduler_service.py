@@ -121,7 +121,7 @@ class SchedulerService:
         if settings.ONEBOARD_PRODUCTION_MODE and tenants:
             from concurrent.futures import ThreadPoolExecutor
             # Independent tenant scopes; no shared Session between workers.
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            with ThreadPoolExecutor(max_workers=max(1,min(4,(settings.DB_POOL_SIZE+settings.DB_MAX_OVERFLOW-2)//2))) as pool:
                 failed=sum(pool.map(run_tenant,tenants))
         else:
             failed=sum(run_tenant(t) for t in tenants)

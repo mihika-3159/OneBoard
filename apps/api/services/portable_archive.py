@@ -82,6 +82,7 @@ def add_page(db,row,table,records,descriptors):
     row.page_count+=1;row.row_count+=len(records);row.byte_count+=size;descriptors.append(d);db.flush()
 def capture(db,user):
     tenant,actor=user.business_id,user.id;signing_key()
+    request_context={k:db.info[k] for k in ("oneboard_request","oneboard_auth","oneboard_founder") if k in db.info}
     bind=db.get_bind()
     # Release caller's read transaction before opening the snapshot connection.
     db.rollback()
@@ -89,6 +90,7 @@ def capture(db,user):
         if conn.dialect.name=="postgresql":conn=conn.execution_options(isolation_level="REPEATABLE READ")
         else:conn.exec_driver_sql("BEGIN IMMEDIATE")
         with Session(bind=conn,autoflush=False) as snap:
+            snap.info.update(request_context)
             scope_tenant_session(snap,tenant)
             tenant_lifecycle_lock(snap,tenant)
             _lock(snap,tenant)

@@ -427,7 +427,7 @@ class ProviderDelivery(Base):
 
 class PortableArchive(Base):
     __tablename__="portable_archives"
-    __table_args__=(Index("ix_portable_archive_tenant_expiry","business_id","expires_at"),)
+    __table_args__=(Index("ix_portable_archive_tenant_expiry","business_id","expires_at"),UniqueConstraint("business_id","kind",name="uq_portable_archive_tenant_kind"))
     id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
     business_id=Column(String(36),nullable=False)
     actor_id=Column(String(36),nullable=False)

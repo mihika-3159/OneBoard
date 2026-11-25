@@ -10,7 +10,7 @@ def test_encrypted_restore_checks_actual_alembic_head():
     current_head = ScriptDirectory.from_config(
         Config(str(ROOT / "alembic.ini"))
     ).get_current_head()
-    assert current_head == "023_batch_l_providers"
+    assert current_head == "024_batch_m_storage"
     source = (ROOT / "scripts/operations/test_encrypted_restore.py").read_text("utf-8")
     assert f'revision != "{current_head}"' in source
     assert "Restore scratch database already exists; refusing overwrite" in source

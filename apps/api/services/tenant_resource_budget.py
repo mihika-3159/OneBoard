@@ -47,6 +47,8 @@ def consume_tenant_budget(
     if not math.isfinite(now) or now < 0:
         raise ValueError("Invalid request clock")
     if db.get_bind().dialect.name == "postgresql":
+        from apps.api.services.tenant_storage import _lock
+        _lock(db,business_id)
         key = int.from_bytes(
             hashlib.sha256((business_id + ":budget:" + resource).encode()).digest()[:8],
             "big", signed=True
