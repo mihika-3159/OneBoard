@@ -82,7 +82,7 @@ def workspace(db,tenant):
     return row
 
 def ensure_open(db,tenant,period):
-    if db.query(AccountingClose.id).filter_by(business_id=tenant,period=period).first():raise ValueError("Accounting period is closed")
+    if db.query(AccountingClose.id).filter(AccountingClose.business_id==tenant,AccountingClose.period>=period).first():raise ValueError("Accounting period is closed or precedes a closed period")
 
 def serialize(row):
     return {"id":row.id,"reference":row.reference,"kind":row.kind,"invoice_id":row.invoice_id,"related_entry_id":row.related_entry_id,
@@ -204,6 +204,9 @@ def close_period(db,tenant,actor,period,confirmation):
     old=db.query(AccountingClose).filter_by(business_id=tenant,period=period).first()
     if old:return serialize_close(old)
     if db.query(AccountingClose.id).filter(AccountingClose.business_id==tenant,AccountingClose.period>period).first():raise ValueError("Cannot close before an already closed later period")
+    closed={r[0] for r in db.query(AccountingClose.period).filter_by(business_id=tenant).all()}
+    older={r[0] for r in db.query(JournalEntry.period).filter(JournalEntry.business_id==tenant,JournalEntry.period<period).distinct().all()}
+    if older-closed:raise ValueError("Close earlier journal periods first")
     snapshot=statement(db,tenant,period)
     if not snapshot["entry_count"]:raise ValueError("Cannot close an empty journal period")
     if snapshot["unmatched_bank_lines"] or snapshot["unmatched_cash_entries"]:raise ValueError("Reconcile all statement and cash entries before close")
