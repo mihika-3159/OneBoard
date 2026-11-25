@@ -182,12 +182,33 @@ class WorkflowEngine:
             raise ValueError("Cycle detected in workflow graph")
         return [by_id[node_id] for node_id in order]
 
+    @staticmethod
+    def tool_policy(node_type, node_data):
+        """Server-owned capabilities; labels and model-supplied risk cannot grant access."""
+        connector = node_data.get("connector", "")
+        operation = node_data.get("operation")
+        if node_type in ("trigger", "approval"):
+            return "control"
+        if node_type == "data_fetch" and connector in ("demo_finance", "demo_commitments"):
+            return "tenant_read"
+        if node_type == "calculate" and connector in ("", "demo_finance"):
+            return "tenant_read"
+        if node_type == "action" and connector == "demo_email" and operation == "draft_invoice_reminders":
+            return "local_draft"
+        return "denied"
+
+    @staticmethod
+    def _action_digest(node):
+        return hashlib.sha256(json.dumps(node,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode()).hexdigest()
+
     def validate_workflow(self, definition: Dict[str, Any]) -> Dict[str, Any]:
         try:
             nodes = self._ordered_nodes(definition)
             return {
                 "is_valid": True,
                 "node_count": len(nodes),
+                "unsupported_tools": [n["id"] for n in nodes if self.tool_policy(n.get("type"),n.get("data") or {})=="denied"],
+                "external_execution_authorized": False,
                 "edge_count": len(definition.get("edges", [])),
             }
         except ValueError as exc:
@@ -235,7 +256,7 @@ class WorkflowEngine:
                     risk_level="high",
                     title=f"Approval Required for '{wf.name}'",
                     description=f"Action checkpoint reached: '{label}'. External actions pending confirmation.",
-                    payload={"step_id": node_id, "node_data": node_data},
+                    payload={"step_id": node_id, "node_data": node_data, "action_digest": self._action_digest(node)},
                 )
                 db.add(request)
                 db.flush()
@@ -414,8 +435,9 @@ class WorkflowEngine:
     def _dispatch_node_tool(
         self, db: Session, business_id: str, node_type: str, node_data: Dict[str, Any]
     ) -> Dict[str, Any]:
+        if self.tool_policy(node_type,node_data) == "denied":
+            raise ValueError("Unsupported workflow tool or node type")
         connector = node_data.get("connector", "")
-        label = str(node_data.get("label", "")).lower()
 
         if node_type == "trigger":
             return {"triggered": True, "type": "control"}
@@ -474,6 +496,13 @@ class WorkflowEngine:
             checkpoint_index = order_ids.index(checkpoint)
         except ValueError as exc:
             raise ValueError("Approval checkpoint no longer exists") from exc
+
+        approved_node = ordered_nodes[checkpoint_index]
+        pinned = request.payload or {}
+        if "node_data" in pinned and pinned["node_data"] != (approved_node.get("data") or {}):
+            raise ValueError("Approval payload changed")
+        if "action_digest" in pinned and pinned["action_digest"] != self._action_digest(approved_node):
+            raise ValueError("Approval action digest changed")
 
         now = datetime.utcnow()
         claimed = db.query(ApprovalRequest).filter(

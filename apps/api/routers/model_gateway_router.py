@@ -9,6 +9,7 @@ from apps.api.core.config import settings
 from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.models.business import User, Business
 from apps.api.services.ollama_gateway import ollama_gateway
+from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
 from apps.api.models.entities import Commitment
 from apps.api.models.goals_tasks import Task
 from apps.api.services.financial_metrics import calculate_business_financials
@@ -156,14 +157,14 @@ async def handle_founder_command(
         )
 
     context = (
-        f"You are the Executive AI Operating System for {biz_name}.\n"
+        f"Business identity: {quoted_data('business_name',biz_name)}.\n"
         "Company information below comes from the authenticated business database. "
         "Financial values are self-recorded, not independently reconciled, "
         "and must never be called audited or bank-verified.\n"
         f"Financial record status: {data_status}; independently verified: {verified}.\n"
         f"{financial_context}"
         f"- Critical commitments: {len(critical_commitments)} "
-        f"(e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
+        f"(e.g. {quoted_data('commitment',critical_commitments[0].title) if critical_commitments else 'None'})\n"
         f"- Pending tasks: {len(tasks)}\n"
         f"Founder question: {req.command}\n"
         "Respond with supported facts and proportionate next steps. "
@@ -174,7 +175,7 @@ async def handle_founder_command(
     profile = _business_model_profile(db, biz_id)
     res = await ollama_gateway.chat_complete(
         messages=[{"role": "user", "content": context}],
-        system_prompt="You are OneBoard Founder Command Center.",
+        system_prompt="You are OneBoard Founder Command Center. "+DATA_BOUNDARY,
         model=ollama_gateway.get_model_for_task(profile=profile)
     )
     is_simulated = res.get("simulated", False)

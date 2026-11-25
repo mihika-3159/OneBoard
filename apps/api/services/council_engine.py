@@ -1,3 +1,4 @@
+from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
@@ -145,7 +146,7 @@ class CouncilEngine:
                     "In at most 100 words, provide a position, assumptions, risks and a measurable next step. "
                     "Do not invent customers, contracts, sources or numerical targets."
                 )}],
-                system_prompt=f"Act as {name}; use only supplied facts."
+                system_prompt=f"Act as {name}; use only supplied facts. "+DATA_BOUNDARY
             )
             simulated = bool(res.get("simulated", False))
             # The gateway's offline fallback contains canned Northstar Studio
@@ -175,13 +176,13 @@ class CouncilEngine:
             challenge = await ollama_gateway.chat_complete(
                 messages=[{"role": "user", "content": (
                     f"Topic: {topic}\\nRecorded facts: {facts}\\n"
-                    f"{first} position: {positions[first][:1500]}\\n"
-                    f"{second} position: {positions[second][:1500]}\\n"
+                    f"{first} position: {quoted_data('adviser_position',positions[first],1500)}\\n"
+                    f"{second} position: {quoted_data('adviser_position',positions[second],1500)}\\n"
                     "In at most 70 words, identify a specific tension only if the positions support one; "
                     "otherwise say there is no demonstrated disagreement. "
                     "Do not invent a quote, source or target."
                 )}],
-                system_prompt="Compare actual positions; do not impersonate advisers."
+                system_prompt="Compare actual positions; do not impersonate advisers. "+DATA_BOUNDARY
             )
             simulated = bool(challenge.get("simulated", False))
             comparison = (
@@ -225,7 +226,7 @@ class CouncilEngine:
                 })
 
         visible_positions = "\n".join(
-            f"{name}: {positions[name][:1500]}" for name in selected_advisers
+            f"{name}: {quoted_data('adviser_position',positions[name],1500)}" for name in selected_advisers
         )
         synthesis = await ollama_gateway.chat_complete(
             messages=[{"role": "user", "content": (
@@ -235,7 +236,7 @@ class CouncilEngine:
                 "In at most 100 words, summarize only supported advice and trade-offs. "
                 "Do not invent evidence, numeric targets or consensus."
             )}],
-            system_prompt="Synthesize the visible transcript, labelling assumptions."
+            system_prompt="Synthesize the visible transcript, labelling assumptions. "+DATA_BOUNDARY
         )
         if synthesis.get("simulated", False):
             summary = (

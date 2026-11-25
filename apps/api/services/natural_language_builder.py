@@ -3,6 +3,7 @@ import json
 import logging
 from fastapi import HTTPException
 from apps.api.services.ollama_gateway import ollama_gateway
+from apps.api.services.untrusted_content import DATA_BOUNDARY
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class NaturalLanguageBuilder:
         
         res = await ollama_gateway.chat_complete(
             messages=[{"role": "user", "content": user_prompt}],
-            system_prompt=system_prompt,
+            system_prompt=system_prompt+" "+DATA_BOUNDARY,
             format_json=True
         )
         
@@ -42,6 +43,8 @@ class NaturalLanguageBuilder:
             if not validation.get("is_valid"):
                 raise ValueError(validation.get("error") or "Invalid workflow graph")
             parsed["simulated"] = False
+            parsed["unsupported_tools"] = validation["unsupported_tools"]
+            parsed["external_execution_authorized"] = False
             return parsed
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("AI returned an invalid workflow schema: %s", type(exc).__name__)
@@ -56,7 +59,7 @@ class NaturalLanguageBuilder:
         
         res = await ollama_gateway.chat_complete(
             messages=[{"role": "user", "content": user_prompt}],
-            system_prompt=system_prompt,
+            system_prompt=system_prompt+" "+DATA_BOUNDARY,
             format_json=True
         )
         
@@ -76,6 +79,8 @@ class NaturalLanguageBuilder:
             if type(steps) is not int or not 1 <= steps <= 25:
                 raise ValueError("Invalid agent step limit")
             parsed["simulated"] = False
+            parsed["granted_tools"] = []
+            parsed["tool_execution_enabled"] = False
             return parsed
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("AI returned an invalid agent schema: %s", type(exc).__name__)

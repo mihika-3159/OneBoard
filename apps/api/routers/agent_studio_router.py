@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
 from typing import List, Optional
 from apps.api.core.database import get_db
 from apps.api.core.config import settings
@@ -18,17 +19,17 @@ class AgentCreateRequest(BaseModel):
     role_title: str
     department: str = "Operations"
     description: Optional[str] = None
-    system_prompt: str
+    system_prompt: str = Field(min_length=1,max_length=8000)
     selected_model: str = "qwen2.5:7b"
     allowed_tools: List[str] = []
     requires_approval_for: List[str] = []
-    max_steps: int = 5
+    max_steps: int = Field(default=5,ge=1,le=25)
 
 class AgentGenerateRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1,max_length=8000)
 
 class AgentTestRequest(BaseModel):
-    test_input: str
+    test_input: str = Field(min_length=1,max_length=8000)
 
 @router.get("")
 def list_agents(
@@ -92,12 +93,14 @@ async def test_agent(
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "agent_test")
     res = await ollama_gateway.chat_complete(
-        messages=[{"role": "user", "content": req.test_input}],
-        system_prompt=agent.system_prompt,
+        messages=[{"role": "user", "content": quoted_data("agent_configuration",agent.system_prompt)+"\n"+quoted_data("test_input",req.test_input)}],
+        system_prompt="You are a text-only OneBoard sandbox. "+DATA_BOUNDARY,
         model=agent.selected_model
     )
     return {
         "agent_name": agent.name,
+        "tool_execution_enabled": False,
+        "granted_tools": [],
         "input": req.test_input,
         "output": res.get("content"),
         "model_used": res.get("model"),
