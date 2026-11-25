@@ -37,7 +37,7 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_NAME: browser-required.json
         run: |
           npx playwright test --config playwright.config.ts --reporter=line,json
-          python ../../scripts/require_browser_suite.py browser-required.json 22
+          python ../../scripts/require_browser_suite.py browser-required.json 23
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

@@ -197,6 +197,8 @@ def progress(db,tenant):
         for d,s in rows]}
 
 
+EXACT_CORPUS_LIMIT=2048
+
 async def retrieve(db, tenant, query, top_k, filters=None):
     model,key = model_identity(ollama_gateway)
     if not db.query(SemanticVector.chunk_id).filter_by(business_id=tenant, model=key).first():
@@ -223,7 +225,7 @@ async def retrieve(db, tenant, query, top_k, filters=None):
     )
     from apps.api.services.memory_ranking import filter_scope
     scope=filter_scope(rows,filters)
-    exact_cap=min(2048,1_000_000//len(vector))
+    exact_cap=min(EXACT_CORPUS_LIMIT,1_000_000//len(vector))
     small=scope.with_entities(SemanticVector.chunk_id).limit(exact_cap+1).count()<=exact_cap
     candidate_cap=exact_cap if small else min(1000,1_000_000//len(vector))
     strategy="exact_cosine_small_corpus" if small else "indexed_angular_lsh_approximate"

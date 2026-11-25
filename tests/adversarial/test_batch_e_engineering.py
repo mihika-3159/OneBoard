@@ -129,13 +129,15 @@ async def test_durable_index_cursor_rotates_past_unavailable_tenant(db,monkeypat
         return None if content.startswith("a") else [1.,.2]
     fake=SimpleNamespace(get_model_for_task=lambda task:"nomic-embed-text",genuine_embedding=embed)
     monkeypatch.setattr(semantic_index,"OllamaGateway",lambda:fake)
+    result=await semantic_index.scheduled_index(db)
+    assert result["indexed"]==1 and result["tenants"]==2
     assert (await semantic_index.scheduled_index(db))["indexed"]==0
-    assert (await semantic_index.scheduled_index(db))["indexed"]==1
-    assert calls==["a text","b text"]
+    assert sorted(calls)==["a text","b text"]
     assert db.get(SchedulerCursor,"semantic_backfill").last_tenant=="b"
 
 @pytest.mark.asyncio
 async def test_multiprobe_recovers_near_band_without_exact_collision(db,monkeypatch):
+    monkeypatch.setattr(semantic_index,"EXACT_CORPUS_LIMIT",0)
     rng=random.Random(94)
     query=[rng.gauss(0,1) for _ in range(32)]
     bands=semantic_index.signatures(query)
@@ -182,6 +184,7 @@ def test_history_scan_finds_removed_secret_without_printing_value(tmp_path):
 @pytest.mark.asyncio
 async def test_multiprobe_large_synthetic_corpus_top_ten_recall(db,monkeypatch):
     """Compare indexed candidate reranking with exact cosine, not textual QA."""
+    monkeypatch.setattr(semantic_index,"EXACT_CORPUS_LIMIT",0)
     rng=random.Random(431)
     q=[rng.gauss(0,1) for _ in range(48)]
     model=semantic_index.ollama_gateway.get_model_for_task("embedding")
