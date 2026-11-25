@@ -17,7 +17,13 @@ INDEXES=(("tasks",("business_id","id")),("customers",("business_id","id")),("inv
 ("journal_entries",("business_id","period","id")),("sync_history",("integration_id","id")),
 ("approval_requests",("business_id","task_id")),("tasks",("business_id","goal_id")),("tasks",("business_id","decision_id")),
 ("settlement_evidence",("business_id","invoice_id")),("invoices",("business_id","customer_id")),
-("support_tickets",("business_id","customer_id")))
+("support_tickets",("business_id","customer_id")),
+("leads",("business_id","id")),("expenses",("business_id","id")),("goals",("business_id","id")),("projects",("business_id","id")),
+("commitments",("business_id","id")),("support_tickets",("business_id","id")),("workflow_events",("business_id","id")),
+("decisions",("business_id","id")),("journal_entries",("business_id","id")),("bank_statement_lines",("business_id","id")),
+("finance_forecasts",("business_id","id")),("provider_sync_jobs",("business_id","id")),("provider_deliveries",("business_id","id")),
+("audit_logs",("business_id","id")),("approval_requests",("business_id","id")),("side_effect_outbox",("business_id","id")),
+("memory_conflicts",("business_id","id")),("login_throttle_states",("window_started_at","identifier_hash")))
 def upgrade():
     conn=op.get_bind()
     op.create_table(REGISTRY,sa.Column("name",sa.String(100),primary_key=True))

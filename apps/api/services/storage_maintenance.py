@@ -17,9 +17,12 @@ def cleanup_global(db,now=None):
     ids=[x[0] for x in db.query(LoginThrottleState.identifier_hash).filter(LoginThrottleState.window_started_at<cutoff).order_by(LoginThrottleState.window_started_at,LoginThrottleState.identifier_hash).limit(1000)]
     count=0
     for ident in ids:
+        if not isinstance(ident,str) or len(ident)!=64:continue
+        try:raw_hash=bytes.fromhex(ident)
+        except ValueError:continue
         if db.get_bind().dialect.name=="postgresql":
             # Same advisory lock as authentication, reconstructable from hash.
-            lock_id=int.from_bytes(bytes.fromhex(ident)[:8],"big",signed=True)
+            lock_id=int.from_bytes(raw_hash[:8],"big",signed=True)
             if not db.execute(text("SELECT pg_try_advisory_xact_lock(:key)"),{"key":lock_id}).scalar_one():continue
         count+=db.execute(delete(LoginThrottleState).where(LoginThrottleState.identifier_hash==ident,LoginThrottleState.window_started_at<cutoff)).rowcount
     # Do not clear any lease while its execution lock may still be held.

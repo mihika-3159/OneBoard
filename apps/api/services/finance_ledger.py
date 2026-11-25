@@ -108,17 +108,19 @@ def invoice_balance(db,tenant,invoice):
     return legacy_balance(db,tenant,invoice)
 
 
-def legacy_balance(db,tenant,invoice):
+def legacy_balance_from_records(invoice,settlements,currency):
     amount=decimal_value(invoice.amount)
     if amount<0:raise ValueError("invoice.amount must be nonnegative")
     if invoice.status=="paid":return Decimal(0)
-    settlements=db.query(SettlementEvidence).filter_by(business_id=tenant,invoice_id=invoice.id).all()
     if not settlements:return amount
-    biz=workspace(db,tenant)
-    if any(r.base_currency!=biz.currency for r in settlements):raise ValueError("Legacy settlement currency mismatch")
+    if any(r.base_currency!=currency for r in settlements):raise ValueError("Legacy settlement currency mismatch")
     paid=sum((decimal_value(r.base_amount) for r in settlements),Decimal(0))
     if paid<0 or paid>amount:raise ValueError("Legacy settlement exceeds invoice amount")
     return amount-paid
+
+def legacy_balance(db,tenant,invoice):
+    settlements=db.query(SettlementEvidence).filter_by(business_id=tenant,invoice_id=invoice.id).all()
+    return legacy_balance_from_records(invoice,settlements,workspace(db,tenant).currency if settlements else None)
 
 def allocation(total,prior,adding,full):
     """Cumulative allocation removes split-payment/refund rounding drift."""

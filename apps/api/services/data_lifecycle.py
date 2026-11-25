@@ -12,7 +12,7 @@ from apps.api.services.tenant_storage import _lock
 
 EXCLUDED={"login_throttle_states","scheduled_job_leases","user_sessions","scheduler_cursors","account_security","portable_archives","portable_archive_pages","database_performance_samples","provider_authorizations"}
 SECRET_COLUMNS={"password_hash","hashed_password","api_key","token","token_hash",
-                "encrypted_token","encrypted_credentials","encrypted_verifier","state_hash","checkpoint","configuration","vector","embedding","mfa_ciphertext","pending_mfa_ciphertext","recovery_hashes","email_challenge_hash","email_challenge_ciphertext"}
+                "encrypted_token","encrypted_credentials","encrypted_verifier","state_hash","checkpoint","claim_token","owner_token","lease_owner","configuration","vector","embedding","mfa_ciphertext","pending_mfa_ciphertext","recovery_hashes","email_challenge_hash","email_challenge_ciphertext"}
 def _safe(value):
     if isinstance(value,Decimal):return format(value,'f')
     if isinstance(value,float) and not math.isfinite(value):

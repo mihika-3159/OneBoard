@@ -206,8 +206,9 @@ def get_dashboard_metrics(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Business not found")
 
     snapshot = calculate_business_financials(db, biz_id)
-    goals = db.query(Goal).filter(Goal.business_id == biz_id).all()
-    tasks = db.query(Task).filter(Task.business_id == biz_id).all()
+    from sqlalchemy import or_
+    goals_count = db.query(Goal.id).filter(Goal.business_id == biz_id).count()
+    pending_tasks_count = db.query(Task.id).filter(Task.business_id == biz_id,or_(Task.status != "done",Task.status.is_(None))).count()
 
     # Do not assign a reassuring health score to an empty, unconfigured account.
     if snapshot["financial_data_status"] != "recorded" or (snapshot["mrr"] == 0 and snapshot["monthly_burn"] == 0):
@@ -227,8 +228,8 @@ def get_dashboard_metrics(
 
     return {
         **snapshot,
-        "pending_tasks_count": len([task for task in tasks if task.status != "done"]),
-        "goals_count": len(goals),
+        "pending_tasks_count": pending_tasks_count,
+        "goals_count": goals_count,
         "health_score": health_score,
         "tenant_id": biz_id,
     }

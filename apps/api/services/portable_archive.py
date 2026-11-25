@@ -8,7 +8,7 @@ from datetime import datetime,timedelta
 import base64,hashlib,hmac,json,math,re
 from sqlalchemy import select,delete,func,insert,update
 from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError,SQLAlchemyError
 from sqlalchemy.sql.sqltypes import DateTime,Integer,Float,Boolean,String,JSON
 from apps.api.core.config import settings
 from apps.api.core.database import Base,scope_tenant_session,tenant_lifecycle_lock
@@ -202,7 +202,7 @@ def sanitized(name,row):
     row=dict(row)
     if name=="businesses":return row
     if name=="memory_documents":row["file_path"]=None
-    if name=="memory_document_states":row.update(status="pending",indexed_count=0,attempts=0,model_key=None,lease_until=0,next_attempt_at=0,claim_token=None,error=None)
+    if name=="memory_document_states":row.update(status="pending" if row.get("active") else "superseded",indexed_count=0,attempts=0,model_key=None,lease_until=0,next_attempt_at=0,claim_token=None,error=None)
     if name=="integration_accounts":row.update(status="disconnected",configuration={},granted_scopes=[])
     if name=="provider_connections":row.update(state="disconnected",scopes=[],encrypted_credentials=None,expires_at=None,checkpoint=None,last_error="restored_reauthorization_required",last_sync=None)
     if name=="provider_sync_jobs" and row.get("state") in ("queued","retry"):row["state"]="cancelled"
@@ -266,7 +266,7 @@ def restore(db,user,ident,confirmation):
                 db.execute(insert(table).values(**new));inserted+=1;touched.add(name)
         for name in sorted(touched & set(ROW_LIMITS)):check_table_rows(db,tenant,name,0)
         archive.state="applied";db.commit()
-    except (IntegrityError,ValueError,TypeError,KeyError,OverflowError) as exc:
+    except (SQLAlchemyError,ValueError,TypeError,KeyError,OverflowError) as exc:
         db.rollback()
         raise ValueError("Restoration rejected atomically: "+(str(exc) if isinstance(exc,ValueError) else "schema or ownership conflict")) from None
     return {"status":"applied","inserted":inserted,"unchanged":unchanged,"external_actions_replayed":False}
