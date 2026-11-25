@@ -91,11 +91,13 @@ app = FastAPI(
 
 @app.exception_handler(OperationalError)
 async def database_unavailable(request,exc):
+    ops.event("db_unavailable")
     logger.warning("database_operation_failed type=%s",type(exc).__name__)
     return JSONResponse({"detail":"Database temporarily unavailable; reconcile any uncertain write before retrying"},503,headers={"Retry-After":"5"})
 
 @app.exception_handler(DatabasePoolTimeout)
 async def database_pool_exhausted(request,exc):
+    ops.event("db_pool_exhausted")
     return JSONResponse({"detail":"Database capacity temporarily exhausted; retry"},status_code=503,headers={"Retry-After":"5"})
 
 @app.exception_handler(RequestValidationError)

@@ -87,8 +87,9 @@ class OllamaGateway:
             on_text.reset(token)
 
     async def _post_to_origin(self, origin, path, payload, timeout):
+        from apps.api.services.operational_health import propagate
         with self._circuits[origin].attempt() as record_failure:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout,event_hooks={"request":[propagate]}) as client:
                 adapter = self._adapters[origin]
                 if settings.ONEBOARD_PRODUCTION_MODE and is_remote(origin):
                     await verify_remote_capacity(client, origin, settings.INFERENCE_MIN_FREE_MIB * 1024 * 1024,

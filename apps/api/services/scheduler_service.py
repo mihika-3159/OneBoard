@@ -63,11 +63,15 @@ class SchedulerService:
                     if failed:
                         raise RuntimeError("One or more tenant jobs failed")
                 except Exception:
+                    from apps.api.services.operational_health import event
+                    event("scheduler_failed")
                     db.rollback()
                     finish_job(db, job, token, False)
                     raise
                 else:
                     finish_job(db, job, token, True, interval_seconds=settings.SCHEDULER_INTERVAL_SECONDS)
+                    from apps.api.services.operational_health import event
+                    event("scheduler_succeeded")
 
     def shutdown(self):
         if self.scheduler.running:

@@ -134,6 +134,10 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("ONEBOARD_DEMO_MODE must be disabled")
     if config.DEBUG:
         errors.append("DEBUG must be disabled")
+    if not 1<=config.OPERATOR_DISK_MIN_FREE_MIB<=1048576 or not 1<=config.OPERATOR_DB_CONNECT_TIMEOUT<=15:
+        errors.append("Invalid operator resource thresholds")
+    if config.OPERATOR_METRICS_KEY and (len(config.OPERATOR_METRICS_KEY)<32 or config.OPERATOR_METRICS_KEY==config.AUTH_SECRET_KEY):
+        errors.append("Operator key must be separate and at least 32 characters")
     if not 1 <= config.INFERENCE_MIN_FREE_MIB <= 1_048_576 or not 0 < config.INFERENCE_MAX_LOAD_PER_CPU <= 100:
         errors.append("Invalid inference memory or CPU admission limit")
     if not 0 <= config.OLLAMA_LOCAL_REPLICA_PORT <= 65535:

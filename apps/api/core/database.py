@@ -15,7 +15,7 @@ def engine_options(database_url: str) -> dict:
     size,overflow,timeout,recycle=(settings.DB_POOL_SIZE,settings.DB_MAX_OVERFLOW,settings.DB_POOL_TIMEOUT_SECONDS,settings.DB_POOL_RECYCLE_SECONDS)
     if not 1<=size<=32 or not 0<=overflow<=16 or not 4<=size+overflow<=40 or not 1<=timeout<=60 or not 60<=recycle<=86400:
         raise ValueError("Unsafe database pool limits")
-    return {"pool_pre_ping": True,"pool_size":size,"max_overflow":overflow,"pool_timeout":timeout,"pool_recycle":recycle}
+    return {"pool_pre_ping": True,"pool_size":size,"max_overflow":overflow,"pool_timeout":timeout,"pool_recycle":recycle,"connect_args":{"connect_timeout":settings.OPERATOR_DB_CONNECT_TIMEOUT}}
 
 
 engine = create_engine(settings.DATABASE_URL, **engine_options(settings.DATABASE_URL))

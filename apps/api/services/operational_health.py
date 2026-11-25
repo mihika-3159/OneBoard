@@ -1,6 +1,6 @@
 """Bounded process-local telemetry and dependency probes. No tenant identifiers or secrets."""
 import hmac,math,re,time,logging,shutil,threading,os
-from collections import defaultdict
+from contextvars import ContextVar
 from sqlalchemy import text
 from apps.api.core.config import settings
 from apps.api.core.database import engine
@@ -15,6 +15,14 @@ _counts={}
 _active=0
 _started=time.monotonic()
 _draining=False
+_trace=ContextVar('oneboard_trace',default=None)
+_events={}
+def event(name):
+    if name not in ('scheduler_failed','db_unavailable','db_pool_exhausted','scheduler_succeeded'):return
+    with _lock:_events[name]=_events.get(name,0)+1
+async def propagate(request):
+    parent=_trace.get()
+    if parent:request.headers['traceparent']=f'00-{parent[0]}-{parent[1]}-00'
 TRACE=re.compile(r"00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})")
 def trace_context(header):
     match=TRACE.fullmatch(header or "")
@@ -37,6 +45,7 @@ class Telemetry:
         trace,span=trace_context(headers[0] if len(headers)==1 else None)
         scope.setdefault("state",{})["trace_id"]=trace
         scope["state"]["span_id"]=span
+        token=_trace.set((trace,span))
         with _lock:_active+=1
         async def wrapped(message):
             nonlocal status
@@ -49,6 +58,7 @@ class Telemetry:
                 await JSONResponse({"detail":"Service draining; retry"},503,headers={"Retry-After":"5"})(scope,receive,wrapped)
             else:await self.app(scope,receive,wrapped)
         finally:
+            _trace.reset(token)
             elapsed=time.monotonic()-started
             route=getattr(scope.get("route"),"path","unmatched")
             # Route templates only, never raw URL or arbitrary client labels.
@@ -62,10 +72,17 @@ class Telemetry:
                     if elapsed<=b:row["buckets"][i]+=1
             logger.info("request_trace trace_id=%s span_id=%s method=%s route=%s status=%d seconds=%.4f",trace,span,method,route,status,elapsed)
 def snapshot():
+    pool=engine.pool
+    pool_stats={name:getattr(pool,name)() for name in ("size","checkedout","overflow") if callable(getattr(pool,name,None))}
+    resources={}
+    try:
+        import resource
+        resources["peak_rss_kib"]=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except ImportError:pass
     with _lock:
         rows=[{"method":k[0],"route":k[1],"status_class":k[2],**v,"buckets":list(v["buckets"])} for k,v in sorted(_counts.items())]
-        return {"scope":"process_local","pid":os.getpid(),"uptime_seconds":time.monotonic()-_started,
-                "inflight":_active,"bucket_bounds_seconds":list(BUCKETS),"http":rows}
+        return {"scope":"process_local","pid":os.getpid(),"pool":pool_stats,"resources":resources,"uptime_seconds":time.monotonic()-_started,
+                "inflight":_active,"events":dict(_events),"bucket_bounds_seconds":list(BUCKETS),"http":rows}
 def dependencies(bind=None,check_inference=False):
     bind=engine if bind is None else bind
     result={"database":"unavailable","schema":"unknown","scheduler":"unknown","disk":"unknown","inference":"not_checked"}
@@ -91,11 +108,10 @@ def dependencies(bind=None,check_inference=False):
     except OSError:pass
     if check_inference:
         try:
-            import httpx
-            with httpx.Client(timeout=2,trust_env=False,follow_redirects=False) as c:
-                response=c.get(settings.OLLAMA_BASE_URL.rstrip("/")+"/api/tags")
-                data=response.json() if response.status_code==200 else {}
-                result["inference"]="ready" if isinstance(data.get("models"),list) and data["models"] else "unavailable"
+            import asyncio
+            from apps.api.services.ollama_gateway import ollama_gateway
+            health=asyncio.run(asyncio.wait_for(ollama_gateway.check_health(),timeout=5))
+            result["inference"]="ready" if health.get("inference_available") is True else "unavailable"
         except Exception:result["inference"]="unavailable"
     result["ready"]=not _draining and result["database"]=="ready" and result["schema"] in ("ready","local") and result["disk"]=="ready"
     return result
