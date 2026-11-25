@@ -149,20 +149,23 @@ def apply_retention(db,tenant,now=None):
              .filter(UserSession.expires_at<cutoff).order_by(UserSession.expires_at).limit(200).all()]
         count+=db.execute(delete(UserSession).where(UserSession.business_id==tenant,UserSession.id.in_(ids))).rowcount
     from apps.api.models.operations import ProviderSyncJob,ProviderRecordConflict,SideEffectOutbox,DatabasePerformanceSample
-    # Retain request identities for deduplication: only old finished sync jobs
-    # with non-webhook request keys may be removed; provider action receipts,
-    # audit/security chains and financial history are never retention targets.
-    for field,model,stamp,condition in (
-        ("completed_sync_days",ProviderSyncJob,ProviderSyncJob.finished_at,ProviderSyncJob.state.in_(["succeeded","failed","cancelled"]) & ~ProviderSyncJob.request_key.like("webhook:%")),
-        ("resolved_conflict_days",ProviderRecordConflict,ProviderRecordConflict.created_at,ProviderRecordConflict.state.in_(["keep_recorded","accept_incoming"])),
-        ("completed_draft_days",SideEffectOutbox,SideEffectOutbox.processed_at,SideEffectOutbox.state=="draft_ready"),
-        ("performance_sample_days",DatabasePerformanceSample,DatabasePerformanceSample.created_at,True),
+    from sqlalchemy import update
+    # Preserve idempotency keys, conflict hashes and action receipts. Redact
+    # expendable payload/diagnostics, never delete a deduplication tombstone.
+    for field,model,stamp,condition,values in (
+        ("completed_sync_days",ProviderSyncJob,ProviderSyncJob.finished_at,ProviderSyncJob.state.in_(["succeeded","failed","cancelled"]),{"error_code":None}),
+        ("resolved_conflict_days",ProviderRecordConflict,ProviderRecordConflict.created_at,ProviderRecordConflict.state.in_(["keep_recorded","accept_incoming"]),{"incoming_payload":{}}),
+        ("completed_draft_days",SideEffectOutbox,SideEffectOutbox.processed_at,SideEffectOutbox.state=="draft_ready",{"payload":{}}),
     ):
         days=getattr(row,field)
         if days is None:continue
         cutoff=now-timedelta(days=days)
-        ids=[x[0] for x in db.query(model.id).filter(model.business_id==tenant,stamp<cutoff,condition).order_by(stamp,model.id).limit(200)]
-        count+=db.execute(delete(model).where(model.business_id==tenant,model.id.in_(ids))).rowcount
+        ids=[x[0] for x in db.query(model.id).filter(model.business_id==tenant,stamp<cutoff,condition,model.retention_redacted_at.is_(None)).order_by(stamp,model.id).limit(200)]
+        count+=db.execute(update(model).where(model.business_id==tenant,model.id.in_(ids)).values(**values,retention_redacted_at=now)).rowcount
+    if row.performance_sample_days is not None:
+        cutoff=now-timedelta(days=row.performance_sample_days)
+        ids=[x[0] for x in db.query(DatabasePerformanceSample.id).filter(DatabasePerformanceSample.business_id==tenant,DatabasePerformanceSample.created_at<cutoff).order_by(DatabasePerformanceSample.created_at,DatabasePerformanceSample.id).limit(200)]
+        count+=db.execute(delete(DatabasePerformanceSample).where(DatabasePerformanceSample.business_id==tenant,DatabasePerformanceSample.id.in_(ids))).rowcount
     return count
 
 def delete_workspace(db,user,confirmation):

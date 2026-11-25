@@ -26,6 +26,10 @@ def upgrade():
         if field not in existing:
             op.add_column('data_retention_policies',sa.Column(field,sa.Integer(),nullable=True))
             conn.execute(sa.text('INSERT INTO '+REGISTRY+' (name) VALUES (:n)'),{'n':'column:'+field})
+    for name in ('side_effect_outbox','provider_sync_jobs','provider_record_conflicts'):
+        if 'retention_redacted_at' not in {c['name'] for c in sa.inspect(conn).get_columns(name)}:
+            op.add_column(name,sa.Column('retention_redacted_at',sa.DateTime(),nullable=True))
+            conn.execute(sa.text('INSERT INTO '+REGISTRY+' (name) VALUES (:n)'),{'n':'redaction:'+name})
     for model in MODELS:
         t=model.__table__
         if t.name not in sa.inspect(conn).get_table_names():
@@ -58,4 +62,6 @@ def downgrade():
         if model.__table__.name in names:model.__table__.drop(conn)
     for field in ('completed_sync_days','resolved_conflict_days','completed_draft_days','performance_sample_days'):
         if 'column:'+field in names:op.drop_column('data_retention_policies',field)
+    for name in ('side_effect_outbox','provider_sync_jobs','provider_record_conflicts'):
+        if 'redaction:'+name in names:op.drop_column(name,'retention_redacted_at')
     op.drop_table(REGISTRY)

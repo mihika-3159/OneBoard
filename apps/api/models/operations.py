@@ -76,6 +76,7 @@ class SideEffectOutbox(Base):
     state = Column(String(20), nullable=False, default="pending")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
+    retention_redacted_at=Column(DateTime,nullable=True)
 
 
 class SemanticVector(Base):
@@ -364,6 +365,8 @@ class ProviderSyncJob(Base):
     error_code=Column(String(100),nullable=True)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
     finished_at=Column(DateTime,nullable=True)
+    retention_redacted_at=Column(DateTime,nullable=True)
+
 
 class ProviderRecord(Base):
     __tablename__="provider_records"
@@ -390,6 +393,8 @@ class ProviderRecordConflict(Base):
     incoming_hash=Column(String(64),nullable=False)
     state=Column(String(30),nullable=False,default="pending")
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    retention_redacted_at=Column(DateTime,nullable=True)
+
 
 class ProviderWebhookReceipt(Base):
     __tablename__="provider_webhook_receipts"
