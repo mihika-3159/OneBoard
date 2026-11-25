@@ -62,6 +62,10 @@ class MemoryEngine:
             )
         )
         if indexed:
+            from apps.api.services.semantic_index import retrieve
+            semantic = await retrieve(db, business_id, query, top_k)
+            if semantic:
+                return semantic
             vector = func.to_tsvector("simple", MemoryChunk.content)
             tsquery = func.plainto_tsquery("simple", query)
             ranked = scope.filter(vector.op("@@")(tsquery)).order_by(
@@ -88,12 +92,12 @@ class MemoryEngine:
         entries = entries[:max_candidates]
         if not entries:
             return []
-        query_vector = await ollama_gateway.generate_embedding(query)
+        query_vector = [] if indexed else await ollama_gateway.generate_embedding(query)
         keywords = [word for word in query.lower().split() if len(word) > 3]
         scored_results = []
         for chunk, title in entries:
             sim = 0.0
-            if chunk.embedding:
+            if chunk.embedding and not indexed:
                 sim = self._cosine_similarity(query_vector, chunk.embedding)
             kw_match = 0.3 if any(word in chunk.content.lower() for word in keywords) else 0.0
             total_score = min(sim + kw_match, 1.0)
@@ -187,6 +191,7 @@ class MemoryEngine:
         from apps.api.services.tenant_storage import check_document
         from apps.api.core.config import settings
         paragraphs = [p.strip() for p in raw_content.split("\n\n") if p.strip()] or [raw_content]
+        paragraphs = [p[i:i+1500] for p in paragraphs for i in range(0, max(1,len(p)), 1500)]
         if settings.ONEBOARD_PRODUCTION_MODE:
             check_document(db, business_id, raw_content, paragraphs)
         content_hash = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()

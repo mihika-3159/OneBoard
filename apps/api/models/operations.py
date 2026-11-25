@@ -76,3 +76,73 @@ class SideEffectOutbox(Base):
     state = Column(String(20), nullable=False, default="pending")
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     processed_at = Column(DateTime, nullable=True)
+
+
+class SemanticVector(Base):
+    """Genuine model embedding and indexed random-hyperplane signatures."""
+    __tablename__ = "semantic_vectors"
+    __table_args__ = tuple(Index("ix_semantic_band_" + str(i), "business_id", "model", "dimension", "band" + str(i)) for i in range(4))
+    chunk_id = Column(String(36), primary_key=True)
+    business_id = Column(String(36), nullable=False)
+    model = Column(String(150), nullable=False)
+    dimension = Column(Integer, nullable=False)
+    vector = Column(JSON, nullable=False)
+    band0 = Column(Integer, nullable=False)
+    band1 = Column(Integer, nullable=False)
+    band2 = Column(Integer, nullable=False)
+    band3 = Column(Integer, nullable=False)
+
+
+class SettlementEvidence(Base):
+    __tablename__ = "settlement_evidence"
+    __table_args__ = (
+        UniqueConstraint("business_id", "source_reference", name="uq_settlement_source"),
+        Index("ix_settlement_tenant_period", "business_id", "period"),
+    )
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    business_id = Column(String(36), nullable=False)
+    invoice_id = Column(String(36), nullable=False)
+    source_reference = Column(String(128), nullable=False)
+    source_sha256 = Column(String(64), nullable=False)
+    request_sha256 = Column(String(64), nullable=False)
+    currency = Column(String(3), nullable=False)
+    original_amount = Column(String(32), nullable=False)
+    base_currency = Column(String(3), nullable=False)
+    fx_rate = Column(String(32), nullable=False)
+    fx_source = Column(String(200), nullable=False)
+    base_amount = Column(String(32), nullable=False)
+    settled_on = Column(String(10), nullable=False)
+    period = Column(String(7), nullable=False)
+    recorded_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ProviderCredential(Base):
+    __tablename__ = "provider_credentials"
+    __table_args__ = (UniqueConstraint("business_id", "provider", name="uq_provider_tenant"),)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    business_id = Column(String(36), nullable=False)
+    provider = Column(String(30), nullable=False)
+    scopes = Column(JSON, nullable=False)
+    encrypted_token = Column(String(16000), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class ProviderIntent(Base):
+    __tablename__ = "provider_intents"
+    __table_args__ = (UniqueConstraint("business_id", "provider", "idempotency_key", name="uq_provider_intent"),)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    business_id = Column(String(36), nullable=False)
+    provider = Column(String(30), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    request_sha256 = Column(String(64), nullable=False)
+    scope = Column(String(100), nullable=False)
+    state = Column(String(30), nullable=False, default="staged_no_dispatch")
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class DataRetentionPolicy(Base):
+    __tablename__ = "data_retention_policies"
+    business_id = Column(String(36), primary_key=True)
+    document_days = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)

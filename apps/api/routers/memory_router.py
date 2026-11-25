@@ -52,6 +52,14 @@ async def search_memory(
     )
     return {"query": req.query, "results": results}
 
+@router.post("/index")
+async def index_memory(current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    from apps.api.services.semantic_index import index_pending
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "document_upload")
+    return await index_pending(db, current_user.business_id)
+
+
 @router.get("/graph")
 def get_entity_graph(
     current_user: User = Depends(get_current_user),

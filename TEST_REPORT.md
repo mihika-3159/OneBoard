@@ -977,3 +977,15 @@ counts targeted the wrong historical revisions after adding 010, leading to
 a cascade of subsequent fixture errors. Replaced relative counts with the
 same explicit historical revisions the tests already asserted. No security
 assertions or tests removed. Full exact-head CI required again.
+
+
+## 25 November 2026: Batch C start and indexed memory
+
+Batch B exact head 6c451f5635b4c921cc6966c8852c7b874ade9d53: all five workflows completed success.
+577 API tests, 25 PostgreSQL tests, 15 browser E2E tests passed; frontend,
+Windows, disposable plaintext and encrypted PostgreSQL restore, real
+small-model Ollama and browser feasibility completed. Batch C adds actual
+model embeddings with indexed four-band angular LSH and cosine reranking,
+bounded explicit indexing and atomic chunk storage. Legacy unindexed data
+remains searchable lexically, not presented as genuine semantic recall.
+CI pending for new head; no live services or independent certification.

@@ -174,8 +174,9 @@ class OllamaGateway:
             "duration_ms": max(int((time.monotonic() - start_time) * 1000), 0),
         }
 
-    async def generate_embedding(self, text: str, model: Optional[str] = None) -> List[float]:
-        """Fetch local text embedding from Ollama or fallback to deterministic hash vector."""
+    async def genuine_embedding(self, text: str, model: Optional[str] = None):
+        """Return validated provider embeddings only; never return hash fallback."""
+        import math
         target_model = model or self.get_model_for_task("embedding")
         acquired = False
         try:
@@ -189,13 +190,24 @@ class OllamaGateway:
                             json={"model": target_model, "prompt": text}
                         )
                         if res.status_code == 200:
-                            return res.json().get("embedding", [])
+                            v = res.json().get("embedding")
+                            if (isinstance(v, list) and 1 <= len(v) <= 4096
+                                and all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                                        and math.isfinite(x) and abs(x) <= 1e6 for x in v)
+                                and any(v)):
+                                return [float(x) for x in v]
         except Exception:
             pass
         finally:
             if acquired:
                 self._inference_slots.release()
-            
+        return None
+
+    async def generate_embedding(self, text: str, model: Optional[str] = None) -> List[float]:
+        """Legacy development caller; semantic index never uses this fallback."""
+        genuine = await self.genuine_embedding(text, model)
+        if genuine is not None:
+            return genuine
         # Deterministic pseudo-embedding for local offline vector similarity (128 dims)
         import hashlib
         vector = []

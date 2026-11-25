@@ -70,7 +70,7 @@ def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "010_batch_b_durability"
+            assert revision == "011_batch_c_data"
             inspector = inspect(conn)
             tables = set(inspector.get_table_names())
             expected = set(Base.metadata.tables)
@@ -289,7 +289,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
         alembic("upgrade", "head")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "010_batch_b_durability"
+            assert revision == "011_batch_c_data"
             assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
                                 {"id": tenant_id}).scalar_one() == 1
             assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
@@ -411,7 +411,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
     with _engine().connect() as conn:
         assert conn.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "010_batch_b_durability"
+        ).scalar_one() == "011_batch_c_data"
 
 
 def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypatch):
@@ -706,7 +706,7 @@ def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch
             assert stored != old_raw
             assert conn.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "010_batch_b_durability"
+            ).scalar_one() == "011_batch_c_data"
 
         monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
         db = sessionmaker(bind=engine)()
@@ -806,7 +806,7 @@ def test_16_postgres_production_guard_rejects_stamped_plaintext_api_key(monkeypa
         with engine.begin() as conn:
             assert conn.execute(text(
                 "SELECT version_num FROM alembic_version"
-            )).scalar_one() == "010_batch_b_durability"
+            )).scalar_one() == "011_batch_c_data"
             conn.execute(
                 text("INSERT INTO businesses (id,name) VALUES (:id,'Tampered synthetic tenant')"),
                 {"id": business_id},
