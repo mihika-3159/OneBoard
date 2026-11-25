@@ -989,3 +989,12 @@ model embeddings with indexed four-band angular LSH and cosine reranking,
 bounded explicit indexing and atomic chunk storage. Legacy unindexed data
 remains searchable lexically, not presented as genuine semantic recall.
 CI pending for new head; no live services or independent certification.
+
+
+Batch C increment 2: append-only user-reported settlement evidence with
+source digest/reference, cumulative invoice bound, explicit FX provenance,
+settlement-date period consistency and per-currency period totals. Does not
+mutate invoice payment status or assert bank authentication. Offline provider
+scaffolding uses a dedicated AES-256-GCM key, tenant/provider/scope/expiry AAD,
+read-scope allowlists and persistent idempotent intents; no dispatch, OAuth
+verification or provider contact. New CI and adversarial tests pending.

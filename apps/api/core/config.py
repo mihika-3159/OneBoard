@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     REGISTRATION_SOURCE_MAX_ATTEMPTS: int = 30
     LOGIN_LOCKOUT_SECONDS: int = 300  # 5 minutes
     
+    # Separate base64-encoded 32-byte key; never derive from session signing secret.
+    PROVIDER_TOKEN_KEY: str = ""
+
     # Centralized Ollama Model Gateway
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     # No remote inference destination is authorized by default.

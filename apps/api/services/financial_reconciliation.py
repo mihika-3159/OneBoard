@@ -143,6 +143,8 @@ def reconcile_financial_evidence(
         "independently_verified": False,
         "bank_settlement_verified": False,
         "mutated_financial_records": False,
+        "comparison_basis": "current_record_amount_not_historical_balance",
+        "historical_period_verified": False,
         "warning": (
             "Matching amounts prove agreement with this uploaded file only. "
             "No bank identity, signature, transaction settlement or accounting audit was verified."

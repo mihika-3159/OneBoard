@@ -108,6 +108,38 @@ def reconcile_financial_records(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+class SettlementRequest(BaseModel):
+    invoice_id: str = Field(min_length=1,max_length=36)
+    source_reference: str = Field(min_length=8,max_length=128)
+    source_sha256: str = Field(min_length=64,max_length=64)
+    amount: str = Field(min_length=1,max_length=32)
+    currency: str = Field(min_length=3,max_length=3)
+    fx_rate: str = Field(min_length=1,max_length=32)
+    fx_source: str = Field(min_length=1,max_length=200)
+    settled_on: str = Field(min_length=10,max_length=10)
+    period: str = Field(min_length=7,max_length=7)
+
+@router.post("/financial/settlements")
+def add_settlement(req: SettlementRequest, current_user: User = Depends(require_founder_role),
+                   db: Session = Depends(get_db)):
+    from apps.api.services.settlement_evidence import record_settlement, serialize
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"financial_reconciliation")
+    try:
+        return serialize(record_settlement(db,current_user.business_id,**req.model_dump()))
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+@router.get("/financial/settlements/{period}")
+def settlement_summary(period: str,current_user: User = Depends(get_current_user),
+                       db: Session = Depends(get_db)):
+    from apps.api.services.settlement_evidence import period_summary
+    try:
+        return period_summary(db,current_user.business_id,period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
 @router.get("/operations")
 def get_operations_overview(
     current_user: User = Depends(get_current_user),

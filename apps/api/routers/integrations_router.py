@@ -63,6 +63,41 @@ def import_local_customers(
 class ChatImportRequest(BaseModel):
     conversation_text: str = Field(min_length=1, max_length=1_000_000)
 
+class ProviderCredentialRequest(BaseModel):
+    provider: str = Field(max_length=30)
+    scopes: list[str] = Field(min_length=1,max_length=8)
+    token: str = Field(min_length=1,max_length=4096,repr=False)
+    expires_at: datetime
+
+class ProviderIntentRequest(BaseModel):
+    provider: str = Field(max_length=30)
+    scope: str = Field(max_length=100)
+    idempotency_key: str = Field(min_length=8,max_length=128)
+
+@router.post("/providers/credential")
+def save_provider_credential(req: ProviderCredentialRequest,current_user: User = Depends(require_founder_role),
+                             db: Session = Depends(get_db)):
+    from apps.api.services.provider_staging import store_credential
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"customer_import")
+    try:
+        return store_credential(db,current_user.business_id,**req.model_dump())
+    except ValueError:
+        db.rollback()
+        raise HTTPException(status_code=422,detail="Invalid provider credential or encryption configuration") from None
+
+@router.post("/providers/intent")
+def stage_provider_intent(req: ProviderIntentRequest,current_user: User = Depends(require_founder_role),
+                          db: Session = Depends(get_db)):
+    from apps.api.services.provider_staging import stage_intent
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"customer_import")
+    try:
+        return stage_intent(db,current_user.business_id,req.provider,req.scope,req.idempotency_key)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
 @router.get("")
 def list_integrations(
     current_user: User = Depends(get_current_user),
