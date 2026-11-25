@@ -153,7 +153,7 @@ export const FounderCommandTab: React.FC = () => {
       <div className="p-2 rounded-2xl glass-panel flex items-center gap-2">
         <input
           type="text"
-          value={inputCommand}
+          aria-label="Founder command" value={inputCommand}
           onChange={(e) => setInputCommand(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           placeholder="Ask a question or delegate a task (e.g., 'Check overdue commitments and draft updates')..."

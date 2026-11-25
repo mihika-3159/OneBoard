@@ -147,7 +147,7 @@ export const AccountabilityTab: React.FC = () => {
           <div className="space-y-2">
             {decisions.map((d) => (
               <div
-                key={d.id}
+                role="button" tabIndex={0} aria-pressed={selectedDecision?.id===d.id} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setSelectedDecision(d)}}} key={d.id}
                 onClick={() => setSelectedDecision(d)}
                 className={`p-4 rounded-xl border cursor-pointer transition ${
                   selectedDecision?.id === d.id

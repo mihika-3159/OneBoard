@@ -197,7 +197,7 @@ export const AgentStudioTab: React.FC = () => {
               </p>
               <textarea
                 rows={3}
-                value={nlPrompt}
+                aria-label="Describe custom agent" value={nlPrompt}
                 onChange={(e) => setNlPrompt(e.target.value)}
                 className="w-full px-3.5 py-2.5 bg-slate-800 text-white text-xs rounded-xl border border-slate-700 focus:outline-none focus:border-indigo-500"
               />
@@ -299,7 +299,7 @@ export const AgentStudioTab: React.FC = () => {
           <div className="space-y-2">
             {agents.map((a) => (
               <div
-                key={a.id}
+                role="button" tabIndex={0} aria-pressed={selectedAgent?.id===a.id} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setSelectedAgent(a)}}} key={a.id}
                 onClick={() => setSelectedAgent(a)}
                 className={`p-3.5 rounded-xl border cursor-pointer transition ${
                   selectedAgent?.id === a.id

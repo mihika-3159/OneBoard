@@ -49,3 +49,18 @@ def test_csv_malformed_input_fuzz():
         tail="".join(rng.choice("abc,\n\"012345") for _ in range(rng.randrange(1,80)))
         # Intentionally invalid header cannot be interpreted as financial data.
         with pytest.raises(ValueError):parse_evidence("wrong_header\n"+tail)
+
+def test_valid_and_corrupted_financial_csv_rows():
+    import csv,io
+    rng=random.Random(351)
+    header=["record_type","record_id","amount","currency","as_of"]
+    def encode(rows):
+        out=io.StringIO();writer=csv.writer(out);writer.writerow(header);writer.writerows(rows);return out.getvalue()
+    for i in range(150):
+        amount=Decimal(rng.randint(1,100000)).scaleb(-2)
+        row=["invoice","test-"+str(i),str(amount),"USD","2020-01-01"]
+        assert len(parse_evidence(encode([row])))==1
+        for column,bad in ((0,"unexpected"),(1,"invalid id"),(2,"NaN"),(3,"$$$"),(4,"not-a-date")):
+            mutated=row.copy();mutated[column]=bad
+            with pytest.raises(ValueError):parse_evidence(encode([mutated]))
+        with pytest.raises(ValueError):parse_evidence(encode([row,row]))

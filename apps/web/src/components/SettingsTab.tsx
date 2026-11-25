@@ -252,7 +252,7 @@ export const SettingsTab: React.FC = () => {
             },
           ].map((prof) => (
             <div
-              key={prof.id}
+              role="button" tabIndex={0} aria-pressed={activeProfile===prof.id} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();handleSwitchProfile(prof.id)}}} key={prof.id}
               onClick={() => handleSwitchProfile(prof.id)}
               className={`p-4 rounded-xl border cursor-pointer transition space-y-2 flex flex-col justify-between ${
                 activeProfile === prof.id

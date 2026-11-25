@@ -4,6 +4,7 @@ import httpx
 from sqlalchemy import create_engine,text
 from sqlalchemy.engine import make_url
 from scripts.operations.provision_runtime_role import provision
+from scripts.verify_dynamic_security import verify as verify_security
 def main():
     if os.environ.get("ONEBOARD_CI_PRODUCTION_BROWSER")!="1":raise RuntimeError("Disposable CI approval required")
     url=make_url(os.environ["DATABASE_URL"])
@@ -30,6 +31,7 @@ def main():
                     except httpx.HTTPError:pass
                     time.sleep(1)
                 else:raise RuntimeError("Production API startup timed out")
+            verify_security(base,str(cert),pathlib.Path('dynamic-security.json'))
             subprocess.run(["npx","--no-install","playwright","test","--config","playwright.production.config.ts","--reporter=line,json"],cwd="apps/web",env=dict(os.environ,PLAYWRIGHT_JSON_OUTPUT_NAME="production-browser.json"),check=True)
             subprocess.run([sys.executable,"scripts/require_browser_suite.py","apps/web/production-browser.json","1"],check=True)
         finally:

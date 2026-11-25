@@ -20,6 +20,7 @@ export const IntegrationsTab: React.FC = () => {
   const [outbox, setOutbox] = useState<any[]>([]);
   const [isSyncing, setIsSyncing] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading,setLoading]=useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvPreview, setCsvPreview] = useState<any | null>(null);
@@ -35,6 +36,7 @@ export const IntegrationsTab: React.FC = () => {
   }, []);
 
   const loadData = async () => {
+    setLoading(true);
     try {
       const [ints, ob] = await Promise.all([api.getIntegrations(), api.getEmailOutbox()]);
       // The API returns an envelope { is_simulated, channel, outbox }, not an array.
@@ -45,7 +47,7 @@ export const IntegrationsTab: React.FC = () => {
       setError(e instanceof Error ? e.message : 'Integrations are unavailable. Please retry.');
       setIntegrations([]);
       setOutbox([]);
-    }
+    } finally {setLoading(false)}
   };
 
   const handleSync = async (id: string) => {
@@ -119,6 +121,8 @@ export const IntegrationsTab: React.FC = () => {
         </div>
       </div>
 
+      {loading&&<p role="status" aria-live="polite">Loading integrations and outbox…</p>}
+      {!loading&&!error&&!integrations.length&&<p role="status">No sandbox connector records.</p>}
       {error && (
         <div role="alert" className="p-3 border border-rose-500/40 rounded-xl text-rose-300 text-sm flex justify-between items-center">
           <span>{error}</span>
@@ -178,7 +182,7 @@ export const IntegrationsTab: React.FC = () => {
                 </span>
               </div>
               <p className="text-slate-400 text-[11px]">
-                {conn.is_mock ? 'Sandbox only: no live provider connection' : 'Live provider authorization not implemented'}
+                {conn.is_mock ? 'Sandbox only: no live provider connection' : 'Use the external provider panel to inspect live authorization'}
               </p>
             </div>
 
@@ -190,7 +194,7 @@ export const IntegrationsTab: React.FC = () => {
                 onClick={() => handleSync(conn.id)}
                 disabled={isSyncing === conn.id || !conn.is_mock}
                 className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
-                title={conn.is_mock ? 'Refresh synthetic sandbox only' : 'Live provider synchronization is not implemented'}
+                title={conn.is_mock ? 'Refresh synthetic sandbox only' : 'Use the external provider panel to inspect synchronization'}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing === conn.id ? 'animate-spin' : ''}`} />
               </button>
@@ -245,7 +249,7 @@ export const IntegrationsTab: React.FC = () => {
 
           <textarea
             rows={3}
-            value={chatText}
+            aria-label="Conversation text to import" value={chatText}
             onChange={(e) => setChatText(e.target.value)}
             className="w-full p-2.5 bg-slate-900 text-white rounded-xl border border-slate-800 focus:outline-none focus:border-indigo-500 font-mono text-[11px]"
           />

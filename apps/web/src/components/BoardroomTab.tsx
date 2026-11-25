@@ -187,7 +187,7 @@ export const BoardroomTab: React.FC = () => {
                 const isSelected = selectedAdviserNames.includes(r.name);
                 return (
                   <div
-                    key={r.name}
+                    role="button" tabIndex={0} aria-pressed={isSelected} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();toggleAdviser(r.name)}}} key={r.name}
                     onClick={() => toggleAdviser(r.name)}
                     className={`p-2.5 rounded-xl border cursor-pointer transition flex items-center justify-between text-xs ${
                       isSelected
@@ -238,7 +238,7 @@ export const BoardroomTab: React.FC = () => {
           ) : (
             meetings.map((m) => (
               <div
-                key={m.id}
+                role="button" tabIndex={0} aria-pressed={selectedMeeting?.id===m.id} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setSelectedMeeting(m)}}} key={m.id}
                 onClick={() => setSelectedMeeting(m)}
                 className={`p-4 rounded-xl border cursor-pointer transition ${
                   selectedMeeting?.id === m.id
@@ -389,7 +389,7 @@ export const BoardroomTab: React.FC = () => {
                   </div>
                   <input
                     type="text"
-                    value={approvalNotes}
+                    aria-label="Founder approval notes" value={approvalNotes}
                     onChange={(e) => setApprovalNotes(e.target.value)}
                     placeholder="Optional founder instructions or execution caveats..."
                     className="w-full px-3 py-2 bg-slate-800 text-white text-xs rounded-lg border border-slate-700 focus:outline-none"

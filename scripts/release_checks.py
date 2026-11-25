@@ -75,17 +75,23 @@ def bundle(directory,out):
     write(out,{"total_js_bytes":total,"largest_chunk_bytes":max(sizes.values()),"chunks":sizes,"limits":{"total":3500000,"chunk":1500000}})
 def aggregate(root,out):
     root=Path(root)
-    required=["coverage.json","python-sbom.json","node-sbom.json","bandit.json","frontend-static.json","production-browser.json","build-integrity.json","property-tests.xml","frontend-budget.json"]
+    required=["coverage.json","python-sbom.json","node-sbom.json","bandit.json","frontend-static.json","production-browser.json","build-integrity.json","property-tests.xml","frontend-budget.json","dynamic-security.json"]
     evidence={}
     for name in required:
         matches=list(root.rglob(name))
         if len(matches)!=1 or not matches[0].stat().st_size:raise ValueError("Missing or duplicate evidence "+name)
         p=matches[0]
-        if name.endswith(".json"):json.loads(p.read_text())
+        if name.endswith(".json"):
+            value=json.loads(p.read_text())
+            if name=="coverage.json":coverage_gate(p)
+            if name=="frontend-static.json" and (not value.get("files") or value.get("findings")):raise ValueError("Frontend static analysis incomplete")
+            if name=="production-browser.json" and (value["stats"]["expected"]<1 or any(value["stats"][k] for k in ("unexpected","flaky","skipped"))):raise ValueError("Production browser failure")
+            if name=="dynamic-security.json" and (value.get("failed")!=0 or value.get("passed",0)<20):raise ValueError("Incomplete dynamic security checks")
+            if name=="build-integrity.json" and (value.get("commit")!=os.environ["GITHUB_SHA"] or value.get("run")!=os.environ["GITHUB_RUN_ID"]):raise ValueError("Mixed candidate evidence")
         else:
             x=ET.parse(p).getroot()
             suites=[x] if x.tag=="testsuite" else x.findall("testsuite")
-            if not suites or any(int(s.attrib.get(k,0)) for s in suites for k in ("errors","failures","skipped")):raise ValueError("Incomplete tests "+name)
+            if not suites or sum(int(s.attrib.get("tests",0)) for s in suites)<1 or any(int(s.attrib.get(k,0)) for s in suites for k in ("errors","failures","skipped")):raise ValueError("Incomplete tests "+name)
         evidence[name]={"sha256":sha(p),"bytes":p.stat().st_size}
     write(out,{"schema":"oneboard-batch-p-evidence-v1","commit":os.environ["GITHUB_SHA"],"run":os.environ["GITHUB_RUN_ID"],"evidence":evidence,"external_production_gate":"NO_GO","scope":"disposable CI engineering evidence only; not independent certification"})
 def main():

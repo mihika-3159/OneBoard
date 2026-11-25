@@ -66,7 +66,7 @@ export const App: React.FC = () => {
   const [authBizName, setAuthBizName] = useState<string>('');
 
   useEffect(()=>{
-    const expired=(event:Event)=>{setIsRegisterMode(false);setRecoverMode(false);setIsAuthenticated(false);setCurrentUser(null);setCurrentBusiness(null);setGatewayStatus(null);setAlerts([]);setShowAlertModal(false);setAuthPassword('');setAuthFactor('');setConnectionIssue(null);setAuthError((event as CustomEvent).detail||'Your session expired. Sign in again. No interrupted write was automatically replayed.');};
+    const expired=(event:Event)=>{setIsRegisterMode(false);setRecoverMode(false);setIsAuthenticated(false);setCurrentUser(null);setCurrentBusiness(null);setGatewayStatus(null);setAlerts([]);setShowAlertModal(false);setShowSetup(false);setAuthPassword('');setAuthFactor('');setConnectionIssue(null);setAuthError((event as CustomEvent).detail||'Your session expired. Sign in again. No interrupted write was automatically replayed.');};
     const issue=(event:Event)=>{const detail=(event as CustomEvent).detail;setConnectionIssue(old=>detail.recovered?(old!==null&&old.path===detail.path&&!old.write?null:old):detail);};
     window.addEventListener(sessionExpiredEvent,expired);window.addEventListener(connectionIssueEvent,issue);
     void checkSessionAndLoad();
@@ -139,7 +139,7 @@ export const App: React.FC = () => {
       setIsAuthenticated(false);
       setIsRegisterMode(false);
       setAuthPassword('');
-      setAlerts([]);setGatewayStatus(null);setShowAlertModal(false);setConnectionIssue(null);setAuthFactor('');
+      setAlerts([]);setGatewayStatus(null);setShowAlertModal(false);setShowSetup(false);setConnectionIssue(null);setAuthFactor('');
       setActiveTab('overview');
     }
   };
@@ -212,7 +212,7 @@ export const App: React.FC = () => {
                     <span>{item.label}</span>
                   </div>
                   {item.badge && (
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono">
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-950 text-indigo-200 font-mono">
                       {item.badge}
                     </span>
                   )}

@@ -317,7 +317,7 @@ export const BusinessMemoryTab: React.FC = () => {
             <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center space-y-2">
               <Upload className="w-8 h-8 text-indigo-400 mx-auto" />
               <input
-                type="file"
+                type="file" aria-label="Document to upload"
                 accept=".csv,.xlsx,.pdf,.txt,.md,.json"
                 onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                 className="text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"

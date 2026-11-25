@@ -296,7 +296,7 @@ export const WorkflowStudioTab: React.FC = () => {
         </div>
         <input
           type="text"
-          value={promptText}
+          aria-label="Describe workflow automation" value={promptText}
           onChange={(e) => setPromptText(e.target.value)}
           placeholder="Describe an automation in plain English..."
           className="flex-1 px-3.5 py-2 bg-slate-900 text-white text-xs rounded-xl border border-slate-800 focus:outline-none focus:border-indigo-500"
@@ -376,8 +376,6 @@ export const WorkflowStudioTab: React.FC = () => {
               nodes={nodes}
               edges={edges}
               onlyRenderVisibleElements
-              nodesDraggable={false}
-              nodesConnectable={false}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               fitView
@@ -446,7 +444,7 @@ export const WorkflowStudioTab: React.FC = () => {
             </p>
             <textarea
               rows={4}
-              value={teachDesc}
+              aria-label="Describe manual process" value={teachDesc}
               onChange={(e) => setTeachDesc(e.target.value)}
               placeholder="e.g. When a new customer signs up for Enterprise, fetch their company domain, draft a customized welcome message with the API onboarding guide, and request my approval before sending..."
               className="w-full px-3.5 py-2.5 bg-slate-800 text-white text-xs rounded-xl border border-slate-700 focus:outline-none focus:border-indigo-500"

@@ -28,7 +28,7 @@ test('accessibility tree, keyboard navigation and automated WCAG checks for all 
   const tree=await main.ariaSnapshot();expect(tree.length).toBeGreaterThan(0);
  }
  await info.attach('accessibility-audit.json',{body:JSON.stringify(violations,null,2),contentType:'application/json'});
- expect(violations.filter((v:any)=>['serious','critical'].includes(v.impact))).toEqual([]);
+ expect(violations).toEqual([]);
 });
 test('large workflow inventory remains bounded and keyboard-selectable',async({page})=>{
  await register(page);
