@@ -31,7 +31,11 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Run real browser E2E tests
         working-directory: apps/web
-        run: npx playwright test --config playwright.config.ts
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: browser-required.json
+        run: |
+          npx playwright test --config playwright.config.ts --reporter=line,json
+          python ../../scripts/require_browser_suite.py browser-required.json 18
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

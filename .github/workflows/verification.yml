@@ -202,3 +202,36 @@ jobs:
             postgres-required.xml
             http-load-result.json
           retention-days: 7
+
+  supply-chain:
+    name: Required dependency and tracked-secret checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: High-confidence tracked secret scan
+        run: python scripts/check_tracked_secrets.py
+      - name: Python dependency vulnerability audit
+        run: |
+          python -m venv /tmp/oneboard-audit
+          /tmp/oneboard-audit/bin/pip install -r apps/api/requirements.txt pip-audit
+          /tmp/oneboard-audit/bin/pip-audit --strict --format json --output pip-audit.json
+      - name: Locked Node dependency vulnerability audit (high or critical fail)
+        working-directory: apps/web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm audit --audit-level=high --json > ../../npm-audit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-audit-reports
+          path: |
+            pip-audit.json
+            npm-audit.json
+          retention-days: 7

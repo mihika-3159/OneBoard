@@ -87,7 +87,7 @@ export const BusinessMemoryTab: React.FC = () => {
       });
       const data = await res.json();
       if (res.ok) {
-        setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks indexed).`);
+        setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks stored; semantic embeddings are indexed separately).`);
         setUploadFile(null);
         await loadMemoryData();
       } else {
@@ -272,7 +272,7 @@ export const BusinessMemoryTab: React.FC = () => {
                     <FileText className="w-3.5 h-3.5 text-indigo-400" />
                     Citation Source: {res.source_title}
                   </span>
-                  <span className="font-mono text-slate-500 text-[10px]">Score: {res.score}</span>
+                  <span className="font-mono text-slate-500 text-[10px]">Score: {res.score} · {res.search_strategy || 'local retrieval'}</span>
                 </div>
                 <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{res.content}</p>
               </div>
@@ -296,7 +296,7 @@ export const BusinessMemoryTab: React.FC = () => {
               <Upload className="w-8 h-8 text-indigo-400 mx-auto" />
               <input
                 type="file"
-                accept=".csv,.xlsx,.xls,.pdf,.txt,.md,.json"
+                accept=".csv,.xlsx,.pdf,.txt,.md,.json"
                 onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                 className="text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
               />
@@ -314,7 +314,7 @@ export const BusinessMemoryTab: React.FC = () => {
               disabled={isUploading || !uploadFile}
               className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold rounded-xl transition"
             >
-              {isUploading ? 'Extracting & Indexing...' : 'Index Document into Business Memory'}
+              {isUploading ? 'Extracting & Storing...' : 'Store Document in Business Memory'}
             </button>
           </form>
         </div>

@@ -33,6 +33,9 @@ from apps.api.routers.business_router import reset_demo
     "/api/alerts",
     "/api/ai/status",
     "/api/auth/me",
+    "/api/data/export",
+    "/api/data/retention",
+    "/api/diagnostics/operations",
 ])
 def test_anonymous_business_api_reads_require_authentication(monkeypatch, path):
     monkeypatch.setattr(auth, "_DEMO_MODE", False)

@@ -147,6 +147,7 @@ export const FounderCommandTab: React.FC = () => {
           className="flex-1 bg-transparent px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
         />
         <button
+          aria-label="Send founder command"
           onClick={() => handleSend()}
           disabled={isLoading || !inputCommand.trim()}
           className="p-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl transition shadow-md shadow-indigo-600/20"

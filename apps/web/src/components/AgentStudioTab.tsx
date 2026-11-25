@@ -195,6 +195,7 @@ export const AgentStudioTab: React.FC = () => {
                   <label className="font-semibold text-slate-300">Agent Name</label>
                   <input
                     type="text"
+                    aria-label="Agent name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none"
@@ -220,6 +221,7 @@ export const AgentStudioTab: React.FC = () => {
                 <label className="font-semibold text-slate-300">System Instruction Prompt</label>
                 <textarea
                   rows={3}
+                  aria-label="System instruction prompt"
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
                   className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none font-mono"
@@ -361,6 +363,7 @@ export const AgentStudioTab: React.FC = () => {
               <label className="text-xs font-semibold text-slate-300 block mb-1">Test Simulation Input:</label>
               <textarea
                 rows={3}
+                aria-label="Test simulation input"
                 value={testInput}
                 onChange={(e) => setTestInput(e.target.value)}
                 className="w-full p-2.5 bg-slate-900 text-white text-xs rounded-xl border border-slate-800 focus:outline-none focus:border-indigo-500"

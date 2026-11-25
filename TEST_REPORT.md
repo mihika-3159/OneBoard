@@ -1065,3 +1065,15 @@ job adds six synthetic tenants, two actual HTTPS application workers,
 cross-tenant denial and stop/restart persistence; reports median/p95 and
 request counts. Local CI TLS is not certification of public edge TLS.
 CI pending. No deployment or external actions.
+
+
+Batch D increment 3: mandatory browser inventory and zero flaky/skip gate,
+actual user-facing command, import, memory, workflow, agent and settings
+controls with a separate all-eleven-tab navigation test; truthful memory
+upload label (stored chunks are not necessarily embedded), accessible
+agent/command inputs, expanded auth route inventory, cancellation/UTC and
+test-gate fault tests. Required Python dependency audit, locked Node audit
+(high/critical fail), high-confidence tracked credential detection and
+Dependabot update configuration. Secret scan is checkout-only, not a
+complete history audit. Existing disposable restore safety and fault
+checks preserved. CI pending.

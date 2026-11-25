@@ -19,11 +19,13 @@ from apps.api.routers.accountability_router import router as accountability_rout
 from apps.api.routers.integrations_router import router as integrations_router
 from apps.api.routers.alerts_router import router as alerts_router
 from apps.api.routers.model_gateway_router import router as model_gateway_router
+from apps.api.routers.data_router import router as data_router
+from apps.api.routers.diagnostics_router import router as diagnostics_router
 
 API_ROUTERS = (
     auth_router, business_router, council_router, memory_router,
     workflow_router, agent_studio_router, accountability_router,
-    integrations_router, alerts_router, model_gateway_router,
+    integrations_router, alerts_router, model_gateway_router, data_router, diagnostics_router,
 )
 
 
@@ -50,6 +52,11 @@ FOUNDER_MUTATIONS = {
     "/api/ai/profile",
     "/api/memory/conflicts/{conflict_id}/resolve",
     "/api/memory/upload",
+    "/api/memory/index",
+    "/api/business/financial/settlements",
+    "/api/integrations/providers/credential",
+    "/api/integrations/providers/intent",
+    "/api/data/delete-workspace",
     "/api/integrations/{integration_id}/sync",
     "/api/integrations/local/customers/import",
     "/api/accountability/verify-outcome",
