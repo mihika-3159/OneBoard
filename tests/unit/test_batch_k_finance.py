@@ -167,3 +167,20 @@ def test_forecast_outcome_uses_closed_record_and_cannot_be_replaced(db,monkeypat
     assert actual["outcome"]["metrics"]["revenue"]["within_scenario_range"] is False
     assert forecast.observe(db,"a","other",row["id"])==actual
     with pytest.raises(ValueError):forecast.observe(db,"b","actor",row["id"])
+
+def test_foreign_invoice_fx_gain_loss_revaluation_and_refund(db):
+    inv=invoice(db,"360.00")
+    post(db,"invoice_issue","100","foreign-issue",inv.id,"USD","3.6","issue-date quote")
+    p=post(db,"payment","40","foreign-pay1",inv.id,"USD","3.7","payment-date quote")
+    assert ledger.invoice_balance(db,"a",inv)==216
+    assert ledger.statement(db,"a","2020-01")["realized_fx_result"]=="4.00"
+    post(db,"fx_revaluation","60","foreign-revalue",inv.id,"USD","3.8","period-end quote")
+    assert ledger.invoice_balance(db,"a",inv)==228
+    assert ledger.statement(db,"a","2020-01")["unrealized_fx_result"]=="12.00"
+    post(db,"payment","60","foreign-pay2",inv.id,"USD","3.75","payment-date quote")
+    assert inv.status=="paid" and ledger.invoice_balance(db,"a",inv)==0
+    assert ledger.statement(db,"a","2020-01")["realized_fx_result"]=="1.00"
+    post(db,"refund","10","foreign-refund",inv.id,"USD","3.7","original quote",related=p.id)
+    assert ledger.invoice_balance(db,"a",inv)==36
+    assert ledger.statement(db,"a","2020-01")["realized_fx_result"]=="0.00"
+    assert sum(ledger.trial_balance(db.query(JournalEntry).all(),"AED").values())==0

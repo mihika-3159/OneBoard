@@ -86,6 +86,7 @@ def ensure_open(db,tenant,period):
 
 def serialize(row):
     return {"id":row.id,"reference":row.reference,"kind":row.kind,"invoice_id":row.invoice_id,"related_entry_id":row.related_entry_id,
+      "invoice_minor_delta":row.invoice_minor_delta,"carrying_minor":row.carrying_minor,
       "debit_account":row.debit_account,"credit_account":row.credit_account,"currency":row.currency,"amount":major(row.original_minor,row.currency),
       "base_currency":row.base_currency,"base_amount":major(row.base_minor,row.base_currency),"fx_rate":row.fx_rate,"fx_source":row.fx_source,
       "booked_on":row.booked_on,"period":row.period,"evidence_sha256":row.evidence_hash,"actor_id":row.actor_id,
@@ -119,9 +120,14 @@ def legacy_balance(db,tenant,invoice):
     if paid<0 or paid>amount:raise ValueError("Legacy settlement exceeds invoice amount")
     return amount-paid
 
+def allocation(total,prior,adding,full):
+    """Cumulative allocation removes split-payment/refund rounding drift."""
+    def rounded(n):return int((Decimal(total)*n/full).quantize(Decimal(1),rounding=ROUND_HALF_UP))
+    return rounded(prior+adding)-rounded(prior)
+
 def post(db,tenant,actor,*,reference,kind,amount,currency,fx_rate,fx_source,booked_on,evidence_text,invoice_id=None,related_entry_id=None,commit=True):
-    if kind not in ACCOUNTS:raise ValueError("Unsupported journal transaction")
-    if not isinstance(reference,str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}",reference):raise ValueError("Invalid reference")
+    if kind not in ACCOUNTS and kind!="fx_revaluation":raise ValueError("Unsupported journal transaction")
+    if not isinstance(reference,str) or reference.startswith("fx:") or not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}",reference):raise ValueError("Invalid reference")
     if not actor:raise ValueError("Actor required")
     if not isinstance(evidence_text,str) or not 1<=len(evidence_text.encode("utf-8"))<=262144 or not evidence_text.strip():raise ValueError("Evidence is required")
     booked_on=date_key(booked_on);period=booked_on[:7]
@@ -138,8 +144,8 @@ def post(db,tenant,actor,*,reference,kind,amount,currency,fx_rate,fx_source,book
     if db.query(JournalEntry).filter_by(business_id=tenant).count()>=20000:raise ValueError("Journal capacity reached")
     # A currency switch must be implemented as an explicit migration, never a mixed base sum.
     if db.query(JournalEntry.id).filter(JournalEntry.business_id==tenant,JournalEntry.base_currency!=base).first():raise ValueError("Ledger base currency changed; migration required")
-    invoice=None;entries=[]
-    if kind in INVOICE_KINDS:
+    invoice=None;entries=[];delta=None;carrying=None;fx_difference=0
+    if kind in INVOICE_KINDS or kind=="fx_revaluation":
         invoice=db.query(Invoice).filter_by(business_id=tenant,id=invoice_id).first()
         if not invoice or invoice.status in ("draft","cancelled"):raise ValueError("Invoice missing, draft or cancelled")
         entries=invoice_entries(db,tenant,invoice_id)
@@ -148,31 +154,72 @@ def post(db,tenant,actor,*,reference,kind,amount,currency,fx_rate,fx_source,book
             legacy=db.query(SettlementEvidence.id).filter_by(business_id=tenant,invoice_id=invoice_id).first()
             if legacy and kind!="opening_invoice":raise ValueError("Legacy settlement history requires opening-balance recognition")
             target=legacy_balance(db,tenant,invoice) if kind=="opening_invoice" else decimal_value(invoice.amount)
-            if currency!=base or converted!=minor(target,base):raise ValueError("Recognition must equal recorded outstanding base invoice amount")
+            if converted!=minor(target,base):raise ValueError("Recognition must equal recorded outstanding base invoice amount")
+            if kind=="opening_invoice" and currency!=base:raise ValueError("Legacy opening invoices use recorded base currency")
+            delta=original;carrying=converted
         else:
-            if not entries or not any(r.kind in RECOGNITION for r in entries):raise ValueError("Recognize the invoice first")
-            if booked_on<min(r.booked_on for r in entries):raise ValueError("Transaction predates invoice recognition")
-            if kind in ("payment","credit") and converted>receivable(entries):raise ValueError("Transaction exceeds outstanding receivable")
-            if kind in ("refund","credit_reversal"):
+            origin=next((r for r in entries if r.kind in RECOGNITION),None)
+            if origin is None:raise ValueError("Recognize the invoice first")
+            if booked_on<max(r.booked_on for r in entries):raise ValueError("Invoice transactions must be posted chronologically")
+            denomination=origin.currency;foreign=denomination!=base
+            if foreign and currency!=denomination:raise ValueError("Foreign invoice transactions must use its original denomination")
+            balance=receivable(entries)
+            units=sum(r.invoice_minor_delta or 0 for r in entries) if foreign else balance
+            applied=original if foreign else converted
+            if kind=="fx_revaluation":
+                if not foreign or related_entry_id or original!=units or units<=0:raise ValueError("Revalue the full outstanding foreign invoice amount")
+                delta=0;carrying=0;fx_difference=converted-balance
+                if not fx_difference:raise ValueError("Revaluation would not change carrying value")
+            elif kind in ("payment","credit"):
+                if applied>units:raise ValueError("Transaction exceeds outstanding receivable")
+                delta=-applied
+                carrying=allocation(balance,0,applied,units) if foreign else converted
+                fx_difference=converted-carrying
+                if related_entry_id:raise ValueError("Unexpected reversal reference")
+            elif kind=="debit_adjustment":
+                if related_entry_id:raise ValueError("Unexpected reversal reference")
+                delta=applied;carrying=converted
+            elif kind in ("refund","credit_reversal"):
                 expected="payment" if kind=="refund" else "credit"
                 parent=next((r for r in entries if r.id==related_entry_id and r.kind==expected),None)
-                if not parent or booked_on<parent.booked_on or parent.currency!=currency or parent.fx_rate!=rate:raise ValueError("Reversal requires original entry currency and FX rate")
+                if not parent or parent.currency!=currency or parent.fx_rate!=rate:raise ValueError("Reversal requires original entry currency and FX rate")
                 prior=[r for r in entries if r.related_entry_id==parent.id and r.kind==kind]
-                if sum(r.original_minor for r in prior)+original>parent.original_minor or sum(r.base_minor for r in prior)+converted>parent.base_minor:raise ValueError("Reversal exceeds original transaction")
-            elif related_entry_id:raise ValueError("Unexpected reversal reference")
+                prior_original=sum(r.original_minor for r in prior)
+                if prior_original+original>parent.original_minor:raise ValueError("Reversal exceeds original transaction")
+                converted=allocation(parent.base_minor,prior_original,original,parent.original_minor)
+                carrying=allocation(parent.carrying_minor if parent.carrying_minor is not None else parent.base_minor,prior_original,original,parent.original_minor)
+                if converted<=0:raise ValueError("Reversal rounds to zero; reverse a larger amount")
+                delta=original if foreign else carrying
+                fx_difference=carrying-converted
     elif invoice_id or related_entry_id:raise ValueError("Unexpected invoice or reversal reference")
     if kind in ("opening_cash","opening_overdraft"):
         if db.query(JournalEntry.id).filter(JournalEntry.business_id==tenant,JournalEntry.kind.in_(["opening_cash","opening_overdraft"])).first():raise ValueError("Opening cash already recorded")
         if currency!=base:raise ValueError("Opening cash must use base currency")
-    debit,credit=ACCOUNTS[kind]
+    extra=None
+    if kind=="fx_revaluation":
+        debit,credit=("receivables","unrealized_fx_gain") if fx_difference>0 else ("unrealized_fx_loss","receivables")
+        booked_minor=abs(fx_difference)
+    else:
+        debit,credit=ACCOUNTS[kind];booked_minor=converted
     row=JournalEntry(business_id=tenant,reference=reference,request_hash=request,kind=kind,invoice_id=invoice_id,
-        related_entry_id=related_entry_id,debit_account=debit,credit_account=credit,currency=currency,original_minor=original,
-        base_currency=base,base_minor=converted,fx_rate=rate,fx_source=fx_source,booked_on=booked_on,period=period,evidence_hash=evidence_hash,actor_id=actor)
+        related_entry_id=related_entry_id,invoice_minor_delta=delta,carrying_minor=carrying,debit_account=debit,credit_account=credit,
+        currency=currency,original_minor=original,base_currency=base,base_minor=booked_minor,fx_rate=rate,fx_source=fx_source,
+        booked_on=booked_on,period=period,evidence_hash=evidence_hash,actor_id=actor)
     db.add(row);db.flush()
+    if kind!="fx_revaluation" and fx_difference:
+        if db.query(JournalEntry).filter_by(business_id=tenant).count()>=20000:raise ValueError("Journal capacity reached")
+        debit,credit=("receivables","fx_gain") if fx_difference>0 else ("fx_loss","receivables")
+        extra=JournalEntry(business_id=tenant,reference="fx:"+row.id,request_hash=digest([row.id,fx_difference]),kind="fx_difference",
+            invoice_id=invoice_id,related_entry_id=row.id,invoice_minor_delta=0,carrying_minor=0,debit_account=debit,credit_account=credit,
+            currency=base,original_minor=abs(fx_difference),base_currency=base,base_minor=abs(fx_difference),fx_rate="1",
+            fx_source="same_currency",booked_on=booked_on,period=period,evidence_hash=evidence_hash,actor_id=actor)
+        db.add(extra);db.flush()
     if invoice:
-        remaining=receivable(entries+[row])
+        remaining=receivable(entries+[row]+([extra] if extra else []))
         if remaining<0:raise ValueError("Negative receivable")
-        if remaining==0:invoice.status="paid";invoice.paid_at=datetime.utcnow()
+        foreign=next((r for r in entries+[row] if r.kind in RECOGNITION),row).currency!=base
+        outstanding_units=sum(r.invoice_minor_delta or 0 for r in entries+[row])
+        if remaining==0 and (not foreign or outstanding_units==0):invoice.status="paid";invoice.paid_at=datetime.utcnow()
         else:
             invoice.status="overdue" if invoice.due_date.date()<date.today() else "sent"
             invoice.paid_at=None
@@ -199,11 +246,15 @@ def statement(db,tenant,period):
     revenue=-balances.get("revenue",0)-balances.get("sales_returns",0)
     cogs=balances.get("cost_of_sales",0)
     operating=balances.get("operating_expense",0)+balances.get("acquisition_expense",0)
+    realized_fx=-balances.get("fx_gain",0)-balances.get("fx_loss",0)
+    unrealized_fx=-balances.get("unrealized_fx_gain",0)-balances.get("unrealized_fx_loss",0)
     return {"period":period,"currency":biz.currency,"entry_count":len(rows),
       "trial_balance":{k:major(v,biz.currency) for k,v in sorted(balances.items())},
       "closing_balances":{k:major(v,biz.currency) for k,v in sorted(cumulative.items())},
       "acquisition_expense":major(balances.get("acquisition_expense",0),biz.currency),"revenue":major(revenue,biz.currency),"cost_of_sales":major(cogs,biz.currency),"operating_expenses":major(operating,biz.currency),
       "gross_profit":major(revenue-cogs,biz.currency),"operating_result":major(revenue-cogs-operating,biz.currency),
+      "realized_fx_result":major(realized_fx,biz.currency),"unrealized_fx_result":major(unrealized_fx,biz.currency),
+      "net_result":major(revenue-cogs-operating+realized_fx+unrealized_fx,biz.currency),
       "cash_balance":major(cumulative.get("cash",0),biz.currency),
       "gross_margin_pct":str((Decimal(revenue-cogs)*100/revenue).quantize(Decimal("0.01"))) if revenue>0 else None,
       "unmatched_bank_lines":sum(not r.journal_id for r in cash_lines),

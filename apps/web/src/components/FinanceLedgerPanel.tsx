@@ -2,7 +2,7 @@ import React,{useEffect,useState} from 'react';
 import {api} from '../services/api';
 const field='block w-full rounded bg-slate-900 border border-slate-700 p-2 text-sm';
 const btn='rounded bg-indigo-700 px-3 py-2 text-sm disabled:opacity-50';
-const kinds=['opening_cash','opening_overdraft','opening_invoice','invoice_issue','payment','refund','credit','debit_adjustment','credit_reversal','expense','cogs','acquisition','capital','distribution'];
+const kinds=['opening_cash','opening_overdraft','opening_invoice','invoice_issue','payment','refund','credit','debit_adjustment','credit_reversal','fx_revaluation','expense','cogs','acquisition','capital','distribution'];
 const today=()=>new Date().toISOString().slice(0,10);
 const prevMonth=()=>{const d=new Date();d.setUTCDate(1);d.setUTCMonth(d.getUTCMonth()-1);return d.toISOString().slice(0,7)};
 const newRef=()=>crypto.randomUUID();
@@ -22,7 +22,7 @@ export function FinanceLedgerPanel({currency,onChange}:{currency:string,onChange
  useEffect(()=>{setOriginalCurrency(currency)},[currency]);
  const act=async(fn:()=>Promise<any>,message:string,reset=false)=>{setBusy(true);setError('');setNotice('');try{const result=await fn();setNotice(message);if(reset){setReference(newRef());setEvidence('');setAmount('')}await refresh();onChange();return result}catch(e){setError(String(e))}finally{setBusy(false)}};
  const post=(path:string,body:unknown)=>api.financeWrite(path,body);
- const isInvoice=['opening_invoice','invoice_issue','payment','refund','credit','debit_adjustment','credit_reversal'].includes(kind);
+ const isInvoice=['opening_invoice','invoice_issue','payment','refund','credit','debit_adjustment','credit_reversal','fx_revaluation'].includes(kind);
  const reverse=['refund','credit_reversal'].includes(kind);
  const existing=kind==='create_invoice';
  const text=(label:string,value:string,update:(s:string)=>void,type='text')=><label className="block">{label}<input className={field} value={value} onChange={e=>update(e.target.value)} type={type} required/></label>;
@@ -32,15 +32,15 @@ export function FinanceLedgerPanel({currency,onChange}:{currency:string,onChange
    <div className="flex flex-wrap gap-2">{['Journal','Bank reconciliation','Periods & trends','Forecasts','Unit economics'].map(t=><button key={t} className={btn} aria-pressed={t===tab} onClick={()=>{setTab(t);setError('');setNotice('')}}>{t}</button>)}</div>
    {text('Accounting month',period,setPeriod,'month')}
    {error&&<p role="alert" className="text-rose-300">{error}</p>}{notice&&<p role="status" className="text-emerald-300">{notice}</p>}
-   {statement&&<div className="grid grid-cols-2 gap-2 text-sm">{[['Journal cash balance',statement.statement.cash_balance],['Revenue',statement.statement.revenue],['Gross profit',statement.statement.gross_profit],['Operating result',statement.statement.operating_result],['Unmatched bank lines',statement.statement.unmatched_bank_lines],['Unmatched cash entries',statement.statement.unmatched_cash_entries]].map(([label,value])=><p key={label}>{label}: <strong>{value}</strong></p>)}<p>Period: {statement.closed?'Closed':'Open'}</p></div>}
+   {statement&&<div className="grid grid-cols-2 gap-2 text-sm">{[['Journal cash balance',statement.statement.cash_balance],['Realized FX result',statement.statement.realized_fx_result],['Unrealized FX result',statement.statement.unrealized_fx_result],['Revenue',statement.statement.revenue],['Gross profit',statement.statement.gross_profit],['Operating result',statement.statement.operating_result],['Unmatched bank lines',statement.statement.unmatched_bank_lines],['Unmatched cash entries',statement.statement.unmatched_cash_entries]].map(([label,value])=><p key={label}>{label}: <strong>{value}</strong></p>)}<p>Period: {statement.closed?'Closed':'Open'}</p></div>}
    {tab==='Journal'&&<>
-     <form className="space-y-2" onSubmit={e=>{e.preventDefault();void act(()=>existing?post('invoices',{reference,invoice_number:invoiceNumber,customer_name:customer,amount,booked_on:booked,due_date:due,evidence_text:evidence}):post('journal',{reference,kind,amount,currency:originalCurrency,fx_rate:rate,fx_source:fxSource,booked_on:booked,evidence_text:evidence,invoice_id:isInvoice?invoice:null,related_entry_id:reverse?related:null}),'Journal transaction recorded',true)}}>
+     <form className="space-y-2" onSubmit={e=>{e.preventDefault();void act(()=>existing?post('invoices',{reference,invoice_number:invoiceNumber,customer_name:customer,amount,currency:originalCurrency,fx_rate:rate,fx_source:fxSource,booked_on:booked,due_date:due,evidence_text:evidence}):post('journal',{reference,kind,amount,currency:originalCurrency,fx_rate:rate,fx_source:fxSource,booked_on:booked,evidence_text:evidence,invoice_id:isInvoice?invoice:null,related_entry_id:reverse?related:null}),'Journal transaction recorded',true)}}>
        <label>Transaction kind<select className={field} value={kind} onChange={e=>setKind(e.target.value)}><option value="create_invoice">Create and issue invoice</option>{kinds.map(k=><option key={k} value={k}>{k.replace(/_/g,' ')}</option>)}</select></label>
        {existing&&<>{text('Invoice number',invoiceNumber,setInvoiceNumber)}{text('Customer name',customer,setCustomer)}{text('Due date',due,setDue,'date')}</>}
        {isInvoice&&<label>Invoice<select className={field} value={invoice} onChange={e=>setInvoice(e.target.value)} required><option value="">Choose invoice</option>{invoices.map(i=><option key={i.id} value={i.id}>{i.invoice_number} · {i.customer_name} · {i.outstanding} outstanding · {i.enrolled?'journal':'legacy'}</option>)}</select></label>}
        {reverse&&text('Original journal entry ID',related,setRelated)}
        {text('Transaction reference',reference,setReference)}{text('Amount',amount,setAmount)}
-       {!existing&&<>{text('Transaction currency',originalCurrency,setOriginalCurrency)}{text('FX rate to base currency',rate,setRate)}{text('FX source',fxSource,setFxSource)}</>}
+       {<>{text('Transaction currency',originalCurrency,setOriginalCurrency)}{text('FX rate to base currency',rate,setRate)}{text('FX source',fxSource,setFxSource)}</>}
        {text('Booking date',booked,setBooked,'date')}
        <label>Evidence text<textarea className={field} value={evidence} onChange={e=>setEvidence(e.target.value)} required/></label>
        <button className={btn} disabled={busy}>Record transaction</button>

@@ -287,6 +287,9 @@ class InvoiceCreateRequest(BaseModel):
     amount:str=Field(min_length=1,max_length=32)
     booked_on:str=Field(min_length=10,max_length=10)
     due_date:str=Field(min_length=10,max_length=10)
+    currency:str|None=Field(default=None,min_length=3,max_length=3)
+    fx_rate:str=Field(default="1",max_length=32)
+    fx_source:str=Field(default="same_currency",max_length=200)
     evidence_text:str=Field(min_length=1,max_length=262144,repr=False)
 
 @router.post("/financial/invoices")
@@ -298,7 +301,9 @@ def finance_create_invoice(req:InvoiceCreateRequest,current_user:User=Depends(re
         biz=ledger.workspace(db,tenant);ledger.date_key(req.booked_on)
         due=date.fromisoformat(req.due_date)
         if due.isoformat()!=req.due_date or due.isoformat()<req.booked_on:raise ValueError("Invalid invoice due date")
-        storage_units(req.amount)
+        currency=req.currency or biz.currency
+        _,converted,_=ledger.fx_amount(req.amount,currency,biz.currency,req.fx_rate,req.fx_source)
+        base_amount=ledger.major(converted,biz.currency);storage_units(base_amount)
         old=db.query(JournalEntry).filter_by(business_id=tenant,reference=req.reference).first()
         if old:
             inv=db.query(Invoice).filter_by(business_id=tenant,id=old.invoice_id).first()
@@ -306,10 +311,10 @@ def finance_create_invoice(req:InvoiceCreateRequest,current_user:User=Depends(re
         else:
             if db.query(Invoice.id).filter_by(business_id=tenant,invoice_number=req.invoice_number).first():raise ValueError("Invoice number already exists")
             inv=Invoice(business_id=tenant,invoice_number=req.invoice_number,customer_name=req.customer_name,
-                amount=req.amount,status="sent",due_date=datetime.combine(due,datetime.min.time()))
+                amount=base_amount,status="sent",due_date=datetime.combine(due,datetime.min.time()))
             db.add(inv);db.flush()
         row=ledger.post(db,tenant,current_user.id,reference=req.reference,kind="invoice_issue",amount=req.amount,
-            currency=biz.currency,fx_rate="1",fx_source="same_currency",booked_on=req.booked_on,evidence_text=req.evidence_text,invoice_id=inv.id)
+            currency=currency,fx_rate=req.fx_rate,fx_source=req.fx_source,booked_on=req.booked_on,evidence_text=req.evidence_text,invoice_id=inv.id)
         return ledger.serialize(row)
     except ValueError as exc:invalid_finance(db,exc)
 
