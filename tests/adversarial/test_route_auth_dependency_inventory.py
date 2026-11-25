@@ -37,6 +37,7 @@ PUBLIC_API = {
     ("POST", "/api/auth/register"),
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/logout"),  # Signed-session revocation and cookie CSRF checked internally.
+    ("POST", "/api/integrations/providers/webhook/{provider}/{tenant}/{connection_id}"),  # HMAC verified before scope.
     ("GET", "/api/council/roles"),  # Static public adviser role descriptions only.
 }
 FOUNDER_MUTATIONS = {
@@ -80,6 +81,15 @@ FOUNDER_MUTATIONS = {
     "/api/business/financial/settlements",
     "/api/integrations/providers/credential",
     "/api/integrations/providers/intent",
+    "/api/integrations/providers/oauth/start",
+    "/api/integrations/providers/live/disconnect",
+    "/api/integrations/providers/live/rotate",
+    "/api/integrations/providers/live/sync",
+    "/api/integrations/providers/live/sync/{job_id}/retry",
+    "/api/integrations/providers/live/conflicts/{conflict_id}/resolve",
+    "/api/integrations/providers/live/actions",
+    "/api/integrations/providers/live/actions/{action_id}/reconcile",
+    "/api/integrations/providers/live/actions/{action_id}/cancel",
     "/api/data/delete-workspace",
     "/api/integrations/{integration_id}/sync",
     "/api/integrations/local/customers/import",

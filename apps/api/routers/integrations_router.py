@@ -219,3 +219,150 @@ def get_github_status(current_user: User = Depends(get_current_user)):
         "source": "local_mock_github_adapter",
         **github_adapter.get_repo_status()
     }
+
+
+# Batch L: explicit operator-configured live adapter lifecycle.
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+from apps.api.services.integrations import provider_runtime as runtime
+from apps.api.services.integrations.provider_transport import CAPABILITIES,configuration
+from apps.api.models.operations import (ProviderConnection,ProviderSyncJob,ProviderRecord,ProviderRecordConflict,ProviderDelivery)
+from apps.api.services.data_lifecycle import owner
+from apps.api.core.database import scope_tenant_session
+
+def live_owner(db,user):
+    try:owner(db,user)
+    except PermissionError:raise HTTPException(403,"Workspace owner required") from None
+    if settings.ONEBOARD_PRODUCTION_MODE:consume_tenant_budget(db,user.business_id,"customer_import")
+
+def live_error(db):
+    db.rollback()
+    raise HTTPException(422,"Provider request rejected; inspect integration diagnostics") from None
+
+@router.get("/providers/live")
+def live_providers(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    rows={r.provider:r for r in db.query(ProviderConnection).filter_by(business_id=current_user.business_id).all()}
+    result=[]
+    for provider,(scopes,actions) in CAPABILITIES.items():
+        try:configuration(provider);configured=True
+        except ValueError:configured=False
+        info=runtime.public(rows[provider]) if provider in rows else {"provider":provider,"state":"disconnected","scopes":[]}
+        result.append({**info,"external_adapter_configured":configured,"supported_scopes":sorted(scopes),"supported_actions":actions,"adapter_contract":"normalized_https_adapter"})
+    return {"providers":result}
+
+class OAuthBegin(BaseModel):
+    provider:str=Field(max_length=30)
+    scopes:list[str]=Field(min_length=1,max_length=16)
+@router.post("/providers/oauth/start")
+def oauth_start(req:OAuthBegin,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.start_authorization(db,current_user.business_id,current_user.id,req.provider,req.scopes)
+    except ValueError:live_error(db)
+
+@router.get("/providers/oauth/callback")
+def oauth_callback(state:str,code:str|None=None,error:str|None=None,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    # Actor-bound, single-use state is CSRF protection for the OAuth redirect.
+    live_owner(db,current_user)
+    result="failed"
+    try:
+        runtime.complete_authorization(db,current_user.business_id,current_user.id,state,code,denied=error is not None)
+        result="connected"
+    except ValueError:db.rollback()
+    return RedirectResponse("/?provider_oauth="+result,status_code=303)
+
+class ProviderName(BaseModel):
+    provider:str=Field(max_length=30)
+@router.post("/providers/live/disconnect")
+def live_disconnect(req:ProviderName,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.disconnect(db,current_user.business_id,req.provider)
+    except ValueError:live_error(db)
+
+@router.post("/providers/live/rotate")
+def live_rotate(current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.rotate_keys(db,current_user.business_id)
+    except ValueError:live_error(db)
+
+class SyncRequest(BaseModel):
+    provider:str=Field(max_length=30)
+    request_key:str=Field(min_length=8,max_length=128)
+@router.post("/providers/live/sync")
+def live_sync(req:SyncRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.sync_public(runtime.enqueue(db,current_user.business_id,req.provider,req.request_key))
+    except ValueError:live_error(db)
+
+@router.post("/providers/live/sync/{job_id}/retry")
+def live_retry(job_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.retry_sync(db,current_user.business_id,job_id)
+    except ValueError:live_error(db)
+
+@router.get("/providers/live/{provider}/diagnostics")
+def live_diagnostics(provider:str,offset:int=0,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    tenant=current_user.business_id
+    if not 0<=offset<=20000:raise HTTPException(422,"Invalid page offset")
+    try:row=runtime.connection(db,tenant,provider)
+    except ValueError:raise HTTPException(404,"Provider connection unavailable") from None
+    def rows(model,order,limit=100):
+        return db.query(model).filter_by(business_id=tenant,connection_id=row.id).order_by(order).offset(offset).limit(limit+1).all()
+    jobs=rows(ProviderSyncJob,ProviderSyncJob.created_at.desc())
+    records=rows(ProviderRecord,ProviderRecord.id)
+    conflicts=rows(ProviderRecordConflict,ProviderRecordConflict.created_at.desc())
+    actions=rows(ProviderDelivery,ProviderDelivery.created_at.desc())
+    return {"connection":runtime.public(row),"jobs":[runtime.sync_public(j) for j in jobs[:100]],
+        "records":[{"id":r.id,"remote_id":r.remote_id,"revision":r.revision,"payload":r.payload,"source_hash":r.payload_hash} for r in records[:100]],
+        "conflicts":[{"id":c.id,"record_id":c.record_id,"state":c.state,"incoming_revision":c.incoming_revision,"incoming_payload":c.incoming_payload} for c in conflicts[:100]],
+        "deliveries":[runtime.delivery_public(a) for a in actions[:100]],
+        "next_offset":offset+100 if any(len(x)>100 for x in (jobs,records,conflicts,actions)) else None}
+
+class ResolveProviderConflict(BaseModel):
+    choice:str=Field(max_length=30)
+@router.post("/providers/live/conflicts/{conflict_id}/resolve")
+def live_resolve(conflict_id:str,req:ResolveProviderConflict,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.resolve_conflict(db,current_user.business_id,conflict_id,req.choice)
+    except ValueError:live_error(db)
+
+class DeliveryRequest(BaseModel):
+    provider:str=Field(max_length=30)
+    action:str=Field(max_length=50)
+    payload:dict
+    request_key:str=Field(min_length=8,max_length=128)
+    confirmation:str=Field(max_length=100)
+@router.post("/providers/live/actions")
+def live_action(req:DeliveryRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.approve_action(db,current_user.business_id,current_user.id,**req.model_dump())
+    except ValueError:live_error(db)
+
+@router.post("/providers/live/actions/{action_id}/reconcile")
+def live_reconcile(action_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.reconcile_delivery(db,current_user.business_id,action_id)
+    except ValueError:live_error(db)
+
+@router.post("/providers/live/actions/{action_id}/cancel")
+def live_cancel(action_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.cancel_action(db,current_user.business_id,action_id)
+    except ValueError:live_error(db)
+
+@router.post("/providers/webhook/{provider}/{tenant}/{connection_id}")
+async def live_webhook(provider:str,tenant:str,connection_id:str,request:Request,db:Session=Depends(get_db)):
+    import re
+    if len(provider)>30 or not re.fullmatch(r"[A-Za-z0-9_-]{1,36}",tenant) or not re.fullmatch(r"[A-Za-z0-9_-]{1,36}",connection_id):
+        raise HTTPException(401,"Invalid webhook")
+    timestamps=request.headers.getlist("x-oneboard-timestamp");signatures=request.headers.getlist("x-oneboard-signature")
+    if len(timestamps)!=1 or len(signatures)!=1:raise HTTPException(401,"Invalid webhook")
+    body=bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body)>32768:raise HTTPException(413,"Webhook exceeds limit")
+    try:runtime.webhook_signature(provider,tenant,connection_id,timestamps[0],bytes(body),signatures[0])
+    except ValueError:raise HTTPException(401,"Invalid webhook") from None
+    db.info["oneboard_worker"]=True
+    scope_tenant_session(db,tenant)
+    try:return runtime.accept_webhook(db,tenant,provider,connection_id,bytes(body))
+    except ValueError:live_error(db)

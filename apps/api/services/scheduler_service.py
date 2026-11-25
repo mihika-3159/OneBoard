@@ -96,6 +96,7 @@ class SchedulerService:
     def run_tenant_jobs(self):
         from apps.api.services.workflow_schedule import run_due
         from apps.api.services.workflow_events import detect,drain
+        from apps.api.services.integrations.provider_runtime import run_sync,dispatch_one
         def run_tenant(tenant):
             failed=0
             try:
@@ -103,7 +104,7 @@ class SchedulerService:
             except Exception as exc:
                 failed+=1
                 logger.error("Tenant alerts/retention job failed (%s)",type(exc).__name__)
-            for task in (lambda db: process_local_outbox(db,tenant=tenant),lambda db: run_due(db,tenant),lambda db: detect(db,tenant),lambda db: drain(db,tenant)):
+            for task in (lambda db: process_local_outbox(db,tenant=tenant),lambda db: run_due(db,tenant),lambda db: detect(db,tenant),lambda db: drain(db,tenant),lambda db: run_sync(db,tenant),lambda db: dispatch_one(db,tenant)):
                 try:
                     with SessionLocal() as db:
                         db.info.update(oneboard_request=True,oneboard_worker=True)

@@ -31,6 +31,13 @@ from apps.api.routers.diagnostics_router import router as diagnostics_router
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("oneboard")
 
+class OAuthAccessLogFilter(logging.Filter):
+    def filter(self,record):
+        if "/api/integrations/providers/oauth/callback" in str(record.args):
+            return False
+        return True
+logging.getLogger("uvicorn.access").addFilter(OAuthAccessLogFilter())
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     validate_production_configuration(settings)
@@ -72,7 +79,7 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def redact_sensitive_validation(request, exc):
-    if request.url.path.startswith("/api/auth/") or request.url.path in ("/api/integrations/providers/credential", "/api/data/delete-workspace", "/api/business/financial/settlements"):
+    if request.url.path.startswith(("/api/auth/","/api/integrations/providers/")) or request.url.path in ("/api/integrations/providers/credential", "/api/data/delete-workspace", "/api/business/financial/settlements"):
         return JSONResponse({"detail":"Invalid sensitive request"},status_code=422)
     return await request_validation_exception_handler(request,exc)
 

@@ -75,7 +75,7 @@ def drill(archive: Path, identity: Path, source: dict[str, str]) -> dict:
         destination = create_engine(url, pool_pre_ping=True)
         with destination.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            if revision != "022_batch_k_finance":
+            if revision != "023_batch_l_providers":
                 raise RuntimeError("Restored schema revision is not current")
             tables = conn.execute(text(
                 "SELECT count(*) FROM information_schema.tables "
