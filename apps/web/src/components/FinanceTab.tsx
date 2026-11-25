@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Calculator, AlertTriangle, FileText, RefreshCw } from 'lucide-react';
 import { api } from '../services/api';
+import { FinanceLedgerPanel } from './FinanceLedgerPanel';
 import { BusinessProfile, DashboardMetrics } from '../types';
 
 export const FinanceTab: React.FC = () => {
@@ -114,7 +115,7 @@ export const FinanceTab: React.FC = () => {
         </p>
         <p className="text-xs text-slate-400">
           {summary?.financial_data_verified ? 'Independently verified' : 'Unverified application records'}.
-          Historical trends, actual bank statements and live accounting provider balances are not available.
+          See the accounting journal below for recorded historical trends and user-supplied bank statement reconciliation; no authenticated bank feed is connected.
         </p>
         {summary?.financial_record_ids && (
           <p className="text-xs text-slate-500">
@@ -124,6 +125,7 @@ export const FinanceTab: React.FC = () => {
           </p>
         )}
       </div>
+      <FinanceLedgerPanel currency={currency} onChange={()=>void loadData()}/>
     </div>
   );
 };

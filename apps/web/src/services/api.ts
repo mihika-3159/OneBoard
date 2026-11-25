@@ -160,6 +160,8 @@ async function withWorkflowLock<T>(identity:string,operation:()=>Promise<T>):Pro
 // Exported API Client
 // ---------------------------------------------------------------------------
 export const api = {
+  financeRead: async(path:string)=>request<any>('/business/financial/'+path),
+  financeWrite: async(path:string,payload:unknown)=>request<any>('/business/financial/'+path,{method:'POST',body:JSON.stringify(payload)}),
   streamInference: async <T = any>(path: string, payload: unknown, signal: AbortSignal, progress: (message: string) => void): Promise<T> => {
     const res = await checkedResponse(path, {method: "POST", signal, headers: {Accept: "application/x-ndjson"},
       ...(payload === undefined ? {} : {body: JSON.stringify(payload)})});
