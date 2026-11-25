@@ -23,6 +23,7 @@ POLICIES = {
     "agent_generate": (10, 60),
     "agent_test": (20, 60),
     "document_upload": (10, 300),
+    "council_deliberate": (6, 60),
 }
 
 

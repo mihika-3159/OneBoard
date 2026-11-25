@@ -45,6 +45,9 @@ def create_agent(
     current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        from apps.api.services.tenant_storage import check_resource
+        check_resource(db, current_user.business_id, "agent")
     agent = CustomAgent(
         business_id=current_user.business_id,
         name=req.name,

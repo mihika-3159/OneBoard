@@ -12,6 +12,7 @@ from apps.api.models.memory import MemoryConflict
 from apps.api.models.business import Business
 from apps.api.models.workflow import AuditLog
 from apps.api.models.operations import AlertSnapshot
+from apps.api.services.durable_jobs import claim_job, finish_job, execution_lock, process_local_outbox
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class SchedulerService:
             return  # Idempotent within this process; do not start duplicate jobs.
         try:
             self.scheduler.add_job(
-                self.run_proactive_checks,
+                self.run_scheduled_checks,
                 "interval",
                 seconds=60,
                 id="proactive_health_check",
@@ -43,6 +44,25 @@ class SchedulerService:
             logger.error("Scheduler startup failed (%s)", type(exc).__name__)
             if settings.ONEBOARD_PRODUCTION_MODE:
                 raise RuntimeError("Required scheduler failed to start") from None
+
+    def run_scheduled_checks(self):
+        job = "proactive_health_check"
+        with SessionLocal() as db:
+            with execution_lock(db.get_bind(), job) as acquired:
+                if not acquired:
+                    return
+                token = claim_job(db, job)
+                if token is None:
+                    return
+                try:
+                    self.run_proactive_checks()
+                    process_local_outbox(db)
+                except Exception:
+                    db.rollback()
+                    finish_job(db, job, token, False)
+                    raise
+                else:
+                    finish_job(db, job, token, True)
 
     def shutdown(self):
         if self.scheduler.running:

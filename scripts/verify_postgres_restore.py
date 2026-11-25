@@ -130,7 +130,7 @@ def verify_disposable_restore():
         with src.connect() as conn:
             from alembic.migration import MigrationContext
             revision = MigrationContext.configure(conn).get_current_heads()
-            if revision != ("009_resource_budgets",):
+            if revision != ("010_batch_b_durability",):
                 raise RuntimeError("Disposable source must be fully migrated")
         # A preexisting empty CI database would provide weak recovery
         # evidence. Create a synthetic founder-journey canary spanning tenant,
@@ -207,7 +207,7 @@ def verify_disposable_restore():
                 restore_revision = MigrationContext.configure(
                     dest_conn
                 ).get_current_heads()
-                if restore_revision != ("009_resource_budgets",):
+                if restore_revision != ("010_batch_b_durability",):
                     raise RuntimeError("Restore lost the Alembic revision")
                 # Integrity constraints and lookup indexes must be present.
                 from apps.api.core.database import Base
@@ -241,7 +241,7 @@ def verify_disposable_restore():
                 "Disposable PostgreSQL backup/restore verified: "
                 + str(len(restored)) + " application tables, "
                 + str(sum(row["count"] for row in restored.values()))
-                + " records, SHA-256 validated, schema head 009"
+                + " records, SHA-256 validated, schema head 010"
             )
     finally:
         if seeded:

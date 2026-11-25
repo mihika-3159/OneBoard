@@ -184,6 +184,11 @@ class MemoryEngine:
         file_type: str = "txt",
         source_connector: str = "local_file"
     ) -> MemoryDocument:
+        from apps.api.services.tenant_storage import check_document
+        from apps.api.core.config import settings
+        paragraphs = [p.strip() for p in raw_content.split("\n\n") if p.strip()] or [raw_content]
+        if settings.ONEBOARD_PRODUCTION_MODE:
+            check_document(db, business_id, raw_content, paragraphs)
         content_hash = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
         
         doc = MemoryDocument(
@@ -196,16 +201,9 @@ class MemoryEngine:
             summary=raw_content[:200] + "..." if len(raw_content) > 200 else raw_content
         )
         db.add(doc)
-        db.commit()
-        db.refresh(doc)
+        db.flush()
         
-        # Simple paragraph or sentence chunking
-        paragraphs = [p.strip() for p in raw_content.split("\n\n") if p.strip()]
-        if not paragraphs:
-            paragraphs = [raw_content]
-            
         doc.chunk_count = len(paragraphs)
-        db.commit()
         
         for idx, para in enumerate(paragraphs):
             chunk = MemoryChunk(

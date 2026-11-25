@@ -11,6 +11,7 @@ from apps.api.services.financial_metrics import _money
 from apps.api.models.workflow import WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog
 from apps.api.models.entities import Invoice, Customer, Commitment
 from apps.api.models.goals_tasks import Task
+from apps.api.models.operations import SideEffectOutbox
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +191,14 @@ class WorkflowEngine:
         except ValueError as exc:
             return {"is_valid": False, "error": str(exc)}
 
+    @staticmethod
+    def _record_draft_intent(db, run, node_id, node_type, node_data, result):
+        if (node_type == "action" and node_data.get("connector") == "demo_email"
+                and node_data.get("operation") == "draft_invoice_reminders"):
+            db.add(SideEffectOutbox(business_id=run.business_id, run_id=run.id,
+                step_id=node_id, kind="invoice_reminder_draft", payload=result,
+                state="pending"))
+
     def _execute_steps(
         self,
         db: Session,
@@ -241,6 +250,7 @@ class WorkflowEngine:
                 result = self._dispatch_node_tool(db, run.business_id, node_type, node_data)
                 if isinstance(result, dict) and result.get("success") is False:
                     raise ValueError("Workflow tool reported failure")
+                self._record_draft_intent(db, run, node_id, node_type, node_data, result)
             except Exception as exc:
                 logger.warning("Workflow run %s failed at step %s: %s", run.id, node_id, exc)
                 step_results[node_id] = {
@@ -502,6 +512,8 @@ class WorkflowEngine:
                 )
                 if isinstance(result, dict) and result.get("success") is False:
                     raise ValueError("Approved workflow tool reported failure")
+                self._record_draft_intent(db, run, checkpoint, approved_node.get("type"),
+                                          approved_node.get("data") or {}, result)
             except Exception as exc:
                 logger.warning("Approved workflow action %s failed: %s", checkpoint, exc)
                 step_results[checkpoint] = {

@@ -137,6 +137,9 @@ async def upload_document(
             raw_content=extracted["text"],
             file_type=extracted["file_type"]
         )
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception:
         db.rollback()
         logger.exception("Document persistence failed")

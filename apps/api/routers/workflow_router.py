@@ -56,6 +56,9 @@ def create_workflow(
     if not validation.get("is_valid"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation.get("error"))
 
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        from apps.api.services.tenant_storage import check_resource
+        check_resource(db, current_user.business_id, "workflow")
     wf = WorkflowDefinition(
         business_id=current_user.business_id,
         name=req.name,

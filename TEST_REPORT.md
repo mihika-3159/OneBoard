@@ -937,3 +937,19 @@ bounds tests. SQLite retains process-local inference limits. Provider-side
 computation after connection loss/cancellation, external load, scheduler leases,
 transactional outbox, storage quotas and DB-level tenant isolation remain open.
 New code CI: NOT YET RUN at authoring. This is partial Batch B, not certification.
+
+
+## Batch B increment 2: durable execution, local outbox, quotas and relational isolation
+
+Adds persisted recurring monitor claims and next-due times, owner fencing,
+crash lease expiry, PostgreSQL execution locks, and local-only transactional
+invoice-reminder draft outbox with SKIP LOCKED processing. No external
+delivery or exactly-once provider guarantee is implemented. Adds per-tenant
+200 documents/50 MiB combined raw+chunk UTF-8 text/20,000 chunks, 200
+workflows and 100 agents; advisory locking spans storage commit. Document
+ingestion now commits parent and chunks together so the quota lock is not
+released mid-ingestion. Adds council admission and PostgreSQL composite tenant
+foreign keys for document chunks, workflow runs, approvals and draft intents.
+Legacy violations are not deleted or certified; constraints apply to new
+writes. Full RLS/read isolation and external provider delivery remain open.
+Migration 010 and restore checks updated. All new CI evidence pending.
