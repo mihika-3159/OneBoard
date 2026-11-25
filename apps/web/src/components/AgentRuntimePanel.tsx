@@ -18,12 +18,12 @@ export function AgentRuntimePanel({agents,selectedAgent}:{agents:CustomAgent[];s
   const [error,setError]=useState('');
   const [key,setKey]=useState(()=>crypto.randomUUID());
   async function refresh(){try{setRuns(await api.getAgentRuns())}catch(e){setError(e instanceof Error?e.message:'Unable to load runs')}}
-  useEffect(()=>{void refresh()},[]);
+  useEffect(()=>{void refresh();const timer=window.setInterval(()=>void refresh(),5000);return()=>window.clearInterval(timer)},[]);
   useEffect(()=>{setSteps(selectedAgent?[{agent_id:selectedAgent.id,tool:'analyze'}]:[]);setKey(crypto.randomUUID())},[selectedAgent?.id]);
   function edit(i:number,patch:Partial<Step>){setSteps(old=>old.map((s,j)=>j===i?{...s,...patch}:s));setKey(crypto.randomUUID())}
   async function act(operation:()=>Promise<any>){setBusy(true);setError('');try{await operation();await refresh()}catch(e){setError(e instanceof Error?e.message:'Run operation failed')}finally{setBusy(false)}}
   return <section className="glass-panel p-4 rounded-xl space-y-3 text-sm">
-    <h2 className="font-semibold text-white">Durable read-only agent execution</h2>
+    <h2 className="font-semibold text-white">Durable read-only agent execution</h2><p role="status">{busy?'Operation in progress.':runs.length+' recorded runs loaded.'} Checkpoints refresh every five seconds.</p><button type="button" onClick={()=>void refresh()}>Refresh agent runs</button>
     <p className="text-slate-400">Founder-defined ordered steps; checkpoints survive reloads. Only explicitly granted tools run. No external actions or recursive delegation.</p>
     <label className="block">Run goal<input className="block w-full bg-slate-900 border rounded p-2" value={goal} maxLength={2000} onChange={e=>{setGoal(e.target.value);setKey(crypto.randomUUID())}}/></label>
     {steps.map((step,i)=>{const agent=agents.find(a=>a.id===step.agent_id);const tools=['analyze',...['read_crm','calculate_metrics','read_memory'].filter(t=>agent?.allowed_tools?.includes(t)&&!agent.requires_approval_for?.includes(t))];

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Cpu, CheckCircle2, AlertTriangle, Zap, Server, ShieldCheck, RefreshCw } from 'lucide-react';
 import { api } from '../services/api';
 import { useInferenceOperation } from './useInferenceOperation';
+import { WorkspaceDeletionPanel } from './WorkspaceDeletionPanel';
 import { AccountSecurityPanel } from './AccountSecurityPanel';
 import { PortableArchivePanel } from './PortableArchivePanel';
 import { GatewayStatus } from '../types';
@@ -218,6 +219,7 @@ export const SettingsTab: React.FC = () => {
       </section>
 
       <AccountSecurityPanel />
+      <WorkspaceDeletionPanel />
       {/* Hardware Profile Presets */}
       <div className="p-6 rounded-2xl glass-panel space-y-4 text-xs">
         <h2 className="text-sm font-bold text-white">Model Hardware Profiles</h2>

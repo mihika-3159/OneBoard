@@ -3,6 +3,7 @@ import {api} from '../services/api';
 
 export function AccountSecurityPanel(){
  const [status,setStatus]=useState<any>(null),[password,setPassword]=useState(''),[factor,setFactor]=useState(''),[secret,setSecret]=useState(''),[codes,setCodes]=useState<string[]>([]),[key,setKey]=useState(''),[message,setMessage]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[sessions,setSessions]=useState<any[]>([]),[members,setMembers]=useState<any[]>([]),[email,setEmail]=useState(''),[name,setName]=useState(''),[role,setRole]=useState('member'),[write,setWrite]=useState(false),[days,setDays]=useState(30);
+ const [audit,setAudit]=useState<any>(null),[auditError,setAuditError]=useState('');
  const refresh=async()=>{setStatus(await api.securityStatus());setSessions(await api.securityList('/sessions'));try{setMembers(await api.securityList('/members'));}catch{setMembers([]);}};
  useEffect(()=>{refresh().catch(e=>setError(e.message));},[]);
  const action=async(path:string,payload:Record<string,unknown>={},method='POST')=>{
@@ -23,7 +24,8 @@ export function AccountSecurityPanel(){
  const btn="rounded-lg bg-indigo-700 px-3 py-2 disabled:opacity-40 text-xs";
  return <section className="glass-panel rounded-2xl p-6 space-y-3 text-xs">
   <h2 className="text-sm font-bold">Account security</h2>
-  <p>MFA: {status?.mfa_enabled?'Enabled':'Not enabled'} · Email: {status?.email_verified?'Verified':'Unverified'} · Recovery codes remaining: {status?.recovery_codes_remaining??0}</p>
+  {status?<p>MFA: {status.mfa_enabled?'Enabled':'Not enabled'} · Email: {status.email_verified?'Verified':'Unverified'} · Recovery codes remaining: {status.recovery_codes_remaining} · API key expiry: {status.api_key_expires_at||'Not recorded'}</p>:<p role="status">Security status not loaded.</p>}
+  <button className={btn} disabled={busy} onClick={()=>{setError('');void refresh().catch(e=>setError(String(e)))}}>Refresh account security</button>
   <p className="text-slate-400">Sensitive actions require your password and, when enabled, a fresh authenticator or recovery code. Never share these values. Email delivery is not configured.</p>
   <div className="flex flex-wrap gap-2"><input className={cls} type="password" aria-label="Security password" autoComplete="current-password" placeholder="Current password" value={password} onChange={e=>setPassword(e.target.value)}/><input className={cls} aria-label="Security verification code" autoComplete="one-time-code" placeholder="Verification code" value={factor} onChange={e=>setFactor(e.target.value)}/></div>
   <div className="flex flex-wrap gap-2">
@@ -41,6 +43,7 @@ export function AccountSecurityPanel(){
   {sessions.map(s=><div key={s.id} className="flex gap-2 items-center"><span>Expires {s.expires_at}</span><button className={btn} disabled={busy||!password} onClick={()=>action('/sessions/'+s.id+'/revoke',reauth())}>Revoke session</button></div>)}
   <button className={btn} disabled={busy||!password} onClick={()=>action('/sessions/revoke-all',reauth())}>Revoke all sessions</button>
   {members.length>0&&<><h3 className="font-bold">Workspace members</h3>{members.map(m=><div key={m.id} className="flex flex-wrap gap-2 items-center"><span>{m.email} · {m.role} · {m.active?'Active':'Revoked'}</span><button className={btn} disabled={busy||!password||!m.active||m.role==='owner'} onClick={()=>action('/members/'+m.id+'/role',{...reauth(),role:m.role==='member'?'founder':'member'},'PUT')}>Change role</button><button className={btn} disabled={busy||!password||!m.active||m.role==='owner'} onClick={()=>action('/members/'+m.id+'/revoke',reauth())}>Revoke member</button></div>)}<div className="flex flex-wrap gap-2"><input className={cls} aria-label="Member name" value={name} onChange={e=>setName(e.target.value)} placeholder="Name"/><input className={cls} aria-label="Member email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email"/><select className={cls} aria-label="Member role" value={role} onChange={e=>setRole(e.target.value)}><option>member</option><option>founder</option></select><button className={btn} disabled={busy||!password||!email||!name} onClick={()=>action('/members',{...reauth(),email,name,role})}>Create member activation code</button></div></>}
+  <details><summary>Security audit (workspace owner)</summary><button className={btn} onClick={async()=>{setAuditError('');try{setAudit(await api.securityList('/audit'))}catch(e){setAudit(null);setAuditError(String(e))}}}>Load security audit</button>{auditError&&<p role="alert">{auditError}</p>}{audit&&<><p>Integrity chain: {audit.chain_valid?'valid':'invalid'}. {audit.externally_anchored?'Externally anchored':'Not externally anchored'}.</p>{audit.events.map((event:any)=><div key={event.sequence}>{event.sequence} · {event.event} · {event.created_at}</div>)}</>}</details>
   {message&&<p role="status" className="text-emerald-300">{message}</p>}{error&&<p role="alert" className="text-rose-300">{error}</p>}
  </section>;
 }

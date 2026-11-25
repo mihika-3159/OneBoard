@@ -1,0 +1,5 @@
+# Batch O frontend work (118–130)
+
+Existing panels from F–M are retained. This commit adds security audit and key expiry UI (118), settlement evidence and comparison (119), provider refresh error clearing (120), agent run polling alongside existing inference and workflow progress (121), shared view loading/error states (122), session-expiration unmount and no write replay (123), explicit authenticated workspace deletion alongside portable archives (124), workflow JSON validation error handling and existing runtime controls (125), responsive navigation and mobile/tablet browser tests (126), authentication labels, keyboard focus, reduced motion and modal semantics (127), lazy route loading (128), contextual help (129), and shared shell/state styles (130).
+
+Acceptance: run frontend build and full Playwright suite. The mobile/tablet test does not replace visual or assistive-technology testing. No live deletion or provider authorization is performed by tests. Comprehensive screen-reader compatibility, per-panel empty state consistency, and large-dataset performance are not established by this commit. Do not report acceptance as passed without evidence.

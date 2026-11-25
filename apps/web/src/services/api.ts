@@ -48,6 +48,10 @@ export class ForbiddenError extends ApiError {
 // In-memory CSRF and session token state (avoiding localStorage for tokens)
 let inMemoryCsrfToken: string | null = null;
 let inMemoryBearerToken: string | null = null;
+let authEpoch=0;
+export const sessionExpiredEvent='oneboard:session-expired';
+export const connectionIssueEvent='oneboard:connection-issue';
+export function resetClientSession(){authEpoch++;inMemoryCsrfToken=null;inMemoryBearerToken=null;}
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -94,9 +98,15 @@ async function checkedResponse(path: string, options: RequestInit = {}): Promise
 
   options.headers = headers;
 
-  const res = await fetch(url, options);
+  const epoch=authEpoch;
+  const authEndpoint=/^\/auth\/(login|register|logout|me|security\/recover)$/.test(path);
+  const report=(message:string)=>{if(epoch===authEpoch&&!authEndpoint)window.dispatchEvent(new CustomEvent(connectionIssueEvent,{detail:{message,write:method!=='GET'&&method!=='HEAD'}}))};
+  let res:Response;
+  try{res=await fetch(url,options)}catch(e){if(!options.signal?.aborted)report('Network request interrupted.');throw e}
+  if(res.status>=500)report('Service request failed.');
 
   if (res.status === 401) {
+    if(!authEndpoint&&epoch===authEpoch){resetClientSession();window.dispatchEvent(new Event(sessionExpiredEvent));}
     let detail = 'Authentication required.';
     try {
       const err = await res.json();
@@ -129,6 +139,7 @@ async function checkedResponse(path: string, options: RequestInit = {}): Promise
     throw new ApiError(res.status, detail);
   }
 
+  if(epoch!==authEpoch)throw new UnauthorizedError('Session changed during request.');
   return res;
 }
 

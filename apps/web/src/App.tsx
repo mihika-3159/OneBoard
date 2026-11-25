@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+import {ScreenBoundary,ScreenState,AlertDialog,screenHelp} from './components/ScreenSupport';
 import {
   LayoutDashboard,
   Terminal,
@@ -22,19 +23,19 @@ import {
   Building,
 } from 'lucide-react';
 
-import { OverviewTab } from './components/OverviewTab';
-import { FounderCommandTab } from './components/FounderCommandTab';
-import { BoardroomTab } from './components/BoardroomTab';
-import { WorkflowStudioTab } from './components/WorkflowStudioTab';
-import { AgentStudioTab } from './components/AgentStudioTab';
-import { AccountabilityTab } from './components/AccountabilityTab';
-import { BusinessMemoryTab } from './components/BusinessMemoryTab';
-import { OperationsTab } from './components/OperationsTab';
-import { FinanceTab } from './components/FinanceTab';
-import { IntegrationsTab } from './components/IntegrationsTab';
-import { SettingsTab } from './components/SettingsTab';
+const OverviewTab=lazy(()=>import('./components/OverviewTab').then(m=>({default:m.OverviewTab})));
+const FounderCommandTab=lazy(()=>import('./components/FounderCommandTab').then(m=>({default:m.FounderCommandTab})));
+const BoardroomTab=lazy(()=>import('./components/BoardroomTab').then(m=>({default:m.BoardroomTab})));
+const WorkflowStudioTab=lazy(()=>import('./components/WorkflowStudioTab').then(m=>({default:m.WorkflowStudioTab})));
+const AgentStudioTab=lazy(()=>import('./components/AgentStudioTab').then(m=>({default:m.AgentStudioTab})));
+const AccountabilityTab=lazy(()=>import('./components/AccountabilityTab').then(m=>({default:m.AccountabilityTab})));
+const BusinessMemoryTab=lazy(()=>import('./components/BusinessMemoryTab').then(m=>({default:m.BusinessMemoryTab})));
+const OperationsTab=lazy(()=>import('./components/OperationsTab').then(m=>({default:m.OperationsTab})));
+const FinanceTab=lazy(()=>import('./components/FinanceTab').then(m=>({default:m.FinanceTab})));
+const IntegrationsTab=lazy(()=>import('./components/IntegrationsTab').then(m=>({default:m.IntegrationsTab})));
+const SettingsTab=lazy(()=>import('./components/SettingsTab').then(m=>({default:m.SettingsTab})));
 
-import { api, UnauthorizedError } from './services/api';
+import { api, UnauthorizedError, resetClientSession, sessionExpiredEvent, connectionIssueEvent } from './services/api';
 import { GatewayStatus, ProactiveAlert, UserProfile, BusinessProfile } from './types';
 
 export const App: React.FC = () => {
@@ -45,7 +46,9 @@ export const App: React.FC = () => {
   const [isResetting, setIsResetting] = useState<boolean>(false);
 
   // Authentication State
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(true);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [checkingSession,setCheckingSession]=useState(true),[sessionCheckError,setSessionCheckError]=useState(''),[screenRevision,setScreenRevision]=useState(0);
+  const [connectionIssue,setConnectionIssue]=useState<{message:string;write:boolean}|null>(null);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [currentBusiness, setCurrentBusiness] = useState<Partial<BusinessProfile> | null>(null);
   const [authError, setAuthError] = useState<string>('');
@@ -61,29 +64,19 @@ export const App: React.FC = () => {
   const [authName, setAuthName] = useState<string>('');
   const [authBizName, setAuthBizName] = useState<string>('');
 
-  useEffect(() => {
-    checkSessionAndLoad();
-  }, []);
+  useEffect(()=>{
+    const expired=(event:Event)=>{setIsAuthenticated(false);setCurrentUser(null);setCurrentBusiness(null);setGatewayStatus(null);setAlerts([]);setShowAlertModal(false);setAuthPassword('');setAuthFactor('');setConnectionIssue(null);setAuthError((event as CustomEvent).detail||'Your session expired. Sign in again. No interrupted write was automatically replayed.');};
+    const issue=(event:Event)=>setConnectionIssue((event as CustomEvent).detail);
+    window.addEventListener(sessionExpiredEvent,expired);window.addEventListener(connectionIssueEvent,issue);
+    void checkSessionAndLoad();
+    return()=>{window.removeEventListener(sessionExpiredEvent,expired);window.removeEventListener(connectionIssueEvent,issue)};
+  },[]);
 
-  const checkSessionAndLoad = async () => {
-    try {
-      const me = await api.getMe();
-      setCurrentUser(me.user);
-      setCurrentBusiness(me.business);
-      setIsAuthenticated(true);
-      await loadAppStatus();
-    } catch (e) {
-      if (e instanceof UnauthorizedError) {
-        setIsAuthenticated(false);
-      } else {
-        // Attempt load status anyway in demo mode
-        try {
-          await loadAppStatus();
-        } catch {
-          setIsAuthenticated(false);
-        }
-      }
-    }
+  const checkSessionAndLoad=async()=>{
+    setCheckingSession(true);setSessionCheckError('');
+    try{const me=await api.getMe();setCurrentUser(me.user);setCurrentBusiness(me.business);setIsAuthenticated(true);await loadAppStatus();}
+    catch(e){setIsAuthenticated(false);setCurrentUser(null);setCurrentBusiness(null);if(!(e instanceof UnauthorizedError))setSessionCheckError('Session verification unavailable. No workspace data loaded.');}
+    finally{setCheckingSession(false)}
   };
 
   const loadAppStatus = async () => {
@@ -109,6 +102,7 @@ export const App: React.FC = () => {
         setAuthMessage('Password reset. Sign in with your new password and another MFA code if enabled.');
         setRecoverMode(false);setAuthFactor('');setAuthPassword('');return;
       }
+      resetClientSession();
       if (isRegisterMode) {
         const res = await api.register({
           name: authName.trim() || 'Founder',
@@ -123,7 +117,7 @@ export const App: React.FC = () => {
         setCurrentUser(res.user);
         setCurrentBusiness(res.business);
       }
-      setIsAuthenticated(true);setAuthPassword('');setAuthFactor('');
+      setIsAuthenticated(true);setConnectionIssue(null);setAuthPassword('');setAuthFactor('');
       await loadAppStatus();
     } catch (err: any) {
       setAuthError(err.detail || err.message || 'Authentication failed. Please check your credentials.');
@@ -136,14 +130,15 @@ export const App: React.FC = () => {
     try {
       await api.logout();
     } catch (e) {
-      console.error('Logout error', e);
+      setAuthError('Server logout could not be confirmed. Sign in again before continuing.');
     } finally {
+      resetClientSession();
       setCurrentUser(null);
       setCurrentBusiness(null);
       setIsAuthenticated(false);
       setIsRegisterMode(false);
       setAuthPassword('');
-      setAlerts([]);
+      setAlerts([]);setGatewayStatus(null);setShowAlertModal(false);setConnectionIssue(null);setAuthFactor('');
       setActiveTab('overview');
     }
   };
@@ -174,10 +169,13 @@ export const App: React.FC = () => {
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
+  if(checkingSession||sessionCheckError)return <div className="min-h-screen grid place-items-center p-4"><ScreenState kind={sessionCheckError?'error':'loading'} message={sessionCheckError||'Verifying session…'} retry={sessionCheckError?()=>void checkSessionAndLoad():undefined}/></div>;
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#080d1a] text-slate-100 font-sans">
+    <div className="oneboard-shell flex h-screen w-screen overflow-hidden bg-[#080d1a] text-slate-100 font-sans">
+    {isAuthenticated&&<>
+    <a className="oneboard-skip" href="#workspace-main">Skip to workspace content</a>
       {/* Sidebar Navigation */}
-      <aside className="w-64 shrink-0 border-r border-slate-800/80 bg-[#090e1b] flex flex-col justify-between p-4">
+      <aside aria-label="Workspace navigation" className="oneboard-sidebar w-64 shrink-0 border-r border-slate-800/80 bg-[#090e1b] flex flex-col justify-between p-4">
         <div className="space-y-6">
           {/* Logo & Product Name */}
           <div className="flex items-center gap-3 px-2 py-1">
@@ -193,14 +191,15 @@ export const App: React.FC = () => {
           </div>
 
           {/* Navigation Links */}
-          <nav className="space-y-1 overflow-y-auto max-h-[calc(100vh-250px)] pr-1">
+          <nav aria-label="Workspace sections" className="oneboard-nav space-y-1 overflow-y-auto max-h-[calc(100vh-250px)] pr-1">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
               return (
                 <button
                   key={item.id}
-                  onClick={() => setActiveTab(item.id)}
+                  aria-current={isActive?'page':undefined}
+                  onClick={()=>{setConnectionIssue(null);setActiveTab(item.id)}}
                   className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition ${
                     isActive
                       ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
@@ -250,9 +249,9 @@ export const App: React.FC = () => {
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col h-screen overflow-hidden">
+      <div className="oneboard-content flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
         {/* Top Header */}
-        <header className="h-16 shrink-0 border-b border-slate-800/80 bg-[#090e1b]/80 backdrop-blur px-6 flex items-center justify-between">
+        <header className="oneboard-header h-16 shrink-0 border-b border-slate-800/80 bg-[#090e1b]/80 backdrop-blur px-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider font-mono">
               {currentBusiness?.name || 'Northstar Studio'}
@@ -265,7 +264,7 @@ export const App: React.FC = () => {
 
           <div className="flex items-center gap-3">
             {/* Ollama Status Pill */}
-            <div
+            <button type="button"
               onClick={() => setActiveTab('settings')}
               className="flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-xs font-mono cursor-pointer hover:border-slate-700 transition"
               title="Click to view Ollama Model Gateway Settings"
@@ -282,7 +281,7 @@ export const App: React.FC = () => {
                     ? 'Ollama: No Models'
                     : 'Local Fallback Simulator'}
               </span>
-            </div>
+            </button>
 
             {/* Proactive Alerts Bell */}
             <button
@@ -324,7 +323,10 @@ export const App: React.FC = () => {
         </header>
 
         {/* Dynamic Tab Body */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main id="workspace-main" tabIndex={-1} aria-label={navItems.find(n=>n.id===activeTab)?.label} className="oneboard-main flex-1 min-w-0 overflow-auto p-6">
+    {connectionIssue&&<ScreenState kind="error" message={connectionIssue.message+(connectionIssue.write?' Action outcome may be unknown. Check history before retrying; no write was replayed.':' Refresh the view to retry reads.')} retry={connectionIssue.write?undefined:()=>{setConnectionIssue(null);setScreenRevision(n=>n+1)}} dismiss={()=>setConnectionIssue(null)}/>}
+    <details className="oneboard-help"><summary>Help with {navItems.find(n=>n.id===activeTab)?.label}</summary><p>{screenHelp[activeTab]}</p></details>
+    <ScreenBoundary key={activeTab+':'+screenRevision}><Suspense fallback={<ScreenState kind="loading" message="Loading workspace view…"/>}>
           {activeTab === 'overview' && <OverviewTab onNavigate={setActiveTab} />}
           {activeTab === 'command' && <FounderCommandTab />}
           {activeTab === 'boardroom' && <BoardroomTab />}
@@ -336,12 +338,14 @@ export const App: React.FC = () => {
           {activeTab === 'finance' && <FinanceTab />}
           {activeTab === 'integrations' && <IntegrationsTab />}
           {activeTab === 'settings' && <SettingsTab />}
+    </Suspense></ScreenBoundary>
         </main>
       </div>
 
+      </>}
       {/* Proactive Alerts Modal */}
-      {showAlertModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+      {isAuthenticated&&showAlertModal && (
+        <AlertDialog onClose={()=>setShowAlertModal(false)}>
           <div className="p-6 rounded-2xl bg-slate-900 border border-slate-700 max-w-lg w-full space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <span className="text-sm font-bold text-white flex items-center gap-2">
@@ -374,13 +378,13 @@ export const App: React.FC = () => {
               )}
             </div>
           </div>
-        </div>
+        </AlertDialog>
       )}
 
       {/* Founder Authentication Modal (when session expired or unauthenticated) */}
       {!isAuthenticated && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-md p-4">
-          <div className="p-8 rounded-3xl bg-slate-900/95 border border-indigo-500/30 max-w-md w-full shadow-2xl space-y-6">
+        <div className="fixed inset-0 z-50 overflow-auto flex items-start sm:items-center justify-center bg-black/85 backdrop-blur-md p-4" role="main" aria-label="Authentication">
+          <div className="my-auto p-4 sm:p-8 rounded-3xl bg-slate-900/95 border border-indigo-500/30 max-w-md w-full shadow-2xl space-y-6">
             <div className="text-center space-y-2">
               <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-indigo-400 mx-auto flex items-center justify-center shadow-lg shadow-indigo-600/30">
                 <Sparkles className="w-6 h-6 text-white" />
@@ -396,7 +400,7 @@ export const App: React.FC = () => {
             </div>
 
             {authError && (
-              <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+              <div role="alert" className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
                 <span>{authError}</span>
               </div>
@@ -406,12 +410,12 @@ export const App: React.FC = () => {
               {isRegisterMode && (
                 <>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Your Full Name</label>
+                    <label htmlFor="auth-name" className="block text-[11px] font-semibold text-slate-300 mb-1">Your Full Name</label>
                     <div className="relative">
                       <UserCheck className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                       <input
                         type="text"
-                        value={authName}
+                        id="auth-name" value={authName}
                         onChange={(e) => setAuthName(e.target.value)}
                         placeholder="e.g. Alex Founder"
                         className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-9 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"
@@ -420,12 +424,12 @@ export const App: React.FC = () => {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">Workspace / Business Name</label>
+                    <label htmlFor="auth-business" className="block text-[11px] font-semibold text-slate-300 mb-1">Workspace / Business Name</label>
                     <div className="relative">
                       <Building className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                       <input
                         type="text"
-                        value={authBizName}
+                        id="auth-business" value={authBizName}
                         onChange={(e) => setAuthBizName(e.target.value)}
                         placeholder="e.g. Apex SaaS Labs"
                         className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-9 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"
@@ -436,12 +440,12 @@ export const App: React.FC = () => {
               )}
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1">Founder Email</label>
+                <label htmlFor="auth-email" className="block text-[11px] font-semibold text-slate-300 mb-1">Founder Email</label>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                   <input
                     type="email"
-                    value={authEmail}
+                    id="auth-email" value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
                     placeholder="founder@example.com"
                     className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-9 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
@@ -451,12 +455,12 @@ export const App: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-[11px] font-semibold text-slate-300 mb-1">Password</label>
+                <label htmlFor="auth-password" className="block text-[11px] font-semibold text-slate-300 mb-1">Password</label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                   <input
                     type="password"
-                    value={authPassword}
+                    id="auth-password" value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
                     placeholder="••••••••"
                     className="w-full bg-slate-950/80 border border-slate-800 rounded-xl px-9 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-indigo-500"

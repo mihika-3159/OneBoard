@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Calculator, AlertTriangle, FileText, RefreshCw } from 'lucide-react';
 import { api } from '../services/api';
+import { SettlementEvidencePanel } from './SettlementEvidencePanel';
 import { FinanceLedgerPanel } from './FinanceLedgerPanel';
 import { BusinessProfile, DashboardMetrics } from '../types';
 
@@ -126,6 +127,7 @@ export const FinanceTab: React.FC = () => {
         )}
       </div>
       <FinanceLedgerPanel currency={currency} onChange={()=>void loadData()}/>
+      <SettlementEvidencePanel currency={currency}/>
     </div>
   );
 };
