@@ -6,7 +6,7 @@ from sqlalchemy import text
 from math import isfinite
 from apps.api.core.config import settings
 from apscheduler.schedulers.background import BackgroundScheduler
-from apps.api.core.database import SessionLocal, tenant_lifecycle_lock
+from apps.api.core.database import SessionLocal, tenant_lifecycle_lock, scope_tenant_session
 from apps.api.models.entities import Commitment, Invoice
 from apps.api.models.memory import MemoryConflict
 from apps.api.models.business import Business
@@ -55,12 +55,11 @@ class SchedulerService:
                 if token is None:
                     return
                 try:
-                    self.run_proactive_checks()
-                    process_local_outbox(db)
-                    if settings.ONEBOARD_PRODUCTION_MODE:
-                        import asyncio
-                        from apps.api.services.semantic_index import scheduled_index
-                        asyncio.run(scheduled_index(db))
+                    # Discover only tenant identifiers; all content access uses
+                    # a fresh, tenant-scoped transaction. Isolate failures.
+                    failed = self.run_tenant_jobs()
+                    if failed:
+                        raise RuntimeError("One or more tenant jobs failed")
                 except Exception:
                     db.rollback()
                     finish_job(db, job, token, False)
@@ -72,27 +71,56 @@ class SchedulerService:
         if self.scheduler.running:
             self.scheduler.shutdown()
 
-    def run_proactive_checks(self, business_id: Optional[str] = None):
-        """Scans database for overdue commitments, cash hazards, and unresolved discrepancies per tenant."""
-        db = SessionLocal()
-        try:
-            now = datetime.utcnow()
-            
-            # Determine which businesses to scan
-            if business_id:
-                businesses = db.query(Business).filter(Business.id == business_id).all()
-            else:
-                businesses = db.query(Business).all()
+    def tenant_ids(self):
+        with SessionLocal() as db:
+            return [row[0] for row in db.query(Business.id).order_by(Business.id).all()]
 
-            # Avoid retaining a stale cached list if a tenant was removed.
-            if business_id and not businesses:
-                self.active_alerts_by_business.pop(business_id, None)
-            for biz in businesses:
-                b_id = biz.id
+    def run_tenant_jobs(self):
+        from apps.api.services.workflow_schedule import run_due
+        failed=0
+        for tenant in self.tenant_ids():
+            try:
+                self.run_proactive_checks(tenant, apply_policy=True)
+                with SessionLocal() as db:
+                    db.info["oneboard_request"]=True
+                    scope_tenant_session(db,tenant)
+                    process_local_outbox(db,tenant=tenant)
+                    run_due(db,tenant)
+            except Exception as exc:
+                failed+=1
+                logger.error("Tenant background job failed (%s)",type(exc).__name__)
+        if settings.ONEBOARD_PRODUCTION_MODE:
+            import asyncio
+            from apps.api.services.semantic_index import scheduled_index
+            with SessionLocal() as db:
+                asyncio.run(scheduled_index(db))
+        return failed
+
+    def run_proactive_checks(self, business_id: Optional[str] = None, apply_policy=False):
+        """Refresh each tenant in an independent scoped transaction."""
+        if business_id is None:
+            failures=0
+            for tenant in self.tenant_ids():
+                try:
+                    self.run_proactive_checks(tenant,apply_policy=True)
+                except Exception as exc:
+                    failures+=1
+                    logger.error("Tenant alert refresh failed (%s)",type(exc).__name__)
+            if failures:
+                raise RuntimeError("One or more tenant alert refreshes failed")
+            return
+        db=SessionLocal()
+        try:
+            now=datetime.utcnow()
+            db.info["oneboard_request"]=True
+            scope_tenant_session(db,business_id)
+            biz=db.query(Business).filter_by(id=business_id).first()
+            if biz is None:
+                self.active_alerts_by_business.pop(business_id,None)
+                return
+            for biz in (biz,):
+                b_id=biz.id
                 tenant_lifecycle_lock(db,b_id)
-                if not db.query(Business.id).filter(Business.id==b_id).first():
-                    db.rollback()
-                    continue
                 # PostgreSQL serializes this tenant's alert update across
                 # independent schedulers and HTTP workers. The transaction
                 # releases the advisory lock at commit, not process exit.
@@ -179,7 +207,7 @@ class SchedulerService:
                     })
 
                 self._persist_alerts(db, b_id, alerts, now)
-                if business_id is None:
+                if apply_policy:
                     from apps.api.services.data_lifecycle import apply_retention
                     apply_retention(db,b_id,now)
                 # Keep only an optional process-local presentation cache.
@@ -230,6 +258,7 @@ class SchedulerService:
             raise ValueError("Tenant and history limit 1-100 required")
         db = SessionLocal()
         try:
+            scope_tenant_session(db,business_id)
             entries = db.query(AlertSnapshot).filter(
                 AlertSnapshot.business_id == business_id
             ).order_by(AlertSnapshot.last_seen_at.desc()).limit(limit).all()

@@ -25,7 +25,14 @@ def main():
     url=make_url(os.environ["DATABASE_URL"])
     if url.host not in ("127.0.0.1","localhost","::1") or url.database!="oneboard_ci" or not url.drivername.startswith("postgresql"):
         raise SystemExit("Refusing non-disposable database")
-    env=dict(os.environ,ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",
+    from sqlalchemy import create_engine,text
+    from scripts.operations.provision_runtime_role import provision
+    admin=create_engine(url)
+    role='oneboard_runtime_ci_'+uuid4().hex[:10]
+    password=secrets.token_hex(24)
+    provision(admin,role,password)
+    runtime_url=url.set(username=role,password=password).render_as_string(hide_password=False)
+    env=dict(os.environ,DATABASE_URL=runtime_url,ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",
              COOKIE_SECURE="true",PUBLIC_API_ORIGIN=BASE,CORS_ORIGINS=BASE,
              TRUSTED_PROXY_IPS="127.0.0.1",AUTH_SECRET_KEY=secrets.token_hex(32),
              OLLAMA_BASE_URL="http://127.0.0.1:1")

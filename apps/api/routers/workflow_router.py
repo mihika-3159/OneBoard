@@ -75,6 +75,29 @@ def create_workflow(
     db.refresh(wf)
     return wf
 
+class ScheduleRequest(BaseModel):
+    cron: str = Field(min_length=9,max_length=40)
+    timezone: str = Field(min_length=1,max_length=64)
+    enabled: bool = True
+
+@router.put("/{workflow_id}/schedule")
+def configure_schedule(workflow_id: str, req: ScheduleRequest,
+                       current_user: User=Depends(require_founder_role),db: Session=Depends(get_db)):
+    from apps.api.services.workflow_schedule import configure
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workflow_generate")
+    try:
+        return configure(db,current_user.business_id,workflow_id,req.cron,req.timezone,req.enabled)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+@router.get("/schedules")
+def list_schedules(current_user: User=Depends(get_current_user),db: Session=Depends(get_db)):
+    from apps.api.models.operations import WorkflowSchedule
+    from apps.api.services.workflow_schedule import serialize
+    return [serialize(row) for row in db.query(WorkflowSchedule).filter_by(business_id=current_user.business_id).limit(200).all()]
+
 @router.post("/{workflow_id}/execute")
 def execute_workflow(
     workflow_id: str,

@@ -36,6 +36,10 @@ async def lifespan(app: FastAPI):
     validate_production_configuration(settings)
     logger.info("Initializing OneBoard Database Schema...")
     init_db()
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        from apps.api.core.database import engine
+        from apps.api.core.runtime_role import verify_runtime_role
+        verify_runtime_role(engine)
     
     is_demo_mode = (
         os.environ.get("ONEBOARD_DEMO_MODE", "").lower() in ("1", "true", "yes")

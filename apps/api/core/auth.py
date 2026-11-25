@@ -437,6 +437,10 @@ def get_current_user(
     Validates token signature, expiration, and database session revocation.
     Fails closed with HTTP 401 when unauthenticated.
     """
+    # Deletion takes the exclusive lifecycle lock from its first scoped
+    # transaction; concurrent deleters must not upgrade two shared locks.
+    if isinstance(db, Session) and request.url.path == "/api/data/delete-workspace":
+        db.info["oneboard_exclusive_lifecycle"] = True
     token: Optional[str] = None
     if bearer and bearer.credentials:
         token = bearer.credentials

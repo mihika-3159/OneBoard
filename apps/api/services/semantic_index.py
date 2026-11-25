@@ -100,19 +100,26 @@ async def retrieve(db, tenant, query, top_k):
 
 
 async def scheduled_index(db):
-    """Bounded automatic backfill: rotate tenants, one chunk per monitor tick."""
-    import time
-    from sqlalchemy import distinct
-    model = ollama_gateway.get_model_for_task("embedding")
-    tenants = [row[0] for row in db.query(distinct(MemoryChunk.business_id)).join(
-        Business, Business.id == MemoryChunk.business_id
-    ).outerjoin(SemanticVector, and_(SemanticVector.chunk_id == MemoryChunk.id,
-        SemanticVector.business_id == MemoryChunk.business_id, SemanticVector.model == model)
-    ).filter(SemanticVector.chunk_id.is_(None)).order_by(MemoryChunk.business_id).limit(1000).all()]
-    db.rollback()
-    if not tenants:
+    """Durable keyset round-robin; failed/empty tenant cannot starve later tenants."""
+    from sqlalchemy.orm import Session
+    from apps.api.models.operations import SchedulerCursor
+    from apps.api.core.database import scope_tenant_session
+    cursor=db.get(SchedulerCursor,"semantic_backfill")
+    if cursor is None:
+        cursor=SchedulerCursor(key="semantic_backfill",last_tenant="")
+        db.add(cursor)
+        db.flush()
+    last=cursor.last_tenant
+    row=db.query(Business.id).filter(Business.id>last).order_by(Business.id).first()
+    if row is None:
+        row=db.query(Business.id).order_by(Business.id).first()
+    if row is None:
+        db.rollback()
         return {"indexed":0}
-    tenant = tenants[int(time.time() // 60) % len(tenants)]
-    # The scheduler owns a separate asyncio loop. Never reuse the API loop's
-    # asyncio semaphore; the PostgreSQL capacity locks still coordinate globally.
-    return await index_pending(db, tenant, limit=1, gateway=OllamaGateway())
+    tenant=row[0]
+    cursor.last_tenant=tenant
+    db.commit()  # Advance even if the provider is unavailable.
+    with Session(bind=db.get_bind()) as scoped:
+        scoped.info["oneboard_request"]=True
+        scope_tenant_session(scoped,tenant)
+        return await index_pending(scoped,tenant,limit=1,gateway=OllamaGateway())

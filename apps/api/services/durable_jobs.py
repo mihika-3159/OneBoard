@@ -80,12 +80,15 @@ def execution_lock(bind, job):
                     conn.invalidate()
                     raise
 
-def process_local_outbox(db, limit=100):
+def process_local_outbox(db, limit=100, tenant=None):
     """Only transition local draft intents; no provider dispatch exists."""
     query = db.query(SideEffectOutbox).filter(
         SideEffectOutbox.state == "pending",
         SideEffectOutbox.kind == "invoice_reminder_draft",
-    ).order_by(SideEffectOutbox.created_at, SideEffectOutbox.id).limit(limit)
+    )
+    if tenant is not None:
+        query = query.filter(SideEffectOutbox.business_id == tenant)
+    query = query.order_by(SideEffectOutbox.created_at, SideEffectOutbox.id).limit(limit)
     if db.get_bind().dialect.name == "postgresql":
         query = query.with_for_update(skip_locked=True)
     rows = query.all()

@@ -26,9 +26,10 @@ def tenant_lifecycle_lock(db, tenant, exclusive=False):
         sql = "SELECT pg_advisory_xact_lock(:key)" if exclusive else "SELECT pg_advisory_xact_lock_shared(:key)"
         db.execute(text(sql), {"key":key})
 
-def _request_lifecycle_scope(connection, tenant):
+def _request_lifecycle_scope(connection, tenant, exclusive=False):
     key = int.from_bytes(hashlib.sha256(("oneboard:lifecycle:" + tenant).encode()).digest()[:8], "big", signed=True)
-    connection.execute(text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key":key})
+    lock = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+    connection.execute(text(f"SELECT {lock}(:key)"), {"key":key})
     if not connection.execute(text("SELECT id FROM businesses WHERE id=:tenant"),{"tenant":tenant}).first():
         raise HTTPException(status_code=401, detail="Workspace no longer exists")
 
@@ -46,7 +47,7 @@ def scope_tenant_session(db, tenant):
         db.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
                    {"tenant": tenant})
         if db.info.get("oneboard_request"):
-            _request_lifecycle_scope(db.connection(), tenant)
+            _request_lifecycle_scope(db.connection(), tenant, db.info.get('oneboard_exclusive_lifecycle', False))
 
 
 @event.listens_for(Session, "after_begin")
@@ -56,7 +57,7 @@ def _restore_tenant_scope(session, transaction, connection):
         connection.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
                            {"tenant": tenant})
         if session.info.get("oneboard_request"):
-            _request_lifecycle_scope(connection, tenant)
+            _request_lifecycle_scope(connection, tenant, session.info.get('oneboard_exclusive_lifecycle', False))
 
 
 def get_db():

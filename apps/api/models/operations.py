@@ -146,3 +146,25 @@ class DataRetentionPolicy(Base):
     business_id = Column(String(36), primary_key=True)
     document_days = Column(Integer, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class WorkflowSchedule(Base):
+    """Opt-in persisted wall-clock schedule; no legacy template auto-enrollment."""
+    __tablename__ = "workflow_schedules"
+    __table_args__ = (Index("ix_workflow_schedule_tenant_due","business_id","enabled","next_due_at"),)
+    workflow_id = Column(String(36), primary_key=True)
+    business_id = Column(String(36), nullable=False)
+    cron = Column(String(40), nullable=False)
+    timezone = Column(String(64), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    next_due_at = Column(Float, nullable=False)
+    last_run_id = Column(String(36), nullable=True)
+    last_status = Column(String(30), nullable=True)
+    coalesced = Column(Boolean, nullable=False, default=False)
+
+
+class SchedulerCursor(Base):
+    """Global, non-content cursor for bounded fair background traversal."""
+    __tablename__ = "scheduler_cursors"
+    key = Column(String(60), primary_key=True)
+    last_tenant = Column(String(36), nullable=False, default="")

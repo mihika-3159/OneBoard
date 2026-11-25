@@ -22,7 +22,7 @@ RELATIONS = (
 
 # Auth tables must be readable before the credential establishes a tenant.
 # Unscoped worker/migration sessions intentionally remain maintenance-capable.
-AUTH_TABLES = {"users", "business_memberships", "user_sessions", "semantic_vectors", "settlement_evidence", "provider_credentials", "provider_intents", "data_retention_policies"}
+AUTH_TABLES = {"users", "business_memberships", "user_sessions", "semantic_vectors", "settlement_evidence", "provider_credentials", "provider_intents", "data_retention_policies", "workflow_schedules"}
 
 def tenant_tables():
     return sorted(t.name for t in Base.metadata.tables.values()

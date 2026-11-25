@@ -1121,3 +1121,16 @@ a pre-existing manifest and rejects symlink verification, with regression
 tests. Final exact-head CI must pass before accepting Batch D.
 No production deployment, real customer data, provider signup,
 paid resource, external delivery or independent certification.
+
+
+## Batch E: 25 November 2026
+
+Start exact SHA e2b78a0d792ef4d5eceeb8400aeeed7ebb62c0d2: five workflows green. Increment 1 introduces
+migration 012 with fail-closed unscoped content-table RLS for non-owner
+roles, explicit owner maintenance, indirect sync-history RLS, production
+runtime role admission, owner-approved provisioning, scoped background
+jobs with tenant failure isolation, durable fair indexing cursor and opt-in
+daily/weekly workflow schedules (IANA timezone, DST gap skip/fold once,
+stable idempotent due slot, coalescing, pause on uncertain/approval run).
+Auth directory and global coordination remain unscoped by design.
+CI pending, no production credentials or role provisioning outside disposable CI.
