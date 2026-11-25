@@ -163,6 +163,8 @@ class WorkflowSchedule(Base):
     last_run_id = Column(String(36), nullable=True)
     last_status = Column(String(30), nullable=True)
     coalesced = Column(Boolean, nullable=False, default=False)
+    missed_policy = Column(String(20), nullable=True)
+    missed_count = Column(Integer, nullable=True)
 
 
 class SchedulerCursor(Base):

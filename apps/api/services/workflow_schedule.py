@@ -16,36 +16,57 @@ from apps.api.services.workflow_engine import workflow_engine
 
 DAYS={"mon":0,"tue":1,"wed":2,"thu":3,"fri":4,"sat":5,"sun":6}
 
+def field(value,minimum,maximum,aliases=None):
+    if value=="*":return set(range(minimum,maximum+1))
+    output=set()
+    for part in value.split(","):
+        if aliases and part in aliases:output.add(aliases[part]);continue
+        if part.startswith("*/"):
+            step=int(part[2:])
+            if not 1<=step<=maximum-minimum+1:raise ValueError("Invalid cron interval")
+            output.update(range(minimum,maximum+1,step));continue
+        if "-" in part:
+            low,high=map(int,part.split("-"))
+            if not minimum<=low<=high<=maximum:raise ValueError("Invalid cron range")
+            output.update(range(low,high+1));continue
+        n=int(part)
+        if not minimum<=n<=maximum:raise ValueError("Invalid cron value")
+        output.add(n)
+    return output
+
+
 def parse(cron,zone):
-    match=re.fullmatch(r"(\d{1,2}) (\d{1,2}) \* \* (\*|mon|tue|wed|thu|fri|sat|sun)",cron)
-    if not match or len(zone)>64:
-        raise ValueError("Use daily/weekly cron: minute hour * * * or mon..sun")
-    minute,hour,day=match.groups()
-    if not 0<=int(minute)<=59 or not 0<=int(hour)<=23:
-        raise ValueError("Invalid schedule time")
+    if not isinstance(cron,str) or len(cron)>80 or len(zone)>64:
+        raise ValueError("Invalid cron or timezone")
     try:
-        tz=ZoneInfo(zone)
-    except (ZoneInfoNotFoundError,ValueError):
-        raise ValueError("Unknown IANA timezone") from None
-    return int(minute),int(hour),day,tz
+        minute,hour,dom,month,dow=cron.split()
+        if dom!="*" and dow!="*":raise ValueError("Specify day of month OR weekday, not both")
+        minutes=field(minute,0,59)
+        # Bound frequency to at most 12 slots/hour.
+        if len(minutes)>12 or any(b-a<5 for a,b in zip(sorted(minutes),sorted(minutes)[1:])):
+            raise ValueError("Schedule interval must be at least five minutes")
+        if len(minutes)>1 and 60-max(minutes)+min(minutes)<5:raise ValueError("Schedule interval must be at least five minutes")
+        return minutes,field(hour,0,23),field(dom,1,31),field(month,1,12),field(dow,0,6,DAYS),ZoneInfo(zone)
+    except (ValueError,TypeError,ZoneInfoNotFoundError):
+        raise ValueError("Invalid cron: use five fields, minimum five-minute frequency and one day selector") from None
+
 
 def next_slot(cron,zone,after):
-    minute,hour,day,tz=parse(cron,zone)
+    minutes,hours,dom,months,days,tz=parse(cron,zone)
     start=datetime.fromtimestamp(after,timezone.utc).astimezone(tz).date()
-    for offset in range(15):
+    for offset in range(1462):
         d=start+timedelta(days=offset)
-        if day!="*" and d.weekday()!=DAYS[day]:
-            continue
-        local=datetime(d.year,d.month,d.day,hour,minute,tzinfo=tz,fold=0)
-        instant=local.timestamp()
-        back=datetime.fromtimestamp(instant,tz)
-        if back.replace(tzinfo=None)!=local.replace(tzinfo=None):
-            continue
-        if instant>after:
-            return instant
-    raise ValueError("No valid next schedule occurrence")
+        if d.month not in months or d.day not in dom or d.weekday() not in days:continue
+        for hour in sorted(hours):
+            for minute in sorted(minutes):
+                local=datetime(d.year,d.month,d.day,hour,minute,tzinfo=tz,fold=0)
+                instant=local.timestamp()
+                back=datetime.fromtimestamp(instant,tz)
+                if back.replace(tzinfo=None)==local.replace(tzinfo=None) and instant>after:return instant
+    raise ValueError("No valid next schedule occurrence within four years")
 
-def configure(db,tenant,wid,cron,zone,enabled,now=None):
+def configure(db,tenant,wid,cron,zone,enabled,now=None,missed_policy="coalesce"):
+    if missed_policy not in ("coalesce","skip","catch_up"):raise ValueError("Invalid missed-run policy")
     now=_now(db) if now is None else now
     due=next_slot(cron,zone,now)
     if db.get_bind().dialect.name=="postgresql":
@@ -63,13 +84,15 @@ def configure(db,tenant,wid,cron,zone,enabled,now=None):
     row.cron,row.timezone,row.enabled,row.next_due_at=cron,zone,enabled,due
     row.last_status="configured"
     row.coalesced=False
+    row.missed_policy=missed_policy
+    row.missed_count=0
     db.commit()
     return serialize(row)
 
 def serialize(row):
-    return {key:getattr(row,key) for key in ("workflow_id","cron","timezone","enabled","next_due_at","last_run_id","last_status","coalesced")}
+    return {key:getattr(row,key) for key in ("workflow_id","cron","timezone","enabled","next_due_at","last_run_id","last_status","coalesced","missed_policy","missed_count")}
 
-def run_due(db,tenant,now=None,limit=10):
+def run_due(db,tenant,now=None,limit=20):
     now=_now(db) if now is None else now
     ids=[r[0] for r in db.query(WorkflowSchedule.workflow_id).filter(
         WorkflowSchedule.business_id==tenant,WorkflowSchedule.enabled.is_(True),
@@ -103,6 +126,15 @@ def run_due(db,tenant,now=None,limit=10):
                     row.last_status="inactive_workflow"
                     db.commit()
                     continue
+                policy=row.missed_policy or "coalesce"
+                if policy=="skip" and coalesced:
+                    row.last_status="missed_skipped"
+                    row.missed_count=(row.missed_count or 0)+1
+                    row.next_due_at=next_due
+                    db.commit();continue
+                if policy=="catch_up":
+                    # Replay one oldest slot per scheduler pass, bounded by queue limit.
+                    next_due=next_slot(cron,zone,slot)
                 key="scheduled_"+hashlib.sha256(f"{tenant}:{wid}:{slot:.0f}".encode()).hexdigest()
                 run=workflow_engine.execute_workflow(db,tenant,wid,trigger_source="schedule",idempotency_key=key)
                 row=db.query(WorkflowSchedule).filter_by(workflow_id=wid,business_id=tenant).first()
@@ -114,7 +146,8 @@ def run_due(db,tenant,now=None,limit=10):
                 if run.status in ("running","pending","paused","failed","awaiting_approval"):
                     # Require the founder to review or resolve before future dispatch.
                     row.enabled=False
-                row.coalesced=coalesced
+                row.coalesced=coalesced and policy=="coalesce"
+                if row.coalesced:row.missed_count=(row.missed_count or 0)+1
                 row.next_due_at=next_due
                 db.commit()
                 completed+=1
