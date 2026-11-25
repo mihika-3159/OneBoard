@@ -18,7 +18,7 @@ from apps.api.services.tenant_storage import _lock
 from apps.api.models.operations import JournalEntry
 
 
-def _money(value: Any, label: str) -> Decimal:
+def _money(value: Any, label: str, scale=2) -> Decimal:
     """Reject non-finite or negative unverified recorded amounts.
 
     Do not allow NaN, infinity, or malformed strings to quietly contaminate
@@ -30,18 +30,18 @@ def _money(value: Any, label: str) -> Decimal:
         number = Decimal(str(value))
         if not number.is_finite() or number < 0:
             raise ValueError(label + " must be finite and nonnegative")
-        return number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return number.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError, TypeError) as exc:
         raise ValueError(label + " is not a valid nonnegative amount") from exc
 
 
-def monthly_expense_amount(expense: Expense) -> float:
+def monthly_expense_amount(expense: Expense,scale=2) -> float:
     """Normalize only known recurring periods; never guess unknown periods."""
     period = (expense.billing_period or "").strip().lower()
-    amount = _money(expense.amount, "expense.amount")
+    amount = _money(expense.amount, "expense.amount",scale)
     if period == "annual":
         return float((amount / Decimal(12)).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
+            Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP
         ))
     if period == "monthly":
         return float(amount)
@@ -50,10 +50,10 @@ def monthly_expense_amount(expense: Expense) -> float:
     raise ValueError("Unrecognized expense billing period")
 
 
-def runway_from_records(cash: float, monthly_burn: float, mrr: float) -> tuple[float | None, str, float]:
+def runway_from_records(cash: float, monthly_burn: float, mrr: float,scale=2) -> tuple[float | None, str, float]:
     """Return months, status and signed net burn without an invented 999-month runway."""
     net_burn_decimal = Decimal(str(monthly_burn)) - Decimal(str(mrr))
-    net_burn = float(net_burn_decimal.quantize(Decimal("0.01"),rounding=ROUND_HALF_UP))
+    net_burn = float(net_burn_decimal.quantize(Decimal(1).scaleb(-scale),rounding=ROUND_HALF_UP))
     if net_burn < 0:
         return None, "profitable", net_burn
     if net_burn == 0:
@@ -84,6 +84,9 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     expenses = db.query(Expense).filter(Expense.business_id == business_id).all()
 
     issues: list[str] = []
+    from apps.api.services.finance_ledger import precision
+    try:scale=precision(business.currency)
+    except ValueError:scale=2;issues.append("unsupported_business_currency")
     customer_total = Decimal("0.00")
     expense_total = Decimal("0.00")
     overdue_total = Decimal("0.00")
@@ -97,12 +100,12 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
         cash = Decimal(0)
     for customer in customers:
         try:
-            customer_total += _money(customer.mrr, "customer.mrr")
+            customer_total += _money(customer.mrr, "customer.mrr",scale)
         except ValueError:
             issues.append(f"invalid_customer_mrr:{customer.id}")
     for expense in expenses:
         try:
-            expense_total += Decimal(str(monthly_expense_amount(expense)))
+            expense_total += Decimal(str(monthly_expense_amount(expense,scale)))
         except ValueError:
             issues.append(f"invalid_expense_period_or_amount:{expense.id}")
     for invoice in invoices:
@@ -115,17 +118,17 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
                     from apps.api.services.finance_ledger import receivable,major
                     rows=by_invoice[invoice.id]
                     if any(r.base_currency!=business.currency for r in rows):raise ValueError("Ledger currency mismatch")
-                    overdue_total += _money(major(receivable(rows),business.currency),"invoice.balance")
+                    overdue_total += _money(major(receivable(rows),business.currency),"invoice.balance",scale)
                 else:
                     from apps.api.services.finance_ledger import legacy_balance
-                    overdue_total += _money(legacy_balance(db,business_id,invoice), "invoice.amount")
+                    overdue_total += _money(legacy_balance(db,business_id,invoice), "invoice.amount",scale)
             except ValueError:
                 issues.append(f"invalid_overdue_invoice_amount:{invoice.id}")
 
-    mrr = float(customer_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    monthly_burn = float(expense_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    overdue = float(overdue_total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    runway, runway_status, net_burn = runway_from_records(cash, monthly_burn, mrr)
+    mrr = float(customer_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
+    monthly_burn = float(expense_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
+    overdue = float(overdue_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
+    runway, runway_status, net_burn = runway_from_records(cash, monthly_burn, mrr,scale)
     configured = bool(customers or invoices or expenses or cash)
     if issues:
         # Partial figures are not a valid basis for a positive health claim.
@@ -150,7 +153,7 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
         "is_profitable": net_burn < 0 if not issues else None,
         "runway_months": runway,
         "runway_status": runway_status,
-        "cash_balance": float(round(cash, 2)),
+        "cash_balance": float(round(cash, scale)),
         "overdue_receivables_amount": overdue,
         "overdue_invoices_count": overdue_count,
         "active_customers_count": len(customers),

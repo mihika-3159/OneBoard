@@ -26,12 +26,12 @@ def upgrade():
             conn.execute(sa.text("INSERT INTO "+REGISTRY+" (name) VALUES (:name)"),{"name":table+"."+name})
         if conn.dialect.name=="postgresql":
             for name in change:
-                op.alter_column(table,name,type_=sa.BigInteger(),postgresql_using=f"round({name}::numeric*100)::bigint")
+                op.alter_column(table,name,type_=sa.BigInteger(),postgresql_using=f"round({name}::numeric*1000)::bigint")
         else:
             for name in change:
                 rows=conn.execute(sa.text(f"SELECT id,{name} FROM {table} WHERE {name} IS NOT NULL")).all()
                 for ident,value in rows:
-                    minor=int((Decimal(str(value))*100).quantize(Decimal(1),rounding=ROUND_HALF_UP))
+                    minor=int((Decimal(str(value))*1000).quantize(Decimal(1),rounding=ROUND_HALF_UP))
                     conn.execute(sa.text(f"UPDATE {table} SET {name}=:minor WHERE id=:ident"),{"minor":minor,"ident":ident})
             with op.batch_alter_table(table,recreate="always") as batch:
                 for name in change:batch.alter_column(name,existing_type=columns[name]["type"],type_=sa.BigInteger())
@@ -64,9 +64,9 @@ def downgrade():
         change=[n for n in fields if table+"."+n in added]
         if not change:continue
         if conn.dialect.name=="postgresql":
-            for name in change:op.alter_column(table,name,type_=sa.Float(),postgresql_using=f"{name}::double precision/100")
+            for name in change:op.alter_column(table,name,type_=sa.Float(),postgresql_using=f"{name}::double precision/1000")
         else:
             with op.batch_alter_table(table,recreate="always") as batch:
                 for name in change:batch.alter_column(name,existing_type=sa.BigInteger(),type_=sa.Float())
-            for name in change:conn.execute(sa.text(f"UPDATE {table} SET {name}={name}/100.0 WHERE {name} IS NOT NULL"))
+            for name in change:conn.execute(sa.text(f"UPDATE {table} SET {name}={name}/1000.0 WHERE {name} IS NOT NULL"))
     op.drop_table(REGISTRY)

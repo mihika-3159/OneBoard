@@ -292,13 +292,13 @@ class InvoiceCreateRequest(BaseModel):
 @router.post("/financial/invoices")
 def finance_create_invoice(req:InvoiceCreateRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
     from datetime import date,datetime
-    from apps.api.core.money import cents
+    from apps.api.core.money import storage_units
     tenant=current_user.business_id;finance_budget(db,current_user);_lock(db,tenant)
     try:
         biz=ledger.workspace(db,tenant);ledger.date_key(req.booked_on)
         due=date.fromisoformat(req.due_date)
         if due.isoformat()!=req.due_date or due.isoformat()<req.booked_on:raise ValueError("Invalid invoice due date")
-        cents(req.amount)
+        storage_units(req.amount)
         old=db.query(JournalEntry).filter_by(business_id=tenant,reference=req.reference).first()
         if old:
             inv=db.query(Invoice).filter_by(business_id=tenant,id=old.invoice_id).first()

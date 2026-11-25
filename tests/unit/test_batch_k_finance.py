@@ -38,14 +38,14 @@ def test_exact_money_is_integer_in_sqlite_and_decimal_in_orm(db):
     db.add_all([Customer(business_id="a",name="one",mrr="0.10"),Customer(business_id="a",name="two",mrr="0.20"),
                Expense(business_id="a",category="Hosting",vendor="Fixture",amount="0.30")])
     db.commit()
-    assert db.execute(text("SELECT amount,typeof(amount) FROM invoices WHERE id='inv'")).one()==(10,"integer")
+    assert db.execute(text("SELECT amount,typeof(amount) FROM invoices WHERE id='inv'")).one()==(100,"integer")
     assert db.get(Invoice,"inv").amount==Decimal("0.10")
     summary=calculate_business_financials(db,"a")
     assert Decimal(summary["exact_amounts"]["mrr"])==Decimal("0.30")
     assert Decimal(summary["exact_amounts"]["monthly_burn"])==Decimal("0.30")
     assert summary["net_burn"]==0
-    inv.amount="0.001"
-    with pytest.raises(StatementError,match="sub-cent"):db.commit()
+    inv.amount="0.0001"
+    with pytest.raises(StatementError,match="storage precision"):db.commit()
     db.rollback()
     assert db.get(Invoice,"inv").amount==Decimal("0.10")
 

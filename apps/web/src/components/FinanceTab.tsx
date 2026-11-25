@@ -34,7 +34,7 @@ export const FinanceTab: React.FC = () => {
     if (amount === null || amount === undefined || !Number.isFinite(amount)) return 'Not available';
     try {
       return new Intl.NumberFormat('en', {
-        style: 'currency', currency, maximumFractionDigits: 2,
+        style: 'currency', currency,
       }).format(amount);
     } catch {
       return `${amount.toLocaleString()} ${currency}`;

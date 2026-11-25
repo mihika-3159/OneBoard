@@ -235,6 +235,8 @@ class JournalEntry(Base):
     kind=Column(String(24),nullable=False)
     invoice_id=Column(String(36),nullable=True)
     related_entry_id=Column(String(36),nullable=True)
+    invoice_minor_delta=Column(BigInteger,nullable=True)
+    carrying_minor=Column(BigInteger,nullable=True)
     debit_account=Column(String(40),nullable=False)
     credit_account=Column(String(40),nullable=False)
     currency=Column(String(3),nullable=False)
