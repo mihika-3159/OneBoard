@@ -47,11 +47,15 @@ def invalidate_jobs(db,row):
 def start_authorization(db,tenant,actor,provider,scopes):
     scopes=scopes_valid(provider,scopes)
     adapter=adapter_for(provider);crypto.keyring()
+    if not set(scopes)<=adapter.allowed_scopes:raise ValueError("Scope unavailable for selected adapter")
     _lock(db,tenant)
     row=connection(db,tenant,provider,True)
     if row.state=="connected":raise ValueError("Disconnect before authorizing again")
     db.query(ProviderAuthorization).filter(ProviderAuthorization.business_id==tenant,ProviderAuthorization.expires_at<=now()).delete(synchronize_session=False)
     if db.query(ProviderAuthorization).filter_by(business_id=tenant).count()>=50:raise ValueError("Authorization attempt capacity reached")
+    if row.adapter_fingerprint and row.adapter_fingerprint!=adapter.fingerprint and row.remote_account:
+        raise ValueError("Adapter identity changed; existing connection cannot be reused")
+    row.adapter_fingerprint=adapter.fingerprint
     row.generation+=1;row.state="authorizing";row.last_error=None;row.updated_at=now()
     invalidate_jobs(db,row)
     state=secrets.token_urlsafe(32);verifier=secrets.token_urlsafe(64)
@@ -91,6 +95,7 @@ def complete_authorization(db,tenant,actor,state,code=None,denied=False):
         if denied:raise ValueError("Authorization denied")
         code=bounded_string(code,4096)
         adapter=adapter_for(provider)
+        if adapter.fingerprint!=row.adapter_fingerprint:raise ValueError("Adapter identity changed")
         credentials,scopes,expiry=grant(adapter.exchange(code,verifier),provider,requested)
         identity=adapter.identity(credentials["access_token"])
         account=bounded_string(identity.get("account_id"),255)
@@ -105,6 +110,7 @@ def complete_authorization(db,tenant,actor,state,code=None,denied=False):
     row.updated_at=now();db.commit();return public(row)
 
 def credentials(db,row,adapter):
+    if adapter.fingerprint!=row.adapter_fingerprint:raise ProviderFailure("adapter_identity_changed")
     if row.state!="connected" or not row.encrypted_credentials or not row.expires_at:raise ProviderFailure("auth_required")
     try:value=crypto.unseal(row.encrypted_credentials,row.business_id,row.id,"oauth")
     except ValueError:raise ProviderFailure("credential_decryption_failed") from None
@@ -141,11 +147,8 @@ def disconnect(db,tenant,provider):
         try:
             value=crypto.unseal(row.encrypted_credentials,tenant,row.id,"oauth")
             adapter=adapter_for(provider)
-            # Revoking refresh token prevents further issuance; revoke access too.
-            tokens=[value["access_token"]]+([value["refresh_token"]] if value.get("refresh_token") else [])
-            outcomes=[]
-            for token in tokens:outcomes.append(adapter.revoke(token).get("revoked") is True)
-            remote=all(outcomes)
+            if adapter.fingerprint!=row.adapter_fingerprint:raise ValueError("Adapter identity changed")
+            remote=adapter.revoke_all(value,row.remote_account)
         except (ValueError,ProviderFailure):remote=False
     row.generation+=1;row.state="disconnected";row.encrypted_credentials=None;row.expires_at=None;row.scopes=[]
     row.last_error=None if remote else "remote_revocation_unconfirmed";row.updated_at=now()
@@ -232,7 +235,7 @@ def run_sync(db,tenant):
         else:job.state="succeeded";job.finished_at=now();row.last_sync=now()
     except ProviderFailure as exc:
         job.error_code=exc.code;row.last_error=exc.code
-        if exc.code in ("authorization_rejected","auth_required","refresh_required","refresh_uncertain_reauthorize","credential_decryption_failed"):
+        if exc.code in ("authorization_rejected","auth_required","refresh_required","refresh_uncertain_reauthorize","credential_decryption_failed","adapter_identity_changed"):
             row.state="auth_required";job.state="failed";job.finished_at=now()
         elif exc.retryable and job.attempts<6:
             job.state="retry";job.next_attempt=now()+timedelta(seconds=max(exc.retry_after,min(900,2**job.attempts*15)))
@@ -287,6 +290,8 @@ def approve_action(db,tenant,actor,provider,action,payload,request_key,confirmat
     if old:
         if old.request_hash!=checksum:raise ValueError("Request key already used for different action")
         return delivery_public(old)
+    adapter=adapter_for(provider)
+    if adapter.fingerprint!=row.adapter_fingerprint or action not in adapter.actions:raise ValueError("Action unavailable for selected adapter")
     if row.state!="connected" or CAPABILITIES[provider][1][action] not in row.scopes:raise ValueError("Connected write scope required")
     if db.query(ProviderDelivery).filter_by(business_id=tenant).count()>=2000:raise ValueError("Delivery capacity reached")
     action_row=ProviderDelivery(business_id=tenant,connection_id=row.id,generation=row.generation,request_key=request_key,
@@ -331,6 +336,7 @@ def dispatch_one(db,tenant):
         if row.generation!=action.generation or row.state!="connected":
             action.state="cancelled";action.updated_at=now();db.commit();return delivery_public(action)
         try:
+            if adapter.fingerprint!=row.adapter_fingerprint or action.action not in adapter.actions:raise ValueError("Adapter identity changed")
             result=adapter.deliver(token,action.action,action.payload,action.request_key)
             apply_delivery_status(action,result)
         except (ProviderFailure,ValueError):

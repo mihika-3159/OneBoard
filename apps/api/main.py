@@ -37,6 +37,8 @@ class OAuthAccessLogFilter(logging.Filter):
             return False
         return True
 logging.getLogger("uvicorn.access").addFilter(OAuthAccessLogFilter())
+# Provider cursors and private paths can occur in outbound URLs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

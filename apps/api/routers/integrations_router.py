@@ -225,7 +225,7 @@ def get_github_status(current_user: User = Depends(get_current_user)):
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from apps.api.services.integrations import provider_runtime as runtime
-from apps.api.services.integrations.provider_transport import CAPABILITIES,configuration
+from apps.api.services.integrations.provider_transport import CAPABILITIES,configuration,adapter_for
 from apps.api.models.operations import (ProviderConnection,ProviderSyncJob,ProviderRecord,ProviderRecordConflict,ProviderDelivery)
 from apps.api.services.data_lifecycle import owner
 from apps.api.core.database import scope_tenant_session
@@ -245,10 +245,13 @@ def live_providers(current_user:User=Depends(get_current_user),db:Session=Depend
     rows={r.provider:r for r in db.query(ProviderConnection).filter_by(business_id=current_user.business_id).all()}
     result=[]
     for provider,(scopes,actions) in CAPABILITIES.items():
-        try:configuration(provider);configured=True
+        contract="normalized_https_adapter"
+        try:
+            adapter=adapter_for(provider);configured=True;scopes=adapter.allowed_scopes;actions=adapter.actions
+            contract="native_read_only" if adapter.config["mode"]=="native" else contract
         except ValueError:configured=False
         info=runtime.public(rows[provider]) if provider in rows else {"provider":provider,"state":"disconnected","scopes":[]}
-        result.append({**info,"external_adapter_configured":configured,"supported_scopes":sorted(scopes),"supported_actions":actions,"adapter_contract":"normalized_https_adapter"})
+        result.append({**info,"external_adapter_configured":configured,"supported_scopes":sorted(scopes),"supported_actions":actions,"adapter_contract":contract})
     return {"providers":result}
 
 class OAuthBegin(BaseModel):

@@ -322,6 +322,7 @@ class ProviderConnection(Base):
     encrypted_credentials=Column(Text,nullable=True)
     expires_at=Column(DateTime,nullable=True)
     remote_account=Column(String(255),nullable=True)
+    adapter_fingerprint=Column(String(64),nullable=True)
     checkpoint=Column(Text,nullable=True)
     last_sync=Column(DateTime,nullable=True)
     last_error=Column(String(100),nullable=True)

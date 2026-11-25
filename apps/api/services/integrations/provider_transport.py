@@ -4,7 +4,7 @@ No tenant-supplied URLs, redirects, credentials in logs, or implicit network acc
 The normalized API is an explicit bridge contract, not a claim that every vendor
 implements these endpoints. Operators must configure a trusted adapter.
 """
-import json,re,time
+import json,re,time,hashlib
 from urllib.parse import urlsplit,urlencode
 import httpx
 from apps.api.core.config import settings
@@ -41,9 +41,13 @@ def configuration(provider):
     if provider not in CAPABILITIES:raise ValueError("Unsupported provider")
     raw=settings.PROVIDER_CONNECTORS.get(provider)
     if not isinstance(raw,dict) or raw.get("enabled") is not True:raise ValueError("Provider adapter is not configured")
+    if raw.get("mode")=="native":
+        from apps.api.services.integrations.native_providers import native_configuration
+        return native_configuration(provider,raw)
+    if raw.get("mode","normalized")!="normalized":raise ValueError("Unknown provider adapter mode")
     host=raw.get("host")
     if not isinstance(host,str) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]+\.[a-z]{2,63}",host) or host.endswith((".local",".internal",".localhost")):raise ValueError("Invalid provider host")
-    config=dict(raw)
+    config=dict(raw);config["mode"]="normalized"
     for name in ("authorize_url","token_url","identity_url","sync_url","revoke_url","action_url","status_url"):
         if name in ("action_url","status_url") and not CAPABILITIES[provider][1]:continue
         config[name]=endpoint(raw.get(name),host)
@@ -57,19 +61,20 @@ def configuration(provider):
     config["redirect_uri"]=origin+"/api/integrations/providers/oauth/callback"
     return config
 
-def request(config,url,*,token=None,form=None,payload=None,method="POST"):
+def request(config,url,*,token=None,form=None,payload=None,method="POST",params=None,extra_headers=None,auth=None,allow_list=False,empty_ok=False):
     # URL is chosen exclusively from server-validated connector configuration.
-    headers={"Accept":"application/json"}
+    headers={"Accept":"application/json",**(extra_headers or {})}
     if token is not None:headers["Authorization"]="Bearer "+token
     try:
         with httpx.Client(timeout=httpx.Timeout(8.0,connect=4.0),follow_redirects=False,trust_env=False) as client:
-            with client.stream(method,url,headers=headers,data=form,json=payload) as response:
+            with client.stream(method,url,headers=headers,data=form,json=payload,params=params,auth=auth) as response:
                 status=response.status_code
-                if status==429 or status>=500:
+                if status==429 or status>=500 or (status==403 and response.headers.get("X-RateLimit-Remaining")=="0"):
                     retry=response.headers.get("Retry-After","")
                     try:seconds=min(3600,max(0,int(retry)))
                     except ValueError:seconds=0
-                    raise ProviderFailure("rate_limited" if status==429 else "provider_unavailable",True,seconds)
+                    raise ProviderFailure("rate_limited" if status in (429,403) else "provider_unavailable",True,seconds)
+                if status in (404,410):raise ProviderFailure("resource_missing" if status==404 else "checkpoint_expired")
                 if status in (401,403):raise ProviderFailure("authorization_rejected")
                 if not 200<=status<300:raise ProviderFailure("provider_rejected")
                 raw=bytearray();deadline=time.monotonic()+10
@@ -78,16 +83,24 @@ def request(config,url,*,token=None,form=None,payload=None,method="POST"):
                     raw.extend(chunk)
                     if len(raw)>MAX_BODY:raise ProviderFailure("response_too_large")
                 try:
+                    if not raw and empty_ok:return {}
                     out=json.loads(raw)
-                    if not isinstance(out,dict):raise ValueError()
+                    if not isinstance(out,dict) and not (allow_list and isinstance(out,list)):raise ValueError()
                     return out
                 except (ValueError,UnicodeError):raise ProviderFailure("invalid_provider_response") from None
     except httpx.RequestError:raise ProviderFailure("transport_uncertain",True) from None
+
+def fingerprint(config,provider):
+    identity={k:v for k,v in config.items() if k in ("mode","host","client_id","redirect_uri","authorize_url","token_url","identity_url","sync_url","revoke_url","action_url","status_url","native_scope","stripe_livemode")}
+    return hashlib.sha256(json.dumps([provider,identity],sort_keys=True,separators=(",",":")).encode()).hexdigest()
 
 class Adapter:
     def __init__(self,provider):
         self.provider=provider
         self.config=configuration(provider)
+        self.allowed_scopes=CAPABILITIES[provider][0]
+        self.actions=CAPABILITIES[provider][1]
+        self.fingerprint=fingerprint(self.config,provider)
     def authorization_url(self,state,challenge,scopes):
         return self.config["authorize_url"]+"?"+urlencode({"response_type":"code","client_id":self.config["client_id"],
             "redirect_uri":self.config["redirect_uri"],"scope":" ".join(scopes),"state":state,"code_challenge":challenge,"code_challenge_method":"S256"})
@@ -105,10 +118,17 @@ class Adapter:
         return request(self.config,self.config["sync_url"],token=token,payload={"cursor":cursor,"scopes":scopes,"limit":100})
     def revoke(self,token):
         return request(self.config,self.config["revoke_url"],form={"token":token,"client_id":self.config["client_id"],"client_secret":self.config.get("client_secret","")})
+    def revoke_all(self,credentials,remote_account):
+        tokens=[credentials["access_token"]]+([credentials["refresh_token"]] if credentials.get("refresh_token") else [])
+        return all([self.revoke(token).get("revoked") is True for token in tokens])
     def deliver(self,token,action,payload,key):
         return request(self.config,self.config["action_url"],token=token,payload={"action":action,"payload":payload,"idempotency_key":key})
     def delivery_status(self,token,key):
         return request(self.config,self.config["status_url"],token=token,payload={"idempotency_key":key})
 
 def adapter_for(provider):
+    config=configuration(provider)
+    if config["mode"]=="native":
+        from apps.api.services.integrations.native_providers import NativeAdapter
+        return NativeAdapter(provider,config)
     return Adapter(provider)

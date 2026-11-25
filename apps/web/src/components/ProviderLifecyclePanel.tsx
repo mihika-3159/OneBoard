@@ -15,9 +15,9 @@ export function ProviderLifecyclePanel(){
  const actions=Object.entries(current?.supported_actions||{}).filter(([,scope])=>current?.scopes?.includes(scope)).map(([name])=>name);
  return <section className="glass-panel rounded-xl p-5 space-y-3" aria-label="External provider integrations">
   <h2 className="text-lg font-bold">External provider integrations</h2>
-  <p className="text-xs text-amber-300">Optional normalized HTTPS adapters require operator configuration and real authorization. No provider is contacted by default. Imported records remain separately sourced; adapter confirmations are not independent verification.</p>
+  <p className="text-xs text-amber-300">Optional native read-only and normalized HTTPS adapters require operator configuration and real authorization. No provider is contacted by default. Imported records remain separately sourced; adapter confirmations are not independent verification.</p>
   <label>Provider<select className={input} value={selected} onChange={e=>{setSelected(e.target.value);setScopes([]);setDetail(null);setOffset(0);setAction('');setPayload({});setConfirm('');setSyncKey(crypto.randomUUID());setActionKey(crypto.randomUUID())}}>{providers.map(p=><option key={p.provider} value={p.provider}>{p.provider}</option>)}</select></label>
-  {current&&<><p>Authorization: {current.state} · {current.external_adapter_configured?'Adapter configured':'Operator setup required'}</p>
+  {current&&<><p>Authorization: {current.state} · {current.external_adapter_configured?current.adapter_contract:'Operator setup required'}</p>
    {current.last_error&&<p>Last error: {current.last_error}</p>}{current.expires_at&&<p>Credential expiry: {current.expires_at}</p>}
    {connected?<><p>Granted scopes: {current.scopes.join(', ')}</p><p>Last completed sync: {current.last_sync||'None'} · Checkpoint: {current.checkpoint_present?'Saved':'None'}</p></>:<fieldset><legend>Requested scopes</legend>{current.supported_scopes.map((scope:string)=><label className="block" key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={e=>setScopes(old=>e.target.checked?[...old,scope]:old.filter(x=>x!==scope))}/> {scope}</label>)}</fieldset>}
    <div className="flex flex-wrap gap-2">
