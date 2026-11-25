@@ -18,6 +18,11 @@ POLICIES = {
     "memory_search": (120, 60),
     "customer_import": (6, 300),
     "financial_reconciliation": (20, 60),
+    "workflow_generate": (10, 60),
+    "workflow_execute": (30, 60),
+    "agent_generate": (10, 60),
+    "agent_test": (20, 60),
+    "document_upload": (10, 300),
 }
 
 

@@ -5,8 +5,13 @@ import logging
 import time
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from apps.api.core.config import settings
+from apps.api.services.cluster_capacity import inference_slot
 
 logger = logging.getLogger(__name__)
+
+class _CapacityExceeded(Exception):
+    pass
+
 
 class OllamaGateway:
     def __init__(self, base_url: str = settings.OLLAMA_BASE_URL):
@@ -107,10 +112,13 @@ class OllamaGateway:
                 reason = "capacity_exceeded"
             if acquired:
                 try:
-                    async with httpx.AsyncClient(timeout=45.0) as client:
-                        response = await client.post(
-                            f"{self.base_url}/api/chat", json=payload
-                        )
+                    with inference_slot() as admitted:
+                        if not admitted:
+                            raise _CapacityExceeded()
+                        async with httpx.AsyncClient(timeout=45.0) as client:
+                            response = await client.post(
+                                f"{self.base_url}/api/chat", json=payload
+                            )
                     if response.status_code == 200:
                         try:
                             data = response.json()
@@ -141,6 +149,8 @@ class OllamaGateway:
                         reason = "model_unavailable"
                     else:
                         reason = "provider_http_error"
+                except _CapacityExceeded:
+                    reason = "capacity_exceeded"
                 except httpx.TimeoutException:
                     reason = "timeout"
                 except Exception:
@@ -167,16 +177,24 @@ class OllamaGateway:
     async def generate_embedding(self, text: str, model: Optional[str] = None) -> List[float]:
         """Fetch local text embedding from Ollama or fallback to deterministic hash vector."""
         target_model = model or self.get_model_for_task("embedding")
+        acquired = False
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(
-                    f"{self.base_url}/api/embeddings",
-                    json={"model": target_model, "prompt": text}
-                )
-                if res.status_code == 200:
-                    return res.json().get("embedding", [])
+            await asyncio.wait_for(self._inference_slots.acquire(), timeout=self._queue_timeout_seconds)
+            acquired = True
+            with inference_slot() as admitted:
+                if admitted:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        res = await client.post(
+                            f"{self.base_url}/api/embeddings",
+                            json={"model": target_model, "prompt": text}
+                        )
+                        if res.status_code == 200:
+                            return res.json().get("embedding", [])
         except Exception:
             pass
+        finally:
+            if acquired:
+                self._inference_slots.release()
             
         # Deterministic pseudo-embedding for local offline vector similarity (128 dims)
         import hashlib

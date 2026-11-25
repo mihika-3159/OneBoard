@@ -90,6 +90,8 @@ async def upload_document(
     current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "document_upload")
     # Normalize both POSIX and Windows path separators; reject nameless files.
     filename = Path((file.filename or "").replace("\\", "/")).name
     ext = Path(filename).suffix.lower()

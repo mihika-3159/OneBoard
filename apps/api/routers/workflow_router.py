@@ -7,6 +7,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 from apps.api.core.config import settings
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.database import get_db
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
@@ -89,6 +90,8 @@ def execute_workflow(
             detail="A stable Idempotency-Key is required for production workflow execution.",
         )
 
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "workflow_execute")
     try:
         run = workflow_engine.execute_workflow(
             db=db,
@@ -133,7 +136,10 @@ def list_runs(
 async def generate_from_prompt(
     req: PromptGenerationRequest,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "workflow_generate")
     generated = await natural_language_builder.generate_workflow_from_prompt(req.prompt)
     return generated
 
@@ -141,7 +147,10 @@ async def generate_from_prompt(
 async def teach_process(
     req: TeachProcessRequest,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "workflow_generate")
     return await natural_language_builder.teach_a_process(req.description, req.examples)
 
 @router.get("/approvals")

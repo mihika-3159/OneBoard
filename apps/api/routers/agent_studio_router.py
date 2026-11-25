@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 from apps.api.core.database import get_db
+from apps.api.core.config import settings
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
 from apps.api.models.business import User
 from apps.api.models.workflow import CustomAgent
@@ -65,7 +67,10 @@ def create_agent(
 async def generate_agent_config(
     req: AgentGenerateRequest,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "agent_generate")
     return await natural_language_builder.generate_agent_from_prompt(req.prompt)
 
 @router.post("/{agent_id}/test")
@@ -81,6 +86,8 @@ async def test_agent(
 
     enforce_tenant_boundary(agent.business_id, current_user)
 
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "agent_test")
     res = await ollama_gateway.chat_complete(
         messages=[{"role": "user", "content": req.test_input}],
         system_prompt=agent.system_prompt,

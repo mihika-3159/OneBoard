@@ -1136,3 +1136,21 @@ def test_21_concurrent_tenant_resource_budget_is_cross_worker_and_isolated(monke
             ).delete(synchronize_session=False)
             db.commit()
         engine.dispose()
+
+
+def test_22_cluster_inference_slots_reject_third_and_release_on_error():
+    from apps.api.services.cluster_capacity import inference_slot
+    engine = _engine()
+    try:
+        with inference_slot(engine) as first, inference_slot(engine) as second:
+            assert first and second
+            with inference_slot(engine) as third:
+                assert not third
+        with pytest.raises(RuntimeError):
+            with inference_slot(engine) as acquired:
+                assert acquired
+                raise RuntimeError("synthetic failure")
+        with inference_slot(engine) as first, inference_slot(engine) as second:
+            assert first and second
+    finally:
+        engine.dispose()

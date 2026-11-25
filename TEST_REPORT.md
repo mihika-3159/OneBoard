@@ -924,3 +924,16 @@ deployments, merges or main-branch changes occurred.
 All five applicable checks must pass on the new SHA before Batch B
 may begin. PR #8 remains draft.
 
+
+
+## 25 November 2026: Batch B increment 1 (capacity and request admission)
+
+Start head d9440b5dc0091b720ea5836531a6d6beeb7c4332: all five observed workflows completed success.
+Adds PostgreSQL session advisory-lock admission across API workers for both
+chat and embedding HTTP calls, plus tenant request budgets for workflow
+generation/teaching/execution, agent generation/testing and document upload.
+Includes disposable PostgreSQL lock saturation/release regression and policy
+bounds tests. SQLite retains process-local inference limits. Provider-side
+computation after connection loss/cancellation, external load, scheduler leases,
+transactional outbox, storage quotas and DB-level tenant isolation remain open.
+New code CI: NOT YET RUN at authoring. This is partial Batch B, not certification.
