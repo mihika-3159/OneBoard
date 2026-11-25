@@ -237,3 +237,27 @@ jobs:
             pip-audit.json
             npm-audit.json
           retention-days: 7
+
+  dependency-lock-repair:
+    name: Generate reviewed dependency lock repair (temporary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Resolve fixed Vite and compatible React plugin
+        working-directory: apps/web
+        run: |
+          npm pkg delete dependencies.react-router-dom
+          npm pkg set 'overrides.postcss-selector-parser=^6.1.5'
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund --save-dev --save-exact vite@8.3.8 @vitejs/plugin-react@latest
+          node --input-type=module -e 'import fs from "node:fs"; for(const filename of ["package.json","package-lock.json"]){const data=fs.readFileSync(filename,"utf8");for(let i=0;i<data.length;i+=3000) console.log("ONEBOARD_LOCK_PART "+filename+" "+(i/3000)+" "+JSON.stringify(data.slice(i,i+3000)));}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proposed-dependency-lock-repair
+          path: |
+            apps/web/package.json
+            apps/web/package-lock.json
+          retention-days: 7
