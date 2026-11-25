@@ -6,6 +6,9 @@ from datetime import datetime, timedelta
 import json
 import logging
 import hashlib
+from uuid import uuid4
+from apps.api.services.workflow_conditions import condition_result, should_skip, resolve_data, validate_conditions
+from apps.api.services.workflow_effects import stage_effect, preview_effect, canonical_digest
 from decimal import Decimal
 from apps.api.services.financial_metrics import _money
 from apps.api.models.workflow import WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog
@@ -99,7 +102,7 @@ class ToolRegistry:
         task = db.query(Task).filter(Task.id == task_id, Task.business_id == business_id).first()
         if task:
             task.status = status
-            db.commit()
+            db.flush()
             return {"success": True, "task_id": task_id, "new_status": status}
         return {"success": False, "error": "Task not found"}
 
@@ -187,7 +190,7 @@ class WorkflowEngine:
         """Server-owned capabilities; labels and model-supplied risk cannot grant access."""
         connector = node_data.get("connector", "")
         operation = node_data.get("operation")
-        if node_type in ("trigger", "approval"):
+        if node_type in ("trigger", "approval", "condition"):
             return "control"
         if node_type == "data_fetch" and connector in ("demo_finance", "demo_commitments"):
             return "tenant_read"
@@ -204,6 +207,7 @@ class WorkflowEngine:
     def validate_workflow(self, definition: Dict[str, Any]) -> Dict[str, Any]:
         try:
             nodes = self._ordered_nodes(definition)
+            validate_conditions(nodes, definition.get("edges", []))
             return {
                 "is_valid": True,
                 "node_count": len(nodes),
@@ -216,11 +220,8 @@ class WorkflowEngine:
 
     @staticmethod
     def _record_draft_intent(db, run, node_id, node_type, node_data, result):
-        if (node_type == "action" and node_data.get("connector") == "demo_email"
-                and node_data.get("operation") == "draft_invoice_reminders"):
-            db.add(SideEffectOutbox(business_id=run.business_id, run_id=run.id,
-                step_id=node_id, kind="invoice_reminder_draft", payload=result,
-                state="pending"))
+        if node_type == "action" and node_data.get("connector") == "demo_email" and node_data.get("operation") == "draft_invoice_reminders":
+            stage_effect(db, run, node_id, "invoice_reminder_draft", result)
 
     def _execute_steps(
         self,
@@ -233,13 +234,32 @@ class WorkflowEngine:
         dry_run: bool = False,
     ) -> WorkflowRun:
         """Execute a continuation. Never infer verified success from mere completion."""
+        token = (run.verification_details or {}).get("execution_token")
         run.current_step_id = None
         for node in ordered_nodes[start_index:]:
+            # Row locks fence cancellation and recovery across workers. The
+            # effect and its checkpoint are committed in the same transaction.
+            db.expire_all()
+            run = db.query(WorkflowRun).filter_by(id=run.id,business_id=run.business_id).with_for_update().populate_existing().one()
+            if run.status != "running" or (run.verification_details or {}).get("execution_token") != token:
+                db.rollback()
+                return run
+            db.refresh(wf)
+            if not wf.is_active or self._definition_digest(wf) != (run.verification_details or {}).get("definition_digest"):
+                run.status="paused"
+                run.error_message="Workflow changed or deactivated; execution stopped"
+                db.commit()
+                return run
             node_id = node["id"]
             node_type = node.get("type")
             node_data = node.get("data") or {}
             label = node_data.get("label", node_id)
 
+            if not dry_run and should_skip(node_id, wf.edges or [], step_results):
+                step_results[node_id] = {"status":"skipped","reason":"inactive branch"}
+                run.step_results = dict(step_results)
+                db.commit()
+                continue
             if dry_run:
                 step_results[node_id] = {
                     "status": "simulated",
@@ -249,6 +269,12 @@ class WorkflowEngine:
                 continue
 
             if node_type == "approval" or node_data.get("risk") == "high":
+                resolved = resolve_data(node_data, node_id, wf.edges or [], step_results)
+                preview = preview_effect(db, run.business_id, node_type, resolved)
+                payload = {"step_id":node_id,"node_data":node_data,"action_digest":self._action_digest(node),
+                           "resolved_data":resolved,"effect_preview":preview,
+                           "definition_digest":self._definition_digest(wf),"run_id":run.id}
+                payload["payload_digest"] = canonical_digest(payload)
                 request = ApprovalRequest(
                     business_id=run.business_id,
                     workflow_run_id=run.id,
@@ -256,7 +282,7 @@ class WorkflowEngine:
                     risk_level="high",
                     title=f"Approval Required for '{wf.name}'",
                     description=f"Action checkpoint reached: '{label}'. External actions pending confirmation.",
-                    payload={"step_id": node_id, "node_data": node_data, "action_digest": self._action_digest(node)},
+                    payload=payload,
                 )
                 db.add(request)
                 db.flush()
@@ -270,10 +296,15 @@ class WorkflowEngine:
                 break
 
             try:
-                result = self._dispatch_node_tool(db, run.business_id, node_type, node_data)
-                if isinstance(result, dict) and result.get("success") is False:
-                    raise ValueError("Workflow tool reported failure")
-                self._record_draft_intent(db, run, node_id, node_type, node_data, result)
+                resolved = resolve_data(node_data, node_id, wf.edges or [], step_results)
+                with db.begin_nested():
+                    result = (condition_result(resolved) if node_type == "condition" else
+                              self._dispatch_node_tool(db, run.business_id, node_type, resolved))
+                    if isinstance(result, dict) and result.get("success") is False:
+                        raise ValueError("Workflow tool reported failure")
+                    self._record_draft_intent(db, run, node_id, node_type, resolved, result)
+                    canonical_digest(result)
+                    db.flush()
             except Exception as exc:
                 logger.warning("Workflow run %s failed at step %s: %s", run.id, node_id, exc)
                 step_results[node_id] = {
@@ -292,13 +323,23 @@ class WorkflowEngine:
                 "result": result,
                 "timestamp": datetime.utcnow().isoformat(),
             }
+            run.step_results = dict(step_results)
+            run.current_step_id = node_id
+            db.commit()
         else:
+            # Reacquire after the last checkpoint before marking terminal.
+            db.expire_all()
+            run = db.query(WorkflowRun).filter_by(id=run.id,business_id=run.business_id).with_for_update().populate_existing().one()
+            if run.status != "running" or (run.verification_details or {}).get("execution_token") != token:
+                db.rollback()
+                return run
             run.status = "completed"
             run.completed_at = datetime.utcnow()
 
         run.step_results = dict(step_results)
         run.verified_success = False
         run.verification_details = {
+            **(run.verification_details or {}),
             "verified": False,
             "dry_run": dry_run,
             "node_order": [node["id"] for node in ordered_nodes],
@@ -357,9 +398,10 @@ class WorkflowEngine:
             WorkflowDefinition.id == workflow_id,
             WorkflowDefinition.business_id == business_id,
         ).first()
-        if not wf:
-            raise ValueError("Workflow not found for this business")
+        if not wf or not wf.is_active or not wf.is_valid:
+            raise ValueError("Workflow not found, inactive or invalid for this business")
         ordered_nodes = self._ordered_nodes({"nodes": wf.nodes or [], "edges": wf.edges or []})
+        validate_conditions(ordered_nodes,wf.edges or [])
 
         run = WorkflowRun(
             workflow_id=wf.id,
@@ -375,6 +417,7 @@ class WorkflowEngine:
                 "node_order": [node["id"] for node in ordered_nodes],
                 "definition_digest": self._definition_digest(wf),
                 "reason": "Execution started, outcome not yet verified",
+                "execution_token": str(uuid4()), "checkpoint_protocol": 1, "recovery_count": 0,
             },
         )
         db.add(run)
@@ -504,6 +547,16 @@ class WorkflowEngine:
         if "action_digest" in pinned and pinned["action_digest"] != self._action_digest(approved_node):
             raise ValueError("Approval action digest changed")
 
+        required = {"step_id","node_data","action_digest","resolved_data","effect_preview","definition_digest","run_id","payload_digest"}
+        if not required <= set(pinned) or pinned["run_id"] != run.id or pinned["definition_digest"] != self._definition_digest(wf):
+            raise ValueError("Legacy or incomplete approval payload; create a fresh run")
+        if canonical_digest({k:v for k,v in pinned.items() if k!="payload_digest"}) != pinned["payload_digest"]:
+            raise ValueError("Approval payload digest changed")
+        if not wf.is_active or not wf.is_valid:
+            raise ValueError("Workflow inactive")
+        resolved = resolve_data(approved_node.get("data") or {},checkpoint,wf.edges or [],run.step_results or {})
+        if resolved != pinned["resolved_data"] or preview_effect(db,business_id,approved_node.get("type"),resolved) != pinned["effect_preview"]:
+            raise ValueError("Approval inputs changed; create a fresh run")
         now = datetime.utcnow()
         claimed = db.query(ApprovalRequest).filter(
             ApprovalRequest.id == request_id,
@@ -517,11 +570,12 @@ class WorkflowEngine:
             WorkflowRun.id == run_id,
             WorkflowRun.business_id == business_id,
             WorkflowRun.status == "awaiting_approval",
-        ).update({"status": "running"}, synchronize_session=False)
+        ).update({"status": "running","verification_details":{**(run.verification_details or {}),"execution_token":str(uuid4())}}, synchronize_session=False)
         if run_claimed != 1:
             db.rollback()
             raise ValueError("Workflow run was already resumed")
-        db.commit()  # Durable claim: a crash cannot cause automatic duplicate execution.
+        # Keep approval claim, effect intent and checkpoint in one transaction.
+        db.flush()
         db.refresh(run)
 
         step_results = dict(run.step_results or {})
@@ -537,14 +591,16 @@ class WorkflowEngine:
             }
         else:
             try:
-                result = self._dispatch_node_tool(
-                    db, business_id, approved_node.get("type"),
-                    approved_node.get("data") or {},
-                )
-                if isinstance(result, dict) and result.get("success") is False:
-                    raise ValueError("Approved workflow tool reported failure")
-                self._record_draft_intent(db, run, checkpoint, approved_node.get("type"),
-                                          approved_node.get("data") or {}, result)
+                with db.begin_nested():
+                    result = (condition_result(resolved) if approved_node.get("type")=="condition" else
+                              self._dispatch_node_tool(db,business_id,approved_node.get("type"),resolved))
+                    if isinstance(result,dict) and result.get("success") is False:
+                        raise ValueError("Approved workflow tool reported failure")
+                    if pinned["effect_preview"] is not None and result != pinned["effect_preview"]:
+                        raise ValueError("Approved effect differs from preview")
+                    self._record_draft_intent(db,run,checkpoint,approved_node.get("type"),resolved,result)
+                    canonical_digest(result)
+                    db.flush()
             except Exception as exc:
                 logger.warning("Approved workflow action %s failed: %s", checkpoint, exc)
                 step_results[checkpoint] = {
@@ -565,9 +621,46 @@ class WorkflowEngine:
                 "result": result,
                 "timestamp": datetime.utcnow().isoformat(),
             }
-        return self._execute_steps(
-            db, run, wf, ordered_nodes, checkpoint_index + 1, step_results
-        )
+        run.step_results = dict(step_results)
+        db.commit()
+        return self._execute_steps(db,run,wf,ordered_nodes,checkpoint_index+1,step_results)
+
+    def cancel_run(self,db,tenant,run_id):
+        run=db.query(WorkflowRun).filter_by(business_id=tenant,id=run_id).with_for_update().first()
+        if not run:
+            raise ValueError("Run unavailable")
+        if run.status in ("completed","cancelled"):
+            return run
+        run.status="cancelled"
+        run.completed_at=datetime.utcnow()
+        run.verified_success=False
+        db.query(ApprovalRequest).filter_by(business_id=tenant,workflow_run_id=run_id,status="pending").update(
+            {"status":"cancelled","reviewed_at":datetime.utcnow()},synchronize_session=False)
+        db.commit()
+        return run
+
+    def recover_run(self,db,tenant,run_id):
+        run=db.query(WorkflowRun).filter_by(business_id=tenant,id=run_id).with_for_update().first()
+        details=run.verification_details or {} if run else {}
+        if not run or run.status not in ("paused","failed") or details.get("checkpoint_protocol")!=1 or details.get("dry_run"):
+            raise ValueError("Run is not recoverable")
+        if details.get("recovery_count",0)>=2:
+            raise ValueError("Recovery limit reached")
+        wf=db.query(WorkflowDefinition).filter_by(business_id=tenant,id=run.workflow_id,is_active=True,is_valid=True).first()
+        if not wf or self._definition_digest(wf)!=details.get("definition_digest"):
+            raise ValueError("Workflow changed")
+        nodes=self._ordered_nodes({"nodes":wf.nodes,"edges":wf.edges})
+        results=dict(run.step_results or {})
+        index=next((i for i,n in enumerate(nodes) if results.get(n["id"],{}).get("status") not in ("success","approved","skipped")),len(nodes))
+        if index<len(nodes):
+            previous=results.get(nodes[index]["id"],{})
+            if previous.get("status") in ("rejected","awaiting_founder_approval"):
+                raise ValueError("Rejected or unresolved approval cannot be recovered")
+            results.pop(nodes[index]["id"],None)
+        run.status="running";run.error_message=None;run.completed_at=None
+        run.verification_details={**details,"execution_token":str(uuid4()),"recovery_count":details.get("recovery_count",0)+1}
+        db.commit()
+        return self._execute_steps(db,run,wf,nodes,index,results)
 
 
 workflow_engine = WorkflowEngine()
