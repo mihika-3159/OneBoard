@@ -317,6 +317,10 @@ export const BoardroomTab: React.FC = () => {
                 </p>
 
                 <div className="text-xs text-slate-300">Meeting status: {selectedMeeting.stage}</div>
+                {selectedMeeting.deliberation_transcript?.filter(a=>a.forecast_proposal&&a.argument_id).map(a=><div key={a.argument_id} className="border border-slate-700 rounded p-2 text-xs">
+                  <p>{a.adviser} proposed an unverified forecast: {a.forecast_proposal!.metric}, {a.forecast_proposal!.point} ({a.forecast_proposal!.lower}–{a.forecast_proposal!.upper}), {(a.forecast_proposal!.confidence*100).toFixed(0)}% stated confidence, {a.forecast_proposal!.days} days.</p>
+                  <button disabled={selectedMeeting.founder_decision!=='approved'} onClick={async()=>{try{await api.recordModelForecast(selectedMeeting.id,a.argument_id!);window.alert('Adviser forecast recorded for future calibration')}catch(e){window.alert(e instanceof Error?e.message:'Forecast unavailable')}}}>Track this exact adviser forecast</button>
+                </div>)}
                 {selectedMeeting.structured_synthesis && <section className="border border-slate-700 rounded p-3 text-xs space-y-2">
                   <p>Disposition: {selectedMeeting.structured_synthesis.disposition} · Uncertainty: {selectedMeeting.structured_synthesis.uncertainty}</p>
                   {selectedMeeting.structured_synthesis.arguments.map(a=><p key={a.id}>{a.adviser} ({a.id}): {a.quote}</p>)}

@@ -134,6 +134,9 @@ jobs:
       - name: Benchmark the real model with synthetic quality and resource cases
         run: python -m scripts.benchmark_inference --model "$ONEBOARD_CI_OLLAMA_MODEL" --output model-benchmark.json
       - name: Paired real council versus single-agent recommendation evaluation
+        env:
+          OLLAMA_MAX_JSON_OUTPUT_TOKENS: "512"
+          OLLAMA_MAX_OUTPUT_TOKENS: "256"
         run: python -m scripts.benchmark_council --output council-benchmark.json
       - name: Start fresh authenticated local API and execute every live API test
         env:

@@ -90,3 +90,12 @@ def register_forecast(decision_id: str, req: ForecastRequest, current_user: User
 def adviser_calibration(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from apps.api.services.adviser_calibration import historical_calibration
     return {"scope":"latest 500 decisions and 2000 tasks", "rows":historical_calibration(db,current_user.business_id)}
+
+
+@router.post("/meetings/{meeting_id}/forecast/{argument_id}")
+def register_model_forecast(meeting_id: str, argument_id: str, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    from apps.api.services.adviser_calibration import register_model_forecast
+    try:
+        return register_model_forecast(db,current_user.business_id,meeting_id,argument_id)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc

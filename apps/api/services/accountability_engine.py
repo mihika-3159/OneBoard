@@ -52,7 +52,7 @@ class AccountabilityEngine:
             raise ValueError("Actual outcome must be a finite number")
         if outcome_notes is not None and len(outcome_notes) > 4000:
             raise ValueError("Outcome notes exceed 4000 characters")
-        decision = db.query(Decision).filter(Decision.id == decision_id).first()
+        decision = db.query(Decision).filter(Decision.id == decision_id).with_for_update().first()
         if not decision:
             raise ValueError("Decision not found")
 
@@ -60,6 +60,12 @@ class AccountabilityEngine:
                    if entry.get("metric") == metric_name]
         if len(matches) != 1:
             raise ValueError("Outcome requires exactly one matching recorded prediction")
+        if matches[0].get("source") in ("founder_recorded_prospective_forecast","model_adviser_prospective_forecast"):
+            due = datetime.fromisoformat(matches[0]["due_at"])
+            if datetime.utcnow() < due:
+                raise ValueError("Prospective forecast observation is not due yet")
+            if any(entry.get("metric")==metric_name for entry in decision.actual_outcomes or []):
+                raise ValueError("Prospective forecast already has a recorded observation")
         predicted_val = matches[0].get("predicted_value")
         if (type(predicted_val) not in (float, int)
                 or not isfinite(float(predicted_val))):

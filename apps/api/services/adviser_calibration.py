@@ -6,6 +6,8 @@ seed score or self-reported observation becomes an independent accuracy claim.
 from datetime import datetime, timedelta
 from math import isfinite, sqrt
 from apps.api.models.decision_evidence import Decision
+from apps.api.models.agent_council import CouncilMeeting
+from apps.api.services.council_evidence import references_current
 from apps.api.models.goals_tasks import Task
 from apps.api.services.council_engine import COUNCIL_ROLES
 
@@ -14,7 +16,7 @@ def finite(value):
     return type(value) in (int, float) and isfinite(value) and abs(value) <= 1e15
 
 
-def register_forecast(db, tenant, decision_id, adviser, metric, point, lower, upper, confidence, days):
+def register_forecast(db, tenant, decision_id, adviser, metric, point, lower, upper, confidence, days, provenance=None):
     decision = db.query(Decision).filter_by(business_id=tenant, id=decision_id).with_for_update().first()
     if not decision or adviser not in COUNCIL_ROLES or adviser not in (decision.advisers_consulted or []):
         raise ValueError("Decision or participating adviser unavailable")
@@ -31,10 +33,27 @@ def register_forecast(db, tenant, decision_id, adviser, metric, point, lower, up
     predictions.append({"metric": metric, "predicted_value": point, "lower": lower, "upper": upper,
         "confidence": confidence, "timeframe_days": days, "adviser": adviser,
         "recorded_at": now.isoformat(), "due_at": (now + timedelta(days=days)).isoformat(),
-        "source": "founder_recorded_prospective_forecast"})
+        "source": "model_adviser_prospective_forecast" if provenance else "founder_recorded_prospective_forecast",
+        **(provenance or {})})
     decision.expected_outcomes = predictions
     db.commit()
     return predictions[-1]
+
+
+def register_model_forecast(db, tenant, meeting_id, argument_id):
+    meeting = db.query(CouncilMeeting).filter_by(business_id=tenant,id=meeting_id,founder_decision="approved").first()
+    if not meeting or meeting.stage != "completed":
+        raise ValueError("Approved completed meeting required")
+    decision_id = (meeting.structured_synthesis or {}).get("decision_id")
+    argument = next((item for item in meeting.deliberation_transcript or [] if item.get("argument_id")==argument_id),None)
+    if not argument or not decision_id or argument.get("simulated") or argument.get("output_limit_reached"):
+        raise ValueError("Genuine adviser forecast unavailable")
+    forecast = argument.get("forecast_proposal")
+    if not forecast or not argument.get("citations") or not references_current(db,tenant,argument["citations"]):
+        raise ValueError("Forecast evidence unavailable or changed")
+    return register_forecast(db,tenant,decision_id,argument["adviser"],forecast["metric"],
+        forecast["point"],forecast["lower"],forecast["upper"],forecast["confidence"],forecast["days"],
+        provenance={"meeting_id":meeting.id,"argument_id":argument_id,"model":argument.get("provider_model")})
 
 
 def interval_wilson(success, n):
@@ -51,7 +70,8 @@ def summarize(decisions, tasks, now=None):
     groups = {}
     for decision in decisions:
         for forecast in decision.expected_outcomes or []:
-            if forecast.get("source") != "founder_recorded_prospective_forecast":
+            source = forecast.get("source")
+            if source not in ("founder_recorded_prospective_forecast","model_adviser_prospective_forecast"):
                 continue
             adviser = forecast.get("adviser")
             if adviser not in COUNCIL_ROLES or adviser not in (decision.advisers_consulted or []):
@@ -64,7 +84,7 @@ def summarize(decisions, tasks, now=None):
                     continue
             except (ValueError, TypeError, KeyError):
                 continue
-            row = groups.setdefault(adviser, {"forecasts": 0, "due": 0, "pairs": [], "task_done": 0, "tasks": 0})
+            row = groups.setdefault((adviser,source), {"forecasts": 0, "due": 0, "pairs": [], "task_done": 0, "tasks": 0})
             row["forecasts"] += 1
             if due > now:
                 continue
@@ -87,11 +107,11 @@ def summarize(decisions, tasks, now=None):
     for task in tasks:
         if task.decision_id not in decision_ids or task.responsible_agent not in COUNCIL_ROLES:
             continue
-        row = groups.setdefault(task.responsible_agent, {"forecasts":0,"due":0,"pairs":[],"task_done":0,"tasks":0})
+        row = groups.setdefault((task.responsible_agent,"recorded_task_completion"), {"forecasts":0,"due":0,"pairs":[],"task_done":0,"tasks":0})
         row["tasks"] += 1
         row["task_done"] += task.status == "done"
     output = []
-    for adviser, row in sorted(groups.items()):
+    for (adviser,source), row in sorted(groups.items()):
         pairs = row["pairs"]; n = len(pairs); hits = sum(p[1] for p in pairs)
         metrics = {}
         for metric in sorted({p[3] for p in pairs}):
@@ -102,7 +122,7 @@ def summarize(decisions, tasks, now=None):
             "mean_stated_confidence":sum(p[2] for p in pairs)/n if n else None,
             "brier_score":sum((p[2]-float(p[1]))**2 for p in pairs)/n if n else None,
             "errors_by_metric":metrics,"tasks":row["tasks"],"tasks_marked_done":row["task_done"],
-            "independently_verified":False,"source":"tenant_recorded_outcomes_not_independently_verified",
+            "independently_verified":False,"source":source,"outcome_source":"tenant_recorded_outcomes_not_independently_verified",
             "low_sample":n<20})
     return output
 

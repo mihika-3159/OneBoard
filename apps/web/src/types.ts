@@ -52,6 +52,9 @@ export interface CouncilRole {
 }
 
 export interface DeliberationTranscriptItem {
+  argument_id?: string;
+  forecast_proposal?: {metric:string;point:number;lower:number;upper:number;confidence:number;days:number} | null;
+  evidence_status?: string;
   adviser: string;
   role: string;
   department: string;

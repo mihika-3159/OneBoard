@@ -449,6 +449,8 @@ export const api = {
     request<any>(`/agents/runs/${runId}/cancel`, {method:'POST'}),
   reconcileCouncil: async (): Promise<any> => request<any>('/council/meetings/reconcile-interrupted',{method:'POST'}),
   getCalibration: async (): Promise<any> => request<any>('/accountability/calibration'),
+  recordModelForecast: async (meetingId:string,argumentId:string):Promise<any> =>
+    request<any>(`/accountability/meetings/${meetingId}/forecast/${argumentId}`,{method:'POST'}),
   recordForecast: async (decisionId: string, payload: any): Promise<any> =>
     request<any>(`/accountability/decisions/${decisionId}/forecast`,{method:'POST',body:JSON.stringify(payload)}),
   getAgents: async (): Promise<CustomAgent[]> => {

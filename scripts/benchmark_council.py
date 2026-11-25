@@ -55,13 +55,15 @@ async def run():
             start=time.monotonic()
             meeting=await council_engine.conduct_deliberation(db,business.id,"Synthetic evaluation","custom",topic,["Strategy Adviser","Operations Adviser"])
             structured=meeting.structured_synthesis or {}
-            council_ok=meeting.stage=="completed" and not any(a.get("simulated") or a.get("output_limit_reached") for a in meeting.deliberation_transcript)
+            council_live=not structured.get("simulated") and bool(meeting.deliberation_transcript) and not any(a.get("simulated") for a in meeting.deliberation_transcript)
+            council_ok=council_live and meeting.stage=="completed" and not structured.get("output_limit_reached") and not any(a.get("output_limit_reached") for a in meeting.deliberation_transcript)
             council_grade=grade(structured.get("citations"),structured.get("disposition"),inventory,conflict) if council_ok else {"evidence":0,"safe_disposition":0,"conflict_handling":0}
-            reports.append({"case":name,"single":{"real_complete":single_ok,"rubric":single_grade,"total":sum(single_grade.values()),"latency_ms":single_ms,"calls":1},
-                "council":{"real_complete":council_ok,"rubric":council_grade,"total":sum(council_grade.values()),"latency_ms":round((time.monotonic()-start)*1000,2),"calls":len(meeting.deliberation_transcript)+1}})
+            reports.append({"case":name,"single":{"real_inference":not single.get("simulated"),"real_complete":single_ok,"rubric":single_grade,"total":sum(single_grade.values()),"latency_ms":single_ms,"calls":1},
+                "council":{"real_inference":council_live,"real_complete":council_ok,"rubric":council_grade,"total":sum(council_grade.values()),"latency_ms":round((time.monotonic()-start)*1000,2),"calls":len(meeting.deliberation_transcript)+1}})
     engine.dispose()
     return {"synthetic_only":True,"cases":reports,"paired_delta":sum(x["council"]["total"]-x["single"]["total"] for x in reports),
-            "all_real_complete":all(x["single"]["real_complete"] and x["council"]["real_complete"] for x in reports)}
+            "all_real_complete":all(x["single"]["real_complete"] and x["council"]["real_complete"] for x in reports),
+            "all_real_inference":all(x["single"]["real_inference"] and x["council"]["real_inference"] for x in reports)}
 
 
 if __name__=="__main__":
@@ -71,4 +73,4 @@ if __name__=="__main__":
     result=asyncio.run(run())
     args.output.write_text(json.dumps(result,indent=2)+"\n")
     print(json.dumps(result))
-    raise SystemExit(0 if result["all_real_complete"] else 1)
+    raise SystemExit(0 if result["all_real_inference"] else 1)
