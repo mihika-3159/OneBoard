@@ -47,6 +47,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=1, max_length=1024)
+    mfa_code: Optional[str] = Field(default=None,max_length=64,repr=False)
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
@@ -226,6 +227,11 @@ def login(
         # response as an invalid password and preserve failed-login throttling.
         try:
             _require_active_membership(user, db)
+            from apps.api.core.database import scope_tenant_session
+            from apps.api.services.account_security import verify_factor
+            scope_tenant_session(db,user.business_id)
+            if not verify_factor(db,user,req.mfa_code):
+                valid_credentials=False
         except HTTPException:
             valid_credentials = False
 

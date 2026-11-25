@@ -9,7 +9,7 @@ down_revision="011_batch_c_data"
 branch_labels=None
 depends_on=None
 REGISTRY="_oneboard_012_created_schema"
-AUTH={"users","business_memberships","user_sessions"}
+AUTH={"users","business_memberships","user_sessions","account_security","security_events"}
 
 def scoped_tables():
     return sorted(t.name for t in Base.metadata.tables.values()

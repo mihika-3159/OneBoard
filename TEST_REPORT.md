@@ -1201,3 +1201,12 @@ Bounded generation output (production defaults 768 text / 1536 JSON
 tokens, disposable CPU CI 192 / 256), concise council requests and explicit
 output-limit metadata/labels address unbounded generation without
 weakening the mandatory non-simulated assertion. Final CI pending.
+
+
+## Batch F increment 1
+Starting Batch E exact head b11531738efd8f61e08661b61ab36278bc102dc3: all five workflows successful.
+Adds encrypted TOTP enrollment and replay prevention, hashed one-use
+recovery codes, password recovery primitive, staged encrypted email
+verification challenge (no delivery), API key scope/expiry checks,
+hash-chained security events, previous signing-key verification and
+migration 014. New endpoint wiring and tests follow; CI pending.

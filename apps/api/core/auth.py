@@ -178,7 +178,9 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             SECRET_KEY.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(sig, expected_sig):
-            raise ValueError("Invalid signature")
+            previous = settings.AUTH_PREVIOUS_SECRET_KEY
+            if len(previous) < 32 or previous == SECRET_KEY or previous == "oneboard-LOCAL-DEMO-ONLY-NOT-FOR-PRODUCTION" or not hmac.compare_digest(sig,hmac.new(previous.encode("utf-8"),payload_b64.encode("utf-8"),hashlib.sha256).hexdigest()):
+                raise ValueError("Invalid signature")
 
         padding = "=" * (4 - len(payload_b64) % 4)
         payload = json.loads(
@@ -251,7 +253,9 @@ def check_login_throttle(identifier: str, db: Optional[Session] = None) -> None:
     # five-guess login budget for a whole NAT wrongly locks out unrelated
     # school/office users. Keep both budgets independently bounded.
     max_attempts = (
-        settings.REGISTRATION_SOURCE_MAX_ATTEMPTS
+        settings.AUTH_GLOBAL_ATTEMPTS
+        if identifier == "global-auth-admission"
+        else settings.REGISTRATION_SOURCE_MAX_ATTEMPTS
         if identifier.startswith("registration-source:")
         else settings.LOGIN_SOURCE_MAX_ATTEMPTS
         if identifier.startswith("login-source:")
@@ -523,6 +527,11 @@ def get_current_user(
             ).first()
         if user:
             _require_active_membership(user, db)
+            if isinstance(db,Session):
+                from apps.api.services.account_security import check_api_key_permissions
+                scope_tenant_session(db,user.business_id)
+                check_api_key_permissions(db,user,request)
+                db.info['oneboard_api_key']=True
             if isinstance(db,Session) and settings.ONEBOARD_PRODUCTION_MODE:
                 db.info['oneboard_auth']=(user.id,None,hash_api_key(api_key))
             scope_tenant_session(db, user.business_id)

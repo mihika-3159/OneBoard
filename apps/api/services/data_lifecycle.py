@@ -9,7 +9,7 @@ from apps.api.models.memory import MemoryDocument,MemoryChunk
 from apps.api.models.operations import SemanticVector,DataRetentionPolicy,AlertSnapshot
 from apps.api.services.tenant_storage import _lock
 
-EXCLUDED={"login_throttle_states","scheduled_job_leases","user_sessions","scheduler_cursors"}
+EXCLUDED={"login_throttle_states","scheduled_job_leases","user_sessions","scheduler_cursors","account_security"}
 SECRET_COLUMNS={"password_hash","hashed_password","api_key","token","token_hash",
                 "encrypted_token","configuration","vector","embedding"}
 def _safe(value):

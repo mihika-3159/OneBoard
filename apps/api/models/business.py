@@ -78,3 +78,33 @@ class LoginThrottleState(Base):
     identifier_hash = Column(String(64), primary_key=True)
     attempt_count = Column(Integer, nullable=False, default=0)
     window_started_at = Column(Float, nullable=False)
+
+
+class AccountSecurity(Base):
+    __tablename__ = "account_security"
+    user_id = Column(String(36), primary_key=True)
+    business_id = Column(String(36), nullable=False, index=True)
+    mfa_ciphertext = Column(Text, nullable=True)
+    pending_mfa_ciphertext = Column(Text, nullable=True)
+    pending_mfa_expires = Column(DateTime, nullable=True)
+    last_totp_counter = Column(Integer, nullable=True)
+    recovery_hashes = Column(JSON, default=list, nullable=False)
+    email_verified_at = Column(DateTime, nullable=True)
+    email_challenge_hash = Column(String(64), nullable=True)
+    email_challenge_ciphertext = Column(Text, nullable=True)
+    email_challenge_expires = Column(DateTime, nullable=True)
+    api_key_expires_at = Column(DateTime, nullable=True)
+    api_key_scopes = Column(JSON, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    business_id = Column(String(36), nullable=False, index=True)
+    user_id = Column(String(36), nullable=False)
+    event = Column(String(64), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    previous_hash = Column(String(64), nullable=False)
+    event_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False)
