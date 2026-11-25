@@ -40,3 +40,38 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("partial", await anext(events))
         await events.aclose()
         self.assertTrue(stopped.is_set())
+
+
+    async def test_cancel_during_queue_submission_removes_late_insert(self):
+        import threading
+        from unittest.mock import patch
+        from apps.api.services import inference_queue
+
+        entered = asyncio.Event()
+        release = threading.Event()
+        loop = asyncio.get_running_loop()
+        records = set()
+
+        def submit(engine, tenant, path, payload, timeout, request_id):
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(5):
+                raise RuntimeError("Submission did not resume")
+            records.add((tenant, request_id))
+            return True
+
+        def remove(engine, tenant, request_id):
+            records.discard((tenant, request_id))
+
+        with patch.object(inference_queue, "submit", submit), patch.object(inference_queue, "remove", remove):
+            task = asyncio.create_task(inference_queue.dispatch(None, "tenant", "/api/chat", {}, 10))
+            try:
+                await asyncio.wait_for(entered.wait(), 2)
+                task.cancel()
+                await asyncio.sleep(0)
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, 2)
+                self.assertEqual(records, set())
+            finally:
+                release.set()
+                await asyncio.gather(task, return_exceptions=True)

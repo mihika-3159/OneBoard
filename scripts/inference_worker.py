@@ -26,7 +26,12 @@ async def execute(engine, gateway, job):
         token = on_text.set(emit if job["payload"].get("stream") else None)
         try:
             with inference_tenant(job["tenant"]):
-                return await gateway._call_providers(job["path"], job["payload"], float(job["remaining"]))
+                response = await gateway._call_providers(job["path"], job["payload"], float(job["remaining"]))
+                # The last fragments may arrive within the throttled publish
+                # interval. Persist them before exposing the terminal reply.
+                if parts and not await asyncio.to_thread(publish, engine, job, "".join(parts)):
+                    raise asyncio.CancelledError()
+                return response
         finally:
             on_text.reset(token)
 

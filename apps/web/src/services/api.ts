@@ -386,7 +386,7 @@ export const api = {
   getSchedules: async (): Promise<any[]> => request<any[]>('/workflows/schedules'),
   saveSchedule: async (id:string, cron:string, timezone:string, enabled:boolean):Promise<any> =>
     request<any>(`/workflows/${id}/schedule`,{method:'PUT',body:JSON.stringify({cron,timezone,enabled})}),
-  getRetention: async ():Promise<any> => request<any>('/data/retention'),
+  getRetention: async ():Promise<any> => request<any>('/data/retention',{cache:'no-store'}),
   saveRetention: async (policy:Record<string,number|null>):Promise<any> =>
     request<any>('/data/retention',{method:'PUT',body:JSON.stringify(policy)}),
   exportSnapshot: async ():Promise<any> => request<any>('/data/export-snapshot'),

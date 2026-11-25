@@ -122,8 +122,13 @@ async def dispatch(engine, tenant, path, payload, timeout):
     offset = 0
     request_id = str(uuid4())
     stop = time.monotonic() + timeout
+    # A cancelled await does not stop the database thread. Wait for the
+    # insert to settle before cleanup so a late insert cannot orphan work.
+    submission = asyncio.create_task(
+        asyncio.to_thread(submit, engine, tenant, path, payload, timeout, request_id)
+    )
     try:
-        accepted = await asyncio.to_thread(submit, engine, tenant, path, payload, timeout, request_id)
+        accepted = await asyncio.shield(submission)
         if not accepted:
             return httpx.Response(429)
         while time.monotonic() < stop:
@@ -138,4 +143,7 @@ async def dispatch(engine, tenant, path, payload, timeout):
             await asyncio.sleep(0.1)
         raise asyncio.TimeoutError()
     finally:
-        await asyncio.to_thread(remove, engine, tenant, request_id)
+        try:
+            await asyncio.shield(submission)
+        finally:
+            await asyncio.to_thread(remove, engine, tenant, request_id)

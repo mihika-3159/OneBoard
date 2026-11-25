@@ -67,13 +67,17 @@ async def test_client_and_independent_worker_stream_and_cancel():
                     await on_text.get()("streamed")
                     if cancel:
                         await asyncio.Future()
-                    return httpx.Response(200, json={"message": {"content": "streamed"}, "done": True})
+                    await on_text.get()(" tail")
+                    return httpx.Response(200, json={"message": {"content": "streamed tail"}, "done": True})
                 finally:
                     stopped.set()
 
+        fragments = []
+
         async def emit(fragment):
-            assert fragment == "streamed"
-            partial.set()
+            fragments.append(fragment)
+            if "".join(fragments).startswith("streamed"):
+                partial.set()
 
         token = on_text.set(emit)
         try:
@@ -89,6 +93,7 @@ async def test_client_and_independent_worker_stream_and_cancel():
                     await client
             else:
                 assert (await client).json()["done"]
+                assert "".join(fragments) == "streamed tail"
             await asyncio.wait_for(worker, 4)
             assert stopped.is_set()
         finally:

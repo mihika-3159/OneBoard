@@ -18,10 +18,13 @@ export const SettingsTab: React.FC = () => {
   const [dataMessage,setDataMessage]=useState<string|null>(null);
   const [dataError,setDataError]=useState<string|null>(null);
   useEffect(()=>{
+    let active=true;
     api.getRetention().then(row=>{
+      if(!active)return;
       setRetention(Object.fromEntries(fields.map(k=>[k,row[k] == null?'':String(row[k])])));
       setDataLoaded(true);
-    }).catch(e=>setDataError(e instanceof Error?e.message:'Owner retention unavailable'));
+    }).catch(e=>{if(active)setDataError(e instanceof Error?e.message:'Owner retention unavailable');});
+    return ()=>{active=false;};
   },[]);
   const saveRetention=async()=>{
     setDataBusy(true);setDataError(null);setDataMessage(null);
