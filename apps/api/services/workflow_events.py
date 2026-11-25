@@ -156,7 +156,8 @@ def drain(db,tenant,limit=20,now=None):
             if not row or row.status not in ("queued","running") or row.next_attempt_at>now or (row.status=="running" and row.lease_until>now):
                 db.rollback();continue
             wf=db.query(WorkflowDefinition).filter_by(business_id=tenant,id=row.workflow_id,is_active=True,is_valid=True).first()
-            if row.attempts>=MAX_ATTEMPTS or not wf or fingerprint(db,wf)!=row.definition_digest:
+            operator_retry=row.error=="Operator retry authorized" and row.attempts==MAX_ATTEMPTS
+            if (row.attempts>=MAX_ATTEMPTS and not operator_retry) or not wf or fingerprint(db,wf)!=row.definition_digest:
                 row.status="dead_letter";row.error="Retry budget exhausted or workflow changed";db.commit();continue
             token=str(uuid4());row.status="running";row.owner_token=token;row.lease_until=now+300;row.attempts+=1
             wid,kind,payload,digest=row.workflow_id,row.kind,row.payload,row.definition_digest
@@ -175,7 +176,7 @@ def drain(db,tenant,limit=20,now=None):
                 if existing:
                     values={"status":"dead_letter","run_id":existing.id,"error":"Run requires operator review"}
                 elif not current or current.attempts>=MAX_ATTEMPTS:
-                    values={"status":"dead_letter","error":"Dispatch retry budget exhausted"}
+                    values={"status":"dead_letter","error":"Operator retry exhausted" if operator_retry else "Dispatch retry budget exhausted"}
                 else:
                     values={"status":"queued","next_attempt_at":now+60*current.attempts,"error":"Dispatch failed; retry same execution identity"}
             values.update(owner_token=None,lease_until=0)
@@ -195,9 +196,10 @@ def retry_dead_letter(db,tenant,ident):
         raise ValueError("Definition changed; this event cannot be replayed")
     if row.error=="Operator retry exhausted":
         raise ValueError("Operator retry limit reached")
-    # No reset of the durable attempt counter. Permit exactly one extra claim.
-    if row.attempts>=MAX_ATTEMPTS:
-        raise ValueError("Retry budget exhausted; inspect event and create a new explicit business event if appropriate")
+    # No reset of the durable attempt counter. Permit one operator-authorized extra claim.
+    if row.attempts>MAX_ATTEMPTS:
+        raise ValueError("Retry budget exhausted; inspect event")
     row.status="queued";row.next_attempt_at=0;row.owner_token=None;row.lease_until=0
+    if row.attempts==MAX_ATTEMPTS:row.error="Operator retry authorized"
     db.commit()
     return serialize(row)

@@ -1569,3 +1569,39 @@ def test_32_agent_plan_and_claim_are_fenced_across_postgres_workers():
             assert agent_runtime.claim(db,tenant_id,ids[0])[1] is None
     finally:
         engine.dispose()
+
+
+def test_33_webhook_dedup_and_dispatch_serialize_across_postgres_workers():
+    from uuid import uuid4
+    from sqlalchemy.orm import Session
+    from apps.api.models.business import Business
+    from apps.api.models.workflow import WorkflowDefinition,WorkflowRun
+    from apps.api.models.operations import WorkflowEvent
+    from apps.api.services import workflow_events as events,workflow_versions as versions
+    engine=_engine()
+    try:
+        with Session(engine) as db:
+            tenant=Business(name="Batch I event concurrency "+str(uuid4()))
+            db.add(tenant);db.commit()
+            wf=WorkflowDefinition(business_id=tenant.id,name="Webhook",trigger_type="webhook",
+                                  nodes=[{"id":"start","type":"trigger","data":{}}],edges=[],is_active=True,is_valid=True)
+            db.add(wf);db.flush();versions.ensure_version(db,wf);events.activate(db,wf);db.commit()
+            tenant_id,wid=tenant.id,wf.id
+        gate=Barrier(2)
+        def enqueue(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return events.webhook(db,tenant_id,wid,"fixture-event-1",{"value":1})["id"]
+        with ThreadPoolExecutor(max_workers=2) as pool:ids=list(pool.map(enqueue,range(2)))
+        assert ids[0]==ids[1]
+        gate=Barrier(2)
+        def drain(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return events.drain(db,tenant_id)
+        with ThreadPoolExecutor(max_workers=2) as pool:list(pool.map(drain,range(2)))
+        with Session(engine) as db:
+            event=db.query(WorkflowEvent).filter_by(business_id=tenant_id).one()
+            assert event.status=="dispatched"
+            assert db.query(WorkflowRun).filter_by(business_id=tenant_id).count()==1
+    finally:engine.dispose()

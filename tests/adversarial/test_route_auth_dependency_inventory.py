@@ -56,6 +56,9 @@ FOUNDER_MUTATIONS = {
     "/api/workflows/{workflow_id}/webhook",
     "/api/workflows/runs/{run_id}/cancel",
     "/api/workflows/runs/{run_id}/recover",
+    "/api/workflows/events/{event_id}/retry",
+    "/api/workflows/{workflow_id}/definition",
+    "/api/workflows/{workflow_id}/schedule",
     "/api/business/financial/reconcile",
     "/api/workflows/approvals/{request_id}/action",
     "/api/council/deliberate",
@@ -106,7 +109,7 @@ def test_all_privileged_mutations_have_central_founder_role_guard():
     for route in _routes():
         path = getattr(route, "path", "")
         methods = getattr(route, "methods", set()) or set()
-        if "POST" not in methods or path not in FOUNDER_MUTATIONS:
+        if not ({"POST","PUT"} & methods) or path not in FOUNDER_MUTATIONS:
             continue
         assert getattr(route, "dependant", None) is not None, (
             f"API mutation {path} has no inspectable authentication dependencies"

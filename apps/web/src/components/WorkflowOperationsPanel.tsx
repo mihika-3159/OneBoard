@@ -34,6 +34,7 @@ export function WorkflowOperationsPanel({selected,onUpdated}:{selected:WorkflowD
  {['paused','failed'].includes(run.status)&&run.verification_details?.checkpoint_protocol===1&&<button className="ml-3" disabled={busy} onClick={()=>void act(()=>api.recoverWorkflowRun(run.id))}>Recover from checkpoint</button>}
  <details><summary>Checkpoint results</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(run.step_results,null,2)}</pre></details>
  </article>)}</details>
- <details><summary>Event queue and dead letters ({events.length})</summary>{events.slice(0,100).map(e=><p key={e.id} className="border-b border-slate-700 py-2">{e.kind} · {e.status} · {e.attempts} attempts {e.error?': '+e.error:''}</p>)}</details>
+ <details><summary>Event queue and dead letters ({events.length})</summary>{events.slice(0,100).map(e=><p key={e.id} className="border-b border-slate-700 py-2">{e.kind} · {e.status} · {e.attempts} attempts {e.error?': '+e.error:''}
+ {e.status==='dead_letter'&&!e.run_id&&e.attempts<=3&&<button className="ml-3" disabled={busy} onClick={()=>void act(()=>api.retryWorkflowEvent(e.id))}>Retry event</button>}</p>)}</details>
  </section>
 }

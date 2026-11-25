@@ -138,6 +138,7 @@ def test_crash_persists_workflow_checkpoint_before_tool_dispatch(db_factory):
             assert duplicate.id == run.id
             no_replay.assert_not_called()
         run.started_at = datetime.utcnow() - timedelta(hours=1)
+        run.verification_details={**run.verification_details,"checkpoint_at":run.started_at.isoformat()}
         db.commit()
     with db_factory() as db:
         assert workflow_engine.reconcile_interrupted_runs(db, tenant, 900) == 1

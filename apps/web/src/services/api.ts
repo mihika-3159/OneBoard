@@ -413,6 +413,7 @@ export const api = {
   rollbackWorkflow: async (id:string,expected_version:number,target_version:number):Promise<WorkflowDef> =>
     request<WorkflowDef>(`/workflows/${id}/rollback`,{method:'POST',body:JSON.stringify({expected_version,target_version})}),
   getWorkflowEvents: async ():Promise<any[]>=>request<any[]>('/workflows/events'),
+  retryWorkflowEvent: async (id:string):Promise<any>=>request<any>(`/workflows/events/${id}/retry`,{method:'POST'}),
   cancelWorkflowRun: async (id:string):Promise<any>=>request<any>(`/workflows/runs/${id}/cancel`,{method:'POST'}),
   recoverWorkflowRun: async (id:string):Promise<any>=>request<any>(`/workflows/runs/${id}/recover`,{method:'POST'}),
   reconcileWorkflowRuns: async ():Promise<any>=>request<any>('/workflows/runs/reconcile-interrupted',{method:'POST'}),

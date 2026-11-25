@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, or_
 import re
 from datetime import datetime, timedelta
 import json
@@ -26,7 +26,7 @@ class ToolRegistry:
     def read_overdue_invoices(db: Session, business_id: str, **kwargs) -> Dict[str, Any]:
         invoices = db.query(Invoice).filter(
             Invoice.business_id == business_id,
-            Invoice.status == "overdue"
+            or_(Invoice.status == "overdue", (Invoice.status == "sent") & (Invoice.due_date < datetime.utcnow()))
         ).all()
         return {
             "count": len(invoices),
@@ -40,7 +40,7 @@ class ToolRegistry:
     def calculate_invoice_totals(db: Session, business_id: str, **kwargs) -> Dict[str, Any]:
         invoices = db.query(Invoice).filter(
             Invoice.business_id == business_id,
-            Invoice.status == "overdue"
+            or_(Invoice.status == "overdue", (Invoice.status == "sent") & (Invoice.due_date < datetime.utcnow()))
         ).all()
         # A financial workflow must not bypass the dashboard's data
         # quality checks: a negative, NaN, or missing amount must fail the
@@ -60,7 +60,7 @@ class ToolRegistry:
     def draft_invoice_reminder_emails(db: Session, business_id: str, **kwargs) -> Dict[str, Any]:
         invoices = db.query(Invoice).filter(
             Invoice.business_id == business_id,
-            Invoice.status == "overdue"
+            or_(Invoice.status == "overdue", (Invoice.status == "sent") & (Invoice.due_date < datetime.utcnow()))
         ).all()
         drafts = []
         for inv in invoices:
@@ -308,6 +308,10 @@ class WorkflowEngine:
 
             try:
                 resolved = resolve_data(node_data, node_id, wf.edges or [], step_results)
+                # Force a real outer write transaction before a SQLite savepoint.
+                if db.get_bind().dialect.name=="sqlite":
+                    db.execute(text("UPDATE workflow_runs SET status=status WHERE id=:id AND business_id=:tenant"),
+                               {"id":run.id,"tenant":run.business_id})
                 with db.begin_nested():
                     result = (condition_result(resolved) if node_type == "condition" else
                               self._dispatch_node_tool(db, run.business_id, node_type, resolved))
@@ -658,6 +662,7 @@ class WorkflowEngine:
                 "timestamp": datetime.utcnow().isoformat(),
             }
         run.step_results = dict(step_results)
+        run.verification_details={**(run.verification_details or {}),"checkpoint_at":datetime.utcnow().isoformat()}
         db.commit()
         return self._execute_steps(db,run,wf,ordered_nodes,checkpoint_index+1,step_results)
 
@@ -669,6 +674,8 @@ class WorkflowEngine:
             return run
         run.status="cancelled"
         run.completed_at=datetime.utcnow()
+        db.query(SideEffectOutbox).filter_by(business_id=tenant,run_id=run.id,state="pending").update(
+            {"state":"cancelled"},synchronize_session=False)
         run.verified_success=False
         db.query(ApprovalRequest).filter_by(business_id=tenant,workflow_run_id=run_id,status="pending").update(
             {"status":"cancelled","reviewed_at":datetime.utcnow()},synchronize_session=False)
