@@ -51,6 +51,7 @@ class Settings(BaseSettings):
 
     # Centralized Ollama Model Gateway
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    OLLAMA_CONTEXT_WINDOW: int = 8192
     OLLAMA_MAX_OUTPUT_TOKENS: int = 768
     OLLAMA_MAX_JSON_OUTPUT_TOKENS: int = 1536
     # No remote inference destination is authorized by default.
@@ -101,6 +102,10 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("ONEBOARD_DEMO_MODE must be disabled")
     if config.DEBUG:
         errors.append("DEBUG must be disabled")
+    if not 4096 <= config.OLLAMA_CONTEXT_WINDOW <= 32768:
+        errors.append("OLLAMA_CONTEXT_WINDOW must be between 4096 and 32768")
+    if config.OLLAMA_CONTEXT_WINDOW <= max(config.OLLAMA_MAX_OUTPUT_TOKENS, config.OLLAMA_MAX_JSON_OUTPUT_TOKENS) + 64:
+        errors.append("OLLAMA_CONTEXT_WINDOW must leave room for prompt input")
     if not 64 <= config.OLLAMA_MAX_OUTPUT_TOKENS <= 4096 or not 64 <= config.OLLAMA_MAX_JSON_OUTPUT_TOKENS <= 4096:
         errors.append("Ollama generation token limits must be between 64 and 4096")
     if not 1 <= config.SCHEDULER_INTERVAL_SECONDS <= 3600:

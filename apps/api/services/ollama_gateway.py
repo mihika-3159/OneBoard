@@ -7,6 +7,8 @@ from typing import List, Dict, Any, Optional, AsyncGenerator
 from apps.api.core.config import settings
 from apps.api.services.cluster_capacity import inference_slot
 
+from apps.api.services.inference_controls import CircuitOpen, ProviderCircuit, fit_prompt, retry_provider
+
 logger = logging.getLogger(__name__)
 
 class _CapacityExceeded(Exception):
@@ -22,7 +24,29 @@ class OllamaGateway:
         # explicitly rather than consuming unbounded worker resources.
         self._inference_slots = asyncio.Semaphore(2)
         self._queue_timeout_seconds = 3.0
+        self._circuit = ProviderCircuit()
         
+    async def _post_inference(self, path, payload, timeout):
+        with self._circuit.attempt() as record_failure:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async def send():
+                    return await client.post(f"{self.base_url}{path}", json=payload)
+
+                try:
+                    response = await asyncio.wait_for(
+                        retry_provider(
+                            send,
+                            lambda reply: reply.status_code in (502, 503, 504),
+                            (httpx.ConnectError, httpx.ConnectTimeout),
+                        ),
+                        timeout=timeout,
+                    )
+                except (httpx.TransportError, asyncio.TimeoutError):
+                    record_failure(True)
+                    raise
+                record_failure(response.status_code >= 500)
+                return response
+
     async def check_health(self) -> Dict[str, Any]:
         """Check if local Ollama daemon is reachable and list downloaded models."""
         start = time.time()
@@ -100,15 +124,22 @@ class OllamaGateway:
             payload["format"] = "json"
 
         start_time = time.monotonic()
-        reason = "provider_unavailable"
+        context_window = settings.OLLAMA_CONTEXT_WINDOW
+        fitted = fit_prompt(payload["messages"], context_window - payload["options"]["num_predict"] - 64)
+        payload["options"]["num_ctx"] = context_window
+        reason = "context_budget_exceeded"
         acquired = False
         try:
+            if fitted is not None:
+                payload["messages"] = fitted
+                reason = "provider_unavailable"
             try:
-                await asyncio.wait_for(
-                    self._inference_slots.acquire(),
-                    timeout=self._queue_timeout_seconds,
-                )
-                acquired = True
+                if fitted is not None:
+                    await asyncio.wait_for(
+                        self._inference_slots.acquire(),
+                        timeout=self._queue_timeout_seconds,
+                    )
+                    acquired = True
             except asyncio.TimeoutError:
                 reason = "capacity_exceeded"
             if acquired:
@@ -116,10 +147,7 @@ class OllamaGateway:
                     with inference_slot() as admitted:
                         if not admitted:
                             raise _CapacityExceeded()
-                        async with httpx.AsyncClient(timeout=45.0) as client:
-                            response = await client.post(
-                                f"{self.base_url}/api/chat", json=payload
-                            )
+                        response = await self._post_inference("/api/chat", payload, 45.0)
                     if response.status_code == 200:
                         try:
                             data = response.json()
@@ -153,7 +181,9 @@ class OllamaGateway:
                         reason = "provider_http_error"
                 except _CapacityExceeded:
                     reason = "capacity_exceeded"
-                except httpx.TimeoutException:
+                except CircuitOpen:
+                    reason = "provider_circuit_open"
+                except (httpx.TimeoutException, asyncio.TimeoutError):
                     reason = "timeout"
                 except Exception:
                     # asyncio.CancelledError inherits BaseException and must
@@ -186,18 +216,16 @@ class OllamaGateway:
             acquired = True
             with inference_slot() as admitted:
                 if admitted:
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        res = await client.post(
-                            f"{self.base_url}/api/embeddings",
-                            json={"model": target_model, "prompt": text}
-                        )
-                        if res.status_code == 200:
-                            v = res.json().get("embedding")
-                            if (isinstance(v, list) and 1 <= len(v) <= 4096
-                                and all(isinstance(x, (int, float)) and not isinstance(x, bool)
-                                        and math.isfinite(x) and abs(x) <= 1e6 for x in v)
-                                and any(v)):
-                                return [float(x) for x in v]
+                    res = await self._post_inference(
+                        "/api/embeddings", {"model": target_model, "prompt": text}, 10.0
+                    )
+                    if res.status_code == 200:
+                        v = res.json().get("embedding")
+                        if (isinstance(v, list) and 1 <= len(v) <= 4096
+                            and all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                                    and math.isfinite(x) and abs(x) <= 1e6 for x in v)
+                            and any(v)):
+                            return [float(x) for x in v]
         except Exception:
             pass
         finally:
