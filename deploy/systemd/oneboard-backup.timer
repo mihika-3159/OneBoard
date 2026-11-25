@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly integrity check and due encrypted backup
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=300
+Unit=oneboard-backup.service
+
+[Install]
+WantedBy=timers.target
