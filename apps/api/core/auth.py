@@ -439,7 +439,7 @@ def get_current_user(
     """
     # Deletion takes the exclusive lifecycle lock from its first scoped
     # transaction; concurrent deleters must not upgrade two shared locks.
-    if isinstance(db, Session) and request.url.path == "/api/data/delete-workspace":
+    if isinstance(db, Session) and getattr(getattr(request,"url",None),"path",None) == "/api/data/delete-workspace":
         db.info["oneboard_exclusive_lifecycle"] = True
     token: Optional[str] = None
     if bearer and bearer.credentials:
@@ -492,6 +492,8 @@ def get_current_user(
         if user.business_id != payload.get("biz"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session tenant mismatch.")
         _require_active_membership(user, db)
+        if isinstance(db,Session) and settings.ONEBOARD_PRODUCTION_MODE:
+            db.info['oneboard_auth']=(user.id,jti,None)
         scope_tenant_session(db, user.business_id)
         return user
 
@@ -521,6 +523,8 @@ def get_current_user(
             ).first()
         if user:
             _require_active_membership(user, db)
+            if isinstance(db,Session) and settings.ONEBOARD_PRODUCTION_MODE:
+                db.info['oneboard_auth']=(user.id,None,hash_api_key(api_key))
             scope_tenant_session(db, user.business_id)
             return user
         raise invalid_key
@@ -625,4 +629,6 @@ def require_founder_role(
             ).first()
             if membership is None or membership.role not in ("founder", "admin", "owner"):
                 raise forbidden
+    if isinstance(db,Session) and settings.ONEBOARD_PRODUCTION_MODE:
+        db.info['oneboard_founder']=True
     return current_user

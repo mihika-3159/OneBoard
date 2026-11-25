@@ -20,6 +20,22 @@ def export_manifest(current_user:User=Depends(require_founder_role),db:Session=D
     _owner(db,current_user)
     return {"tables":lifecycle.export_tables(),"secrets_excluded":True,"snapshot_consistent":False}
 
+@router.get("/export-snapshot")
+def export_snapshot(current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    from fastapi.responses import Response
+    from apps.api.core.config import settings
+    from apps.api.services.tenant_resource_budget import consume_tenant_budget
+    _owner(db,current_user)
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"data_export")
+    try:
+        return Response(content=lifecycle.export_snapshot(db,current_user),media_type="application/json",
+                        headers={"Content-Disposition":"attachment; filename=oneboard-workspace.json","Cache-Control":"no-store"})
+    except ValueError as exc:
+        raise HTTPException(status_code=413,detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403,detail=str(exc)) from exc
+
 @router.get("/export/{table}")
 def export_page(table:str,offset:int=Query(0,ge=0,le=1000000),limit:int=Query(50,ge=1,le=100),
                 current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
@@ -31,17 +47,21 @@ def export_page(table:str,offset:int=Query(0,ge=0,le=1000000),limit:int=Query(50
 
 class RetentionRequest(BaseModel):
     document_days:int|None=Field(default=None,ge=30,le=3650,strict=True)
+    resolved_alert_days:int|None=Field(default=None,ge=30,le=3650,strict=True)
+    expired_session_days:int|None=Field(default=None,ge=30,le=3650,strict=True)
 
 @router.get("/retention")
 def get_retention(current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
     _owner(db,current_user)
     row=db.get(DataRetentionPolicy,current_user.business_id)
-    return {"document_days":row.document_days if row else None}
+    return {"document_days":row.document_days if row else None,
+            "resolved_alert_days":row.resolved_alert_days if row else None,
+            "expired_session_days":row.expired_session_days if row else None}
 
 @router.put("/retention")
 def update_retention(req:RetentionRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
     _owner(db,current_user)
-    return lifecycle.set_retention(db,current_user.business_id,req.document_days)
+    return lifecycle.set_retention(db,current_user.business_id,req.document_days,req.resolved_alert_days,req.expired_session_days)
 
 @router.delete("/documents/{document_id}")
 def delete_document(document_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):

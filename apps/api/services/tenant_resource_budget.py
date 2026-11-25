@@ -26,6 +26,7 @@ POLICIES = {
     "document_upload": (10, 300),
     "council_deliberate": (6, 60),
     "workspace_delete": (3, 300),
+    "data_export": (3, 300),
 }
 
 

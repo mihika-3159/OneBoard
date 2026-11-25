@@ -5,7 +5,7 @@ across the tenant corpus. Exact cosine reranks candidates, not every row.
 import math
 import random
 from functools import lru_cache
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, case
 from apps.api.models.memory import MemoryChunk, MemoryDocument
 from apps.api.models.operations import SemanticVector
 from apps.api.services.ollama_gateway import ollama_gateway, OllamaGateway
@@ -80,6 +80,11 @@ async def retrieve(db, tenant, query, top_k):
         return []
     bands = signatures(vector)
     columns = [SemanticVector.band0, SemanticVector.band1, SemanticVector.band2, SemanticVector.band3]
+    # Multi-probe each indexed band at Hamming radius one; prefer exact
+    # band collisions and then near collisions before the cosine rerank.
+    probes=[[band]+[band^(1<<bit) for bit in range(8)] for band in bands]
+    priority=sum(case((col==band,3),(col.in_(near),1),else_=0)
+                 for col,band,near in zip(columns,bands,probes))
     rows = db.query(SemanticVector, MemoryChunk, MemoryDocument.title).join(
         MemoryChunk, and_(MemoryChunk.id == SemanticVector.chunk_id,
                           MemoryChunk.business_id == SemanticVector.business_id)
@@ -87,8 +92,8 @@ async def retrieve(db, tenant, query, top_k):
                                MemoryDocument.business_id == MemoryChunk.business_id)
     ).filter(SemanticVector.business_id == tenant, SemanticVector.model == model,
              SemanticVector.dimension == len(vector),
-             or_(*(col == band for col,band in zip(columns,bands)))
-    ).order_by(SemanticVector.chunk_id).limit(201).all()
+             or_(*(col.in_(near) for col,near in zip(columns,probes)))
+    ).order_by(priority.desc(),SemanticVector.chunk_id).limit(201).all()
     scored = [{"chunk_id": c.id, "document_id": c.document_id, "source_title": title,
                "content": c.content, "score": round(cosine(vector, v.vector),4),
                "score_kind": "genuine_model_cosine_not_verified_relevance",

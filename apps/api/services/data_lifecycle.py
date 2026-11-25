@@ -6,10 +6,10 @@ from apps.api.core.database import Base,tenant_lifecycle_lock
 from apps.api.models.business import Business,User,BusinessMembership,UserSession
 from apps.api.models.integrations import IntegrationAccount
 from apps.api.models.memory import MemoryDocument,MemoryChunk
-from apps.api.models.operations import SemanticVector,DataRetentionPolicy
+from apps.api.models.operations import SemanticVector,DataRetentionPolicy,AlertSnapshot
 from apps.api.services.tenant_storage import _lock
 
-EXCLUDED={"login_throttle_states","scheduled_job_leases","user_sessions"}
+EXCLUDED={"login_throttle_states","scheduled_job_leases","user_sessions","scheduler_cursors"}
 SECRET_COLUMNS={"password_hash","hashed_password","api_key","token","token_hash",
                 "encrypted_token","configuration","vector","embedding"}
 def _safe(value):
@@ -50,6 +50,51 @@ def export_page(db,tenant,table_name,offset=0,limit=50):
             "next_offset":offset+limit if len(rows)>limit else None,
             "snapshot_consistent":False,"secrets_excluded":True}
 
+def export_snapshot(db,user,max_bytes=32*1024*1024,max_rows=20000):
+    """One bounded consistent JSON snapshot, never silently truncate.
+
+    PostgreSQL REPEATABLE READ establishes a single MVCC view. SQLite's
+    explicit read transaction does the same for the local-only database.
+    Existing paginated exports remain explicitly non-snapshot.
+    """
+    import json
+    from sqlalchemy.orm import Session
+    from apps.api.core.database import scope_tenant_session
+    tenant=user.business_id
+    owner_id=user.id
+    bind=db.get_bind()
+    with bind.connect() as conn:
+        if conn.dialect.name=="postgresql":
+            conn=conn.execution_options(isolation_level="REPEATABLE READ")
+        else:
+            conn.exec_driver_sql("BEGIN")
+        with Session(bind=conn) as snapshot:
+            scope_tenant_session(snapshot,tenant)
+            if not snapshot.query(Business.id).filter_by(id=tenant,owner_id=owner_id).first():
+                raise PermissionError("Workspace owner required")
+            payload={"snapshot_consistent":True,"secrets_excluded":True,
+                     "backup_copies_included":False,"tables":{}}
+            size=128
+            count=0
+            for name in export_tables():
+                table=Base.metadata.tables[name]
+                columns=[c for c in table.c if c.name not in SECRET_COLUMNS]
+                rows=[]
+                stmt=select(*columns).where(_scope(table,tenant)).order_by(*table.primary_key.columns).execution_options(yield_per=100)
+                for row in snapshot.execute(stmt).mappings():
+                    value=_safe(dict(row))
+                    size+=len(json.dumps(value,default=str,ensure_ascii=False,separators=(",",":")).encode("utf-8"))+1
+                    count+=1
+                    if size>max_bytes or count>max_rows:
+                        raise ValueError("Snapshot exceeds bounded export limits; use paginated export")
+                    rows.append(value)
+                payload["tables"][name]=rows
+            payload["row_count"]=count
+            encoded=json.dumps(payload,default=str,ensure_ascii=False,separators=(",",":")).encode("utf-8")
+            if len(encoded)>max_bytes:
+                raise ValueError("Snapshot exceeds bounded export limits")
+            return encoded
+
 def delete_documents(db,tenant,ids):
     if not ids:
         return 0
@@ -61,28 +106,44 @@ def delete_documents(db,tenant,ids):
     result=db.execute(delete(MemoryDocument).where(MemoryDocument.business_id==tenant,MemoryDocument.id.in_(ids)))
     return result.rowcount
 
-def set_retention(db,tenant,days):
-    if days is not None and (isinstance(days,bool) or not isinstance(days,int) or not 30<=days<=3650):
+def set_retention(db,tenant,days,resolved_alert_days=None,expired_session_days=None):
+    values=(days,resolved_alert_days,expired_session_days)
+    if any(v is not None and (isinstance(v,bool) or not isinstance(v,int) or not 30<=v<=3650) for v in values):
         raise ValueError("Retention must be disabled or 30–3650 days")
     _lock(db,tenant)
     row=db.get(DataRetentionPolicy,tenant)
     if row is None:
         row=DataRetentionPolicy(business_id=tenant)
         db.add(row)
-    row.document_days=days
+    row.document_days,row.resolved_alert_days,row.expired_session_days=values
     row.updated_at=datetime.utcnow()
     db.commit()
-    return {"document_days":days,"automatic_document_deletion_enabled":days is not None}
+    return {"document_days":days,"automatic_document_deletion_enabled":days is not None,
+            "resolved_alert_days":resolved_alert_days,"expired_session_days":expired_session_days}
 
 def apply_retention(db,tenant,now=None):
     _lock(db,tenant)
     row=db.get(DataRetentionPolicy,tenant)
-    if row is None or row.document_days is None:
+    if row is None:
         return 0
-    cutoff=(now or datetime.utcnow())-timedelta(days=row.document_days)
-    ids=[x[0] for x in db.query(MemoryDocument.id).filter(MemoryDocument.business_id==tenant,
-                  MemoryDocument.created_at<cutoff).order_by(MemoryDocument.created_at).limit(200).all()]
-    return delete_documents(db,tenant,ids)
+    now=now or datetime.utcnow()
+    count=0
+    if row.document_days is not None:
+        cutoff=now-timedelta(days=row.document_days)
+        ids=[x[0] for x in db.query(MemoryDocument.id).filter(MemoryDocument.business_id==tenant,
+                      MemoryDocument.created_at<cutoff).order_by(MemoryDocument.created_at).limit(200).all()]
+        count+=delete_documents(db,tenant,ids)
+    if row.resolved_alert_days is not None:
+        cutoff=now-timedelta(days=row.resolved_alert_days)
+        ids=[x[0] for x in db.query(AlertSnapshot.id).filter_by(business_id=tenant,is_active=False)
+             .filter(AlertSnapshot.resolved_at<cutoff).order_by(AlertSnapshot.resolved_at).limit(200).all()]
+        count+=db.execute(delete(AlertSnapshot).where(AlertSnapshot.business_id==tenant,AlertSnapshot.id.in_(ids))).rowcount
+    if row.expired_session_days is not None:
+        cutoff=now-timedelta(days=row.expired_session_days)
+        ids=[x[0] for x in db.query(UserSession.id).filter_by(business_id=tenant)
+             .filter(UserSession.expires_at<cutoff).order_by(UserSession.expires_at).limit(200).all()]
+        count+=db.execute(delete(UserSession).where(UserSession.business_id==tenant,UserSession.id.in_(ids))).rowcount
+    return count
 
 def delete_workspace(db,user,confirmation):
     tenant=user.business_id

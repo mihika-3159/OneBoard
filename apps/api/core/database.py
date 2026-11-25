@@ -26,12 +26,29 @@ def tenant_lifecycle_lock(db, tenant, exclusive=False):
         sql = "SELECT pg_advisory_xact_lock(:key)" if exclusive else "SELECT pg_advisory_xact_lock_shared(:key)"
         db.execute(text(sql), {"key":key})
 
-def _request_lifecycle_scope(connection, tenant, exclusive=False):
+def _request_lifecycle_scope(connection, tenant, exclusive=False, auth=None, founder=False):
     key = int.from_bytes(hashlib.sha256(("oneboard:lifecycle:" + tenant).encode()).digest()[:8], "big", signed=True)
     lock = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
     connection.execute(text(f"SELECT {lock}(:key)"), {"key":key})
     if not connection.execute(text("SELECT id FROM businesses WHERE id=:tenant"),{"tenant":tenant}).first():
         raise HTTPException(status_code=401, detail="Workspace no longer exists")
+    if auth:
+        uid,jti,keyhash=auth
+        user=connection.execute(text("""SELECT u.role,b.owner_id,m.role AS membership_role
+            FROM users u JOIN businesses b ON b.id=u.business_id
+            LEFT JOIN business_memberships m ON m.user_id=u.id AND m.business_id=b.id
+            WHERE u.id=:uid AND b.id=:tenant AND u.is_active IS TRUE
+            AND (:keyhash IS NULL OR u.api_key=:keyhash)"""),
+            {"uid":uid,"tenant":tenant,"keyhash":keyhash}).first()
+        if not user or (user.owner_id!=uid and user.membership_role is None):
+            raise HTTPException(status_code=401,detail="Workspace access revoked")
+        if jti and not connection.execute(text("""SELECT 1 FROM user_sessions WHERE id=:jti
+                AND user_id=:uid AND business_id=:tenant AND is_revoked IS NOT TRUE
+                AND expires_at>timezone('UTC',now())"""),{"jti":jti,"uid":uid,"tenant":tenant}).first():
+            raise HTTPException(status_code=401,detail="Session revoked or expired")
+        if founder and (user.role not in ("founder","admin","owner") or
+                (user.owner_id!=uid and user.membership_role not in ("founder","admin","owner"))):
+            raise HTTPException(status_code=403,detail="Founder privileges revoked")
 
 def scope_tenant_session(db, tenant):
     """Pin an authenticated session to one tenant, including after commit."""
@@ -47,7 +64,7 @@ def scope_tenant_session(db, tenant):
         db.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
                    {"tenant": tenant})
         if db.info.get("oneboard_request"):
-            _request_lifecycle_scope(db.connection(), tenant, db.info.get('oneboard_exclusive_lifecycle', False))
+            _request_lifecycle_scope(db.connection(), tenant, db.info.get('oneboard_exclusive_lifecycle', False),db.info.get('oneboard_auth'),db.info.get('oneboard_founder',False))
 
 
 @event.listens_for(Session, "after_begin")
@@ -57,7 +74,7 @@ def _restore_tenant_scope(session, transaction, connection):
         connection.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
                            {"tenant": tenant})
         if session.info.get("oneboard_request"):
-            _request_lifecycle_scope(connection, tenant, session.info.get('oneboard_exclusive_lifecycle', False))
+            _request_lifecycle_scope(connection, tenant, session.info.get('oneboard_exclusive_lifecycle', False),session.info.get('oneboard_auth'),session.info.get('oneboard_founder',False))
 
 
 def get_db():

@@ -49,7 +49,8 @@ def configure(db,tenant,wid,cron,zone,enabled,now=None):
     now=_now(db) if now is None else now
     due=next_slot(cron,zone,now)
     if db.get_bind().dialect.name=="postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(:key)"),{"key":_key("workflow-schedule:"+wid)})
+        if not db.execute(text("SELECT pg_try_advisory_xact_lock(:key)"),{"key":_key("workflow-schedule:"+wid)}).scalar_one():
+            raise ValueError("Schedule is currently executing; retry after completion")
     wf=db.query(WorkflowDefinition).filter_by(id=wid,business_id=tenant,is_active=True,is_valid=True).first()
     if not wf:
         raise ValueError("Workflow missing, inactive or invalid")

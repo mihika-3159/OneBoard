@@ -145,6 +145,8 @@ class DataRetentionPolicy(Base):
     __tablename__ = "data_retention_policies"
     business_id = Column(String(36), primary_key=True)
     document_days = Column(Integer, nullable=True)
+    resolved_alert_days = Column(Integer, nullable=True)
+    expired_session_days = Column(Integer, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 

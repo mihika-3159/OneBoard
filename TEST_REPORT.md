@@ -1134,3 +1134,12 @@ daily/weekly workflow schedules (IANA timezone, DST gap skip/fold once,
 stable idempotent due slot, coalescing, pause on uncertain/approval run).
 Auth directory and global coordination remain unscoped by design.
 CI pending, no production credentials or role provisioning outside disposable CI.
+
+
+Batch E increment 2: bounded repeatable-read snapshot export, opt-in
+resolved alert/expired session retention (never financial/audit evidence),
+migration 013, indexed Hamming-radius-one multiprobe retrieval and
+credential revalidation at scoped PostgreSQL transaction boundaries.
+Explicit workspace deletion obtains exclusive lifecycle lock from the
+first scoped transaction; schedule configuration never waits while
+holding a lifecycle lock. CI pending.
