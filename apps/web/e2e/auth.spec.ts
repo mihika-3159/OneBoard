@@ -330,3 +330,46 @@ test('a second founder cannot approve or reject another business workflow', asyn
     await intruder.close();
   }
 });
+
+test('browser security panel issues recovery codes and MFA login enforces factor', async ({page})=>{
+  const email=`mfa-${randomUUID()}@example.test`;
+  const password='TestPassword123!';
+  const reg=await page.request.post('/api/auth/register',{data:{name:'Security CI Founder',email,password,business_name:'Security CI'}});
+  expect(reg.status()).toBe(201);
+  await page.goto('/');
+  await expect(page.getByText('Security CI Founder')).toBeVisible();
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await expect(page.getByText('Account security',{exact:true})).toBeVisible();
+  await page.getByLabel('Security password').fill(password);
+  await page.getByRole('button',{name:'Rotate recovery codes'}).click();
+  await expect(page.getByText('Store these one-time codes securely. They will not be shown again.')).toBeVisible();
+  await page.getByRole('button',{name:'Hide codes'}).click();
+  await page.getByLabel('Security password').fill(password);
+  const setupPromise=page.waitForResponse(r=>r.url().endsWith('/api/auth/security/mfa/start'));
+  await page.getByRole('button',{name:'Start MFA setup'}).click();
+  const setup=await (await setupPromise).json();
+  const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits='';
+  for(const c of setup.secret.replace(/=+$/,'')) bits+=alphabet.indexOf(c).toString(2).padStart(5,'0');
+  const key=Buffer.from((bits.match(/.{8}/g)||[]).map(x=>parseInt(x,2)));
+  const {createHmac}=await import('node:crypto');
+  const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));
+  const digest=createHmac('sha1',key).update(counter).digest();
+  const code=String((digest.readUInt32BE(digest[digest.length-1]&15)&0x7fffffff)%1000000).padStart(6,'0');
+  await page.getByLabel('Security verification code').fill(code);
+  const confirmPromise=page.waitForResponse(r=>r.url().endsWith('/api/auth/security/mfa/confirm'));
+  await page.getByRole('button',{name:'Confirm MFA'}).click();
+  const confirmation=await confirmPromise;
+  expect(confirmation.status()).toBe(200);
+  const codes=(await confirmation.json()).recovery_codes;
+  expect(codes).toHaveLength(8);
+  await page.getByTitle('Log out and invalidate session').click();
+  await expect(page.getByText('Founder Login')).toBeVisible();
+  await page.getByPlaceholder('founder@example.com').fill(email);
+  await page.locator('input[type=password]').fill(password);
+  await page.getByRole('button',{name:'Sign In to OneBoard'}).click();
+  await expect(page.getByText('Invalid email or password.')).toBeVisible();
+  await page.getByLabel('Authenticator or recovery code').fill(codes[0]);
+  await page.getByRole('button',{name:'Sign In to OneBoard'}).click();
+  await expect(page.getByText('Security CI Founder')).toBeVisible();
+});

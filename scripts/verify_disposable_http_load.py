@@ -37,6 +37,23 @@ def main():
         if existing is not None: context=bytes(existing)
     provision(admin,role,password,context)
     runtime_url=url.set(username=role,password=password).render_as_string(hide_password=False)
+    # Attack from the disposable restricted DB login, without the app signing key.
+    from sqlalchemy.exc import DBAPIError
+    runtime=create_engine(runtime_url)
+    with runtime.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM users")).scalar_one()==0
+        assert conn.execute(text("SELECT count(*) FROM businesses")).scalar_one()==0
+        assert conn.execute(text("SELECT has_column_privilege(current_user,'users','hashed_password','SELECT')")).scalar_one() is False
+        assert conn.execute(text("SELECT has_column_privilege(current_user,'users','api_key','SELECT')")).scalar_one() is False
+        assert conn.execute(text("SELECT has_schema_privilege(current_user,'oneboard_private','USAGE')")).scalar_one() is False
+    for stmt in ("SELECT hashed_password FROM users","SELECT api_key FROM users","SELECT secret FROM oneboard_private.context_key"):
+        with runtime.connect() as conn:
+            try:
+                conn.execute(text(stmt))
+            except DBAPIError as exc:
+                assert getattr(exc.orig,"sqlstate",None)=="42501"
+            else:
+                raise AssertionError("Restricted role could read secret columns")
     env=dict(os.environ,DATABASE_URL=runtime_url,TENANT_CONTEXT_KEY=base64.b64encode(context).decode(),ACCOUNT_SECURITY_KEY=base64.b64encode(secrets.token_bytes(32)).decode(),ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",
              COOKIE_SECURE="true",PUBLIC_API_ORIGIN=BASE,CORS_ORIGINS=BASE,
              TRUSTED_PROXY_IPS="127.0.0.1",AUTH_SECRET_KEY=secrets.token_hex(32),
@@ -89,6 +106,40 @@ def main():
                         wf=auth.post("/api/workflows",json={"name":"Synthetic replay","nodes":[{"id":"start","type":"trigger","data":{}}],"edges":[]})
                         assert wf.status_code==200,wf.status_code
                         tenants.append((reg["business"]["id"],headers,wf.json()["id"],uuid4().hex))
+            with runtime.connect() as conn:
+                tenant=tenants[0][0]
+                conn.execute(text("SELECT set_config('oneboard.tenant',:tenant,true)"),{"tenant":tenant})
+                assert conn.execute(text("SELECT count(*) FROM businesses")).scalar_one()==0
+                assert conn.execute(text("SELECT count(*) FROM users")).scalar_one()==0
+                assert conn.execute(text("SELECT count(*) FROM workflow_definitions")).scalar_one()==0
+            # Exercise account security over actual restricted-role HTTPS.
+            with client() as c:
+                email=uuid4().hex+"@example.test"
+                pw="Synthetic-test-password123!"
+                reg=c.post("/api/auth/register",json={"name":"Security CI","business_name":"Security CI","email":email,"password":pw})
+                assert reg.status_code==201,reg.status_code
+                h={"Authorization":"Bearer "+reg.json()["token"]}
+                with client(h) as auth:
+                    m=auth.post("/api/auth/security/mfa/start",json={"password":pw})
+                    assert m.status_code==200,m.status_code
+                    from apps.api.services.account_security import totp
+                    code=totp(m.json()["secret"],int(time.time())//30)
+                    confirm=auth.post("/api/auth/security/mfa/confirm",json={"code":code})
+                    assert confirm.status_code==200,confirm.status_code
+                    codes=confirm.json()["recovery_codes"]
+                    assert len(codes)==8
+                c.cookies.clear()
+                assert c.post("/api/auth/login",json={"email":email,"password":pw}).status_code==401
+                login=c.post("/api/auth/login",json={"email":email,"password":pw,"mfa_code":codes[0]})
+                assert login.status_code==200,login.status_code
+                with client({"Authorization":"Bearer "+login.json()["token"]}) as auth:
+                    assert auth.get("/api/auth/security/audit").json()["chain_valid"] is True
+                    k=auth.post("/api/auth/security/api-key",json={"password":pw,"mfa_code":codes[1],"scopes":["read"],"expires_days":1})
+                    assert k.status_code==200,k.status_code
+                    with client({"X-API-Key":k.json()["api_key"]}) as key_client:
+                        assert key_client.get("/api/auth/me").status_code==200
+                        assert key_client.post("/api/workflows",json={"name":"Denied","nodes":[{"id":"x","type":"trigger"}],"edges":[]}).status_code==403
+            runtime.dispose()
             # Separate synthetic workspace exercises real scheduled dispatch
             # by the restricted-role background workers during sustained load.
             with client() as c:
@@ -189,7 +240,7 @@ def main():
                     "requests":len(durations),"p95_ms":round(p95*1000,1),
                     "median_ms":round(statistics.median(durations)*1000,1),
                     "expected_quota_rejections":sum(row[1] for row in results),
-                    "unexpected_errors":0,"restart_verified":True,"restricted_runtime_role":True,"scheduled_run_restart_verified":True,"environment":"disposable_loopback_https_postgresql"}
+                    "unexpected_errors":0,"restart_verified":True,"restricted_runtime_role":True,"direct_credential_read_denied":True,"unsigned_tenant_scope_denied":True,"restricted_role_mfa_and_key_verified":True,"scheduled_run_restart_verified":True,"environment":"disposable_loopback_https_postgresql"}
             print("LOAD_RESULT "+json.dumps(report,sort_keys=True),flush=True)
             pathlib.Path("http-load-result.json").write_text(json.dumps(report,indent=2))
         finally:

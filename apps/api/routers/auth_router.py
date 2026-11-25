@@ -151,6 +151,9 @@ def register(
         is_revoked=False
     )
     db.add(user_session)
+    if restricted(db):
+        from apps.api.services.account_security import _record
+        _record(db,user,"registered")
     # Commit the business, owner, membership and session as one unit.
     # Any failure must not leave an orphan workspace or account behind.
     try:
@@ -280,15 +283,14 @@ def login(
     # the account-wide wrong-password budget from rotating source addresses.
     # Source+account lockout still applies before hashing, which limits CPU
     # abuse but can affect shared-NAT users; document this residual risk.
-    reset_login_throttle(source_key, db)
-    reset_login_throttle(account_key, db)
     if restricted(db):
-        from apps.api.core.database import scope_tenant_session
-        scope_tenant_session(db,user.business_id)
-        db.refresh(user)
-        if not user.is_active or password_verifier(db,user)!=verified_hash:
-            raise HTTPException(401,"Credentials changed; sign in again.")
-        _require_active_membership(user,db)
+        # Preserve the lifecycle lock through verification, MFA consumption,
+        # throttle reset and session issuance. No recovery/role-change gap.
+        reset_login_throttle(source_key,db,commit=False)
+        reset_login_throttle(account_key,db,commit=False)
+    else:
+        reset_login_throttle(source_key,db)
+        reset_login_throttle(account_key,db)
 
     business = db.query(Business).filter(Business.id == user.business_id).first()
 
@@ -302,6 +304,9 @@ def login(
         is_revoked=False
     )
     db.add(user_session)
+    if restricted(db):
+        from apps.api.services.account_security import _record
+        _record(db,user,"login")
     db.commit()
 
     token = create_access_token(
@@ -382,6 +387,10 @@ def logout(
                         clear_auth_cookies(response)
                         return {'status':'success','message':'Logged out successfully.'}
                     session_record.is_revoked = True
+                    if restricted(db):
+                        from apps.api.services.account_security import _record
+                        actor=db.query(User).filter_by(id=session_record.user_id).first()
+                        if actor: _record(db,actor,"logout")
                     try:
                         db.commit()
                     except Exception:

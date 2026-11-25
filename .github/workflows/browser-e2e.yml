@@ -12,6 +12,7 @@ jobs:
     env:
       AUTH_SECRET_KEY: "e2e-test-secret-only-0123456789abcdef0123456789abcdef"
       ONEBOARD_DEMO_MODE: "false"
+      ACCOUNT_SECURITY_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
       CORS_ORIGINS: "http://127.0.0.1:4173"
       DATABASE_URL: "sqlite:///./oneboard_browser_e2e.sqlite3"
       PYTHONPATH: "."
@@ -36,7 +37,7 @@ jobs:
           PLAYWRIGHT_JSON_OUTPUT_NAME: browser-required.json
         run: |
           npx playwright test --config playwright.config.ts --reporter=line,json
-          python ../../scripts/require_browser_suite.py browser-required.json 20
+          python ../../scripts/require_browser_suite.py browser-required.json 21
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

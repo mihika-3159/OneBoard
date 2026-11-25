@@ -313,7 +313,7 @@ def record_failed_login(identifier: str, db: Optional[Session] = None) -> None:
     db.commit()
 
 
-def reset_login_throttle(identifier: str, db: Optional[Session] = None) -> None:
+def reset_login_throttle(identifier: str, db: Optional[Session] = None, *, commit: bool = True) -> None:
     """Clear the counter after valid login, across every server process."""
     if db is None:
         if settings.ONEBOARD_PRODUCTION_MODE:
@@ -324,7 +324,8 @@ def reset_login_throttle(identifier: str, db: Optional[Session] = None) -> None:
     db.query(LoginThrottleState).filter(
         LoginThrottleState.identifier_hash == _throttle_key(identifier)
     ).delete(synchronize_session=False)
-    db.commit()
+    if commit:
+        db.commit()
 
 
 # ---------------------------------------------------------------------------
