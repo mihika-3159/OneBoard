@@ -85,6 +85,7 @@ jobs:
         run: curl -fsSL https://ollama.com/install.sh | sh
       - name: Start Ollama
         run: |
+          export OLLAMA_MODELS="$RUNNER_TEMP/oneboard-models"
           ollama serve > /tmp/oneboard-ollama.log 2>&1 &
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:11434/api/tags > /dev/null; then exit 0; fi
@@ -96,6 +97,15 @@ jobs:
         run: |
           ollama pull "$ONEBOARD_CI_OLLAMA_MODEL"
           ollama pull "$ONEBOARD_CI_EMBEDDING_MODEL"
+      - name: Verify downloaded model manifests and blobs
+        run: |
+          models="$RUNNER_TEMP/oneboard-models"
+          curl -fsS "$OLLAMA_BASE_URL/api/tags" > "$RUNNER_TEMP/oneboard-tags.json"
+          for tag in "$ONEBOARD_CI_OLLAMA_MODEL" "$ONEBOARD_CI_EMBEDDING_MODEL"; do
+            if [[ "$tag" != *:* ]]; then tag="$tag:latest"; fi
+            digest=$(jq -er --arg tag "$tag" '.models[] | select(.name == $tag) | .digest' "$RUNNER_TEMP/oneboard-tags.json")
+            python scripts/verify_model_artifacts.py "$models/manifests/registry.ollama.ai/library/${tag%:*}/${tag##*:}" "$models/blobs" "sha256:${digest#sha256:}"
+          done
       - name: Mandatory full Ollama suite (including smoke and genuine embeddings)
         run: |
           python scripts/require_test_suite.py 20 ollama-full.xml tests/test_ollama_integration.py -k 'not TestLiveAPIEndpoints'
