@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import Optional, List
@@ -9,6 +9,7 @@ from apps.api.core.config import settings
 from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.models.business import User, Business
 from apps.api.services.ollama_gateway import ollama_gateway
+from apps.api.services.request_inference import run_request_inference
 from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
 from apps.api.models.entities import Commitment
 from apps.api.models.goals_tasks import Task
@@ -81,18 +82,19 @@ def switch_model_profile(
 @router.post("/benchmark")
 async def benchmark_gateway(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None
 ):
     """Run a latency benchmark against the Ollama gateway. Requires authentication."""
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "ai_benchmark")
     profile = _business_model_profile(db, current_user.business_id)
     start = time.time()
-    res = await ollama_gateway.chat_complete(
+    res = await run_request_inference(request, ollama_gateway.chat_complete(
         messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
         system_prompt="Return brief benchmark acknowledgment.",
         model=ollama_gateway.get_model_for_task(profile=profile)
-    )
+    ))
     total_time = round((time.time() - start) * 1000, 2)
     is_simulated = res.get("simulated", False)
     
@@ -112,7 +114,8 @@ async def benchmark_gateway(
 async def handle_founder_command(
     req: FounderCommandRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None
 ):
     """Founder Command Center: Direct conversational interaction backed by structured business facts."""
     biz_id = current_user.business_id
@@ -173,11 +176,11 @@ async def handle_founder_command(
     )
 
     profile = _business_model_profile(db, biz_id)
-    res = await ollama_gateway.chat_complete(
+    res = await run_request_inference(request, ollama_gateway.chat_complete(
         messages=[{"role": "user", "content": context}],
         system_prompt="You are OneBoard Founder Command Center. "+DATA_BOUNDARY,
         model=ollama_gateway.get_model_for_task(profile=profile)
-    )
+    ))
     is_simulated = res.get("simulated", False)
     
     return {

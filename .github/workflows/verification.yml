@@ -100,6 +100,8 @@ jobs:
         run: |
           python scripts/require_test_suite.py 20 ollama-full.xml tests/test_ollama_integration.py -k 'not TestLiveAPIEndpoints'
           python scripts/require_test_suite.py 5 ollama-smoke.xml tests/test_ollama_live_ci.py
+      - name: Benchmark the real model with synthetic quality and resource cases
+        run: python -m scripts.benchmark_inference --model "$ONEBOARD_CI_OLLAMA_MODEL" --output model-benchmark.json
       - name: Start fresh authenticated local API and execute every live API test
         env:
           ONEBOARD_LIVE_API_TESTS: "1"
@@ -123,6 +125,7 @@ jobs:
           path: |
             ollama-full.xml
             ollama-smoke.xml
+            model-benchmark.json
             live-api.xml
           retention-days: 7
       - name: Ollama diagnostics on failure

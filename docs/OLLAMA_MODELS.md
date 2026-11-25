@@ -1,0 +1,5 @@
+# Ollama model pins and benchmarks
+
+Set `OLLAMA_MODEL_DIGESTS` to a JSON object that maps each configured Ollama tag to the SHA-256 digest of its reviewed manifest. Obtain the expected values through a trusted model release and installation process and keep the manifest under deployment change control. With pins enabled, OneBoard checks the exact tag and digest reported by the provider before sending inference input and excludes unverified models from readiness. Leave the mapping empty to support unpinned local development. This check trusts the configured Ollama instance and verifies its reported manifest identity.
+
+Run `python -m scripts.benchmark_inference --model qwen2.5:0.5b --output model-benchmark.json` against a local Ollama instance with the model installed. The report includes correctness on synthetic cases, latency samples, provider token counts and loaded model memory reported by Ollama. The mandatory live job runs it and publishes the report. Inference fallbacks or a missing runtime resource report fail the command. Quality scores are reported for comparison across model versions.

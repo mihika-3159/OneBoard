@@ -2,6 +2,8 @@ from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 from pathlib import Path
 from typing import Dict, Any
+
+from apps.api.services.model_identity import valid_digest
 from urllib.parse import urlsplit
 from ipaddress import ip_address
 from sqlalchemy.engine import make_url
@@ -51,6 +53,7 @@ class Settings(BaseSettings):
 
     # Centralized Ollama Model Gateway
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    OLLAMA_MODEL_DIGESTS: dict[str, str] = {}
     OLLAMA_CONTEXT_WINDOW: int = 8192
     OLLAMA_MAX_OUTPUT_TOKENS: int = 768
     OLLAMA_MAX_JSON_OUTPUT_TOKENS: int = 1536
@@ -98,6 +101,16 @@ def validate_production_configuration(config: Settings) -> None:
     if not config.ONEBOARD_PRODUCTION_MODE:
         return
     errors = []
+    if any(not name or not valid_digest(digest) for name, digest in config.OLLAMA_MODEL_DIGESTS.items()):
+        errors.append("OLLAMA_MODEL_DIGESTS must map model tags to SHA-256 digests")
+    if config.OLLAMA_MODEL_DIGESTS:
+        profile_models = {
+            profile.get(key)
+            for profile in config.MODEL_PROFILES.values()
+            for key in ("chat_model", "reasoning_model", "embedding_model")
+        }
+        if not profile_models.issubset(config.OLLAMA_MODEL_DIGESTS):
+            errors.append("OLLAMA_MODEL_DIGESTS must pin each configured profile model")
     if config.ONEBOARD_DEMO_MODE:
         errors.append("ONEBOARD_DEMO_MODE must be disabled")
     if config.DEBUG:

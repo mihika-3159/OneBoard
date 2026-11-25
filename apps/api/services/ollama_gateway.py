@@ -6,12 +6,17 @@ import time
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from apps.api.core.config import settings
 from apps.api.services.cluster_capacity import inference_slot
+from apps.api.services.model_identity import matches_pin
 
 from apps.api.services.inference_controls import CircuitOpen, ProviderCircuit, fit_prompt, retry_provider
 
 logger = logging.getLogger(__name__)
 
 class _CapacityExceeded(Exception):
+    pass
+
+
+class _ModelIdentityMismatch(Exception):
     pass
 
 
@@ -29,6 +34,9 @@ class OllamaGateway:
     async def _post_inference(self, path, payload, timeout):
         with self._circuit.attempt() as record_failure:
             async with httpx.AsyncClient(timeout=timeout) as client:
+                if settings.OLLAMA_MODEL_DIGESTS:
+                    await asyncio.wait_for(self._verify_model(client, payload["model"]), timeout=3.0)
+
                 async def send():
                     return await client.post(f"{self.base_url}{path}", json=payload)
 
@@ -47,6 +55,20 @@ class OllamaGateway:
                 record_failure(response.status_code >= 500)
                 return response
 
+    async def _verify_model(self, client, model):
+        expected = settings.OLLAMA_MODEL_DIGESTS.get(model)
+        if expected is None:
+            raise _ModelIdentityMismatch()
+        try:
+            response = await client.get(f"{self.base_url}/api/tags", timeout=2.0)
+            if response.status_code == 200:
+                data = response.json()
+                if isinstance(data, dict) and matches_pin(data.get("models"), model, expected):
+                    return
+        except (ValueError, httpx.TransportError):
+            pass
+        raise _ModelIdentityMismatch()
+
     async def check_health(self) -> Dict[str, Any]:
         """Check if local Ollama daemon is reachable and list downloaded models."""
         start = time.time()
@@ -59,6 +81,11 @@ class OllamaGateway:
                     models = payload.get("models", []) if isinstance(payload, dict) else []
                     models = models if isinstance(models, list) else []
                     available = [m.get("name") for m in models if isinstance(m, dict) and isinstance(m.get("name"), str) and m.get("name")]
+                    if settings.OLLAMA_MODEL_DIGESTS:
+                        available = [
+                            name for name in available
+                            if matches_pin(models, name, settings.OLLAMA_MODEL_DIGESTS.get(name))
+                        ]
                     return {
                         "status": "connected",
                         "base_url": self.base_url,
@@ -172,6 +199,10 @@ class OllamaGateway:
                                 "content": content,
                                 "model": target_model,
                                 "simulated": False,
+                                "input_tokens": data.get("prompt_eval_count"),
+                                "output_tokens": data.get("eval_count"),
+                                "provider_load_ns": data.get("load_duration"),
+                                "provider_eval_ns": data.get("eval_duration"),
                                 "output_limit_reached": data.get("done_reason") == "length",
                                 "duration_ms": int((time.monotonic() - start_time) * 1000),
                             }
@@ -181,6 +212,8 @@ class OllamaGateway:
                         reason = "provider_http_error"
                 except _CapacityExceeded:
                     reason = "capacity_exceeded"
+                except _ModelIdentityMismatch:
+                    reason = "model_identity_unverified"
                 except CircuitOpen:
                     reason = "provider_circuit_open"
                 except (httpx.TimeoutException, asyncio.TimeoutError):
