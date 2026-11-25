@@ -1143,3 +1143,13 @@ credential revalidation at scoped PostgreSQL transaction boundaries.
 Explicit workspace deletion obtains exclusive lifecycle lock from the
 first scoped transaction; schedule configuration never waits while
 holding a lifecycle lock. CI pending.
+
+
+Batch E increment 3: 12-tenant 120-second restricted-role load drill,
+abrupt subprocess termination with uncommitted-write rollback and
+cluster inference slot recovery, concurrent deletion/writer tests,
+session-revocation transaction-boundary regression and real PostgreSQL
+repeatable-read export under concurrent insert. Adds DST/missed-slot,
+uncertain-run no-replay, isolated scheduler, retention and multiprobe
+regressions. Universal hashed Python lock generation job is temporary
+and must be replaced by checked-in lock after review. CI pending.

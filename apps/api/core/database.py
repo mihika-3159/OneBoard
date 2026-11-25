@@ -38,7 +38,7 @@ def _request_lifecycle_scope(connection, tenant, exclusive=False, auth=None, fou
             FROM users u JOIN businesses b ON b.id=u.business_id
             LEFT JOIN business_memberships m ON m.user_id=u.id AND m.business_id=b.id
             WHERE u.id=:uid AND b.id=:tenant AND u.is_active IS TRUE
-            AND (:keyhash IS NULL OR u.api_key=:keyhash)"""),
+            AND (CAST(:keyhash AS text) IS NULL OR u.api_key=:keyhash)"""),
             {"uid":uid,"tenant":tenant,"keyhash":keyhash}).first()
         if not user or (user.owner_id!=uid and user.membership_role is None):
             raise HTTPException(status_code=401,detail="Workspace access revoked")

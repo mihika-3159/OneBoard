@@ -74,7 +74,7 @@ def main():
         proc=start()
         tenants=[]
         try:
-            for i in range(6):
+            for i in range(12):
                 with client() as c:
                     reg=c.post("/api/auth/register",json={"name":"Synthetic load founder","business_name":"Disposable load tenant","email":uuid4().hex+"@example.test","password":"Synthetic-test-password123!"})
                     assert reg.status_code==201,reg.status_code
@@ -84,7 +84,7 @@ def main():
                         wf=auth.post("/api/workflows",json={"name":"Synthetic replay","nodes":[{"id":"start","type":"trigger","data":{}}],"edges":[]})
                         assert wf.status_code==200,wf.status_code
                         tenants.append((reg["business"]["id"],headers,wf.json()["id"],uuid4().hex))
-            deadline=time.monotonic()+20
+            deadline=time.monotonic()+120
             def worker(record):
                 tenant,headers,wid,idem=record
                 durations=[]
@@ -119,13 +119,13 @@ def main():
                     assert len(c.get("/api/workflows/runs").json())==1
                     return durations,quota,next(iter(runs))
             t0=time.monotonic()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
                 results=list(pool.map(worker,tenants))
             elapsed=time.monotonic()-t0
             durations=[x for result in results for x in result[0]]
             ordered=sorted(durations)
             p95=ordered[min(len(ordered)-1,int(.95*len(ordered)))]
-            assert elapsed>=18 and len(durations)>=120
+            assert elapsed>=115 and len(durations)>=1000
             assert p95<5,(len(durations),p95)
             assert sum(row[1] for row in results)>0,"Expected quota saturation"
             # A fresh process must preserve auth, durable runs and tenant boundaries.
@@ -143,7 +143,7 @@ def main():
                     "requests":len(durations),"p95_ms":round(p95*1000,1),
                     "median_ms":round(statistics.median(durations)*1000,1),
                     "expected_quota_rejections":sum(row[1] for row in results),
-                    "unexpected_errors":0,"restart_verified":True,"environment":"disposable_loopback_https_postgresql"}
+                    "unexpected_errors":0,"restart_verified":True,"restricted_runtime_role":True,"environment":"disposable_loopback_https_postgresql"}
             print("LOAD_RESULT "+json.dumps(report,sort_keys=True),flush=True)
             pathlib.Path("http-load-result.json").write_text(json.dumps(report,indent=2))
         finally:

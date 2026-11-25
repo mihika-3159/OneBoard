@@ -1229,6 +1229,7 @@ def test_25_postgres_rls_scoped_reads_and_writes_with_non_superuser():
                                        content_hash="a"*64) for t in (a,b)])
             db.commit()
             db.execute(text(f"SET LOCAL ROLE {role}"))
+            assert db.query(MemoryDocument).count()==0  # unscoped runtime fails closed
             scope_tenant_session(db, a)
             assert [row.business_id for row in db.query(MemoryDocument).all()] == [a]
             db.add(MemoryDocument(business_id=b, title="Rejected", content_hash="b"*64))
@@ -1310,4 +1311,180 @@ def test_27_postgres_workspace_deletion_preserves_other_tenant():
             for tenant in (a,b):
                 if db.get(Business,tenant):
                     delete_workspace(db,SimpleNamespace(id=owners[tenant],business_id=tenant),"DELETE "+tenant)
+        engine.dispose()
+
+
+def test_28_abrupt_process_death_releases_inference_slot_and_rolls_back_write():
+    import select
+    import time
+    from uuid import uuid4
+    from apps.api.services.cluster_capacity import inference_slot
+    from apps.api.models.workflow import AuditLog
+    engine=_engine()
+    marker=str(uuid4())
+    child_code="""
+import os,time
+from sqlalchemy import create_engine,text
+from apps.api.services.cluster_capacity import inference_slot
+e=create_engine(os.environ['DATABASE_URL'])
+with inference_slot(e) as acquired:
+    assert acquired
+    with e.begin() as c:
+        c.execute(text('INSERT INTO audit_logs (id,business_id,actor,action) VALUES (:id,:tenant,:actor,:action)'),{'id':os.environ['CRASH_MARKER'],'tenant':'synthetic-crash','actor':'ci','action':'uncommitted'})
+        print('READY',flush=True)
+        time.sleep(120)
+"""
+    child=subprocess.Popen([sys.executable,"-c",child_code],cwd=ROOT,env=dict(os.environ,CRASH_MARKER=marker),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        ready,_,_=select.select([child.stdout],[],[],20)
+        assert ready and child.stdout.readline().strip()=="READY"
+        with inference_slot(engine) as second:
+            assert second
+            with inference_slot(engine) as third:
+                assert not third
+            child.kill()
+            child.wait(timeout=10)
+            deadline=time.monotonic()+10
+            while True:
+                with inference_slot(engine) as recovered:
+                    if recovered:
+                        break
+                assert time.monotonic()<deadline
+                time.sleep(.1)
+        with sessionmaker(bind=engine)() as db:
+            assert db.get(AuditLog,marker) is None
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        engine.dispose()
+
+
+def test_29_concurrent_delete_waits_for_writer_and_second_delete_is_denied():
+    from uuid import uuid4
+    from threading import Event
+    from types import SimpleNamespace
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business,User
+    from apps.api.models.memory import MemoryDocument
+    from apps.api.services.data_lifecycle import delete_workspace
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    a,b=str(uuid4()),str(uuid4())
+    uid=str(uuid4())
+    writer_ready,release_writer,delete_started=Event(),Event(),Event()
+    with factory() as db:
+        db.add_all([Business(id=a,name="A",owner_id=uid),Business(id=b,name="B")])
+        db.flush()
+        db.add(User(id=uid,business_id=a,email=uid+"@example.test",name="CI",hashed_password="synthetic"))
+        db.commit()
+    def writer():
+        with factory() as db:
+            db.info["oneboard_request"]=True
+            scope_tenant_session(db,a)
+            db.add(MemoryDocument(business_id=a,title="concurrent",content_hash="a"*64))
+            db.flush()
+            writer_ready.set()
+            assert release_writer.wait(10)
+            db.commit()
+    def deleter():
+        with factory() as db:
+            db.info.update(oneboard_request=True,oneboard_exclusive_lifecycle=True)
+            delete_started.set()
+            try:
+                scope_tenant_session(db,a)
+                delete_workspace(db,SimpleNamespace(id=uid,business_id=a),"DELETE "+a)
+                return "deleted"
+            except HTTPException as exc:
+                return exc.status_code
+    try:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            w=pool.submit(writer)
+            assert writer_ready.wait(10)
+            d1=pool.submit(deleter)
+            d2=pool.submit(deleter)
+            assert delete_started.wait(10)
+            assert not d1.done() and not d2.done()
+            release_writer.set()
+            w.result(timeout=15)
+            results=[d1.result(timeout=15),d2.result(timeout=15)]
+            assert results.count("deleted")==1 and results.count(401)==1
+        with factory() as db:
+            assert db.get(Business,a) is None and db.get(Business,b) is not None
+            assert db.query(MemoryDocument).filter_by(business_id=a).count()==0
+    finally:
+        release_writer.set()
+        with factory() as db:
+            if db.get(Business,a):
+                delete_workspace(db,SimpleNamespace(id=uid,business_id=a),"DELETE "+a)
+            db.query(Business).filter_by(id=b).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_30_revoked_session_cannot_begin_next_scoped_transaction():
+    from uuid import uuid4
+    from datetime import datetime,timedelta
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business,User,UserSession
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    tenant,uid,sid=str(uuid4()),str(uuid4()),str(uuid4())
+    try:
+        with factory() as db:
+            db.add(Business(id=tenant,name="Synthetic",owner_id=uid))
+            db.flush()
+            db.add(User(id=uid,business_id=tenant,email=uid+"@example.test",name="CI",hashed_password="synthetic"))
+            db.flush()
+            db.add(UserSession(id=sid,business_id=tenant,user_id=uid,expires_at=datetime.utcnow()+timedelta(hours=1),is_revoked=False))
+            db.commit()
+        with factory() as request:
+            request.info.update(oneboard_request=True,oneboard_auth=(uid,sid,None))
+            scope_tenant_session(request,tenant)
+            request.commit()
+            with factory() as other:
+                other.get(UserSession,sid).is_revoked=True
+                other.commit()
+            with pytest.raises(HTTPException,match="Session revoked"):
+                request.execute(text("SELECT 1"))
+            request.rollback()
+    finally:
+        with factory() as db:
+            db.query(Business).filter_by(id=tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_31_repeatable_read_export_excludes_concurrent_inserts(monkeypatch):
+    import json
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from apps.api.models.business import Business,User
+    from apps.api.models.entities import Customer
+    from apps.api.services import data_lifecycle as lifecycle
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    tenant,uid=str(uuid4()),str(uuid4())
+    try:
+        with factory() as db:
+            db.add(Business(id=tenant,name="Synthetic",owner_id=uid))
+            db.flush()
+            db.add(User(id=uid,business_id=tenant,email=uid+"@example.test",name="CI",hashed_password="synthetic"))
+            db.commit()
+        original=lifecycle.export_tables
+        def after_snapshot():
+            with factory() as writer:
+                writer.add(Customer(business_id=tenant,name="concurrent after snapshot",mrr=0,status="active"))
+                writer.commit()
+            return original()
+        monkeypatch.setattr(lifecycle,"export_tables",after_snapshot)
+        with factory() as db:
+            exported=json.loads(lifecycle.export_snapshot(db,SimpleNamespace(id=uid,business_id=tenant)))
+            assert exported["snapshot_consistent"] and exported["tables"]["customers"]==[]
+            assert db.query(Customer).filter_by(business_id=tenant).count()==1
+    finally:
+        with factory() as db:
+            db.query(Customer).filter_by(business_id=tenant).delete()
+            db.query(Business).filter_by(id=tenant).delete()
+            db.commit()
         engine.dispose()

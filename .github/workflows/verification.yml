@@ -164,7 +164,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r apps/api/requirements.txt
       - name: Run disposable PostgreSQL migration and concurrency tests
-        run: python scripts/require_test_suite.py 27 postgres-required.xml tests/integration/test_postgres_security.py
+        run: python scripts/require_test_suite.py 31 postgres-required.xml tests/integration/test_postgres_security.py
       - name: Verify full PostgreSQL 16 logical backup and restore in disposable CI
         env:
           ONEBOARD_CI_DISPOSABLE_RESTORE: "1"
@@ -190,7 +190,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq age
           python scripts/verify_encrypted_pg_restore.py
-      - name: Measured two-worker HTTPS PostgreSQL tenant load and restart drill
+      - name: Sustained restricted-role HTTPS PostgreSQL tenant load and restart drill
         env:
           ONEBOARD_CI_HTTP_LOAD: "1"
         run: python scripts/verify_disposable_http_load.py
@@ -236,4 +236,30 @@ jobs:
           path: |
             pip-audit.json
             npm-audit.json
+          retention-days: 7
+
+  generate-python-lock:
+    name: Generate reviewed universal Python lock (temporary)
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install uv
+      - name: Resolve pinned cross-platform dependency set with distribution hashes
+        run: |
+          uv pip compile apps/api/requirements.txt --universal --python-version 3.11 --generate-hashes --output-file apps/api/requirements.lock
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=Path("apps/api/requirements.lock").read_text()
+          for i in range(0,len(data),3000):
+              print("ONEBOARD_PY_LOCK "+str(i//3000)+" "+json.dumps(data[i:i+3000]))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proposed-python-lock
+          path: apps/api/requirements.lock
           retention-days: 7
