@@ -10,6 +10,37 @@ export const SettingsTab: React.FC = () => {
   const [isBenchmarking, setIsBenchmarking] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fields=['document_days','resolved_alert_days','expired_session_days'];
+  const [retention,setRetention]=useState<Record<string,string>>({});
+  const [dataLoaded,setDataLoaded]=useState(false);
+  const [dataBusy,setDataBusy]=useState(false);
+  const [dataMessage,setDataMessage]=useState<string|null>(null);
+  const [dataError,setDataError]=useState<string|null>(null);
+  useEffect(()=>{
+    api.getRetention().then(row=>{
+      setRetention(Object.fromEntries(fields.map(k=>[k,row[k] == null?'':String(row[k])])));
+      setDataLoaded(true);
+    }).catch(e=>setDataError(e instanceof Error?e.message:'Owner retention unavailable'));
+  },[]);
+  const saveRetention=async()=>{
+    setDataBusy(true);setDataError(null);setDataMessage(null);
+    try {
+      await api.saveRetention(Object.fromEntries(fields.map(k=>[k,retention[k]?.trim()?Number(retention[k]):null])));
+      setDataMessage('Retention policy saved.');
+    }catch(e){setDataError(e instanceof Error?e.message:'Retention update failed');}
+    finally{setDataBusy(false);}
+  };
+  const downloadSnapshot=async()=>{
+    setDataBusy(true);setDataError(null);setDataMessage(null);
+    try {
+      const payload=await api.exportSnapshot();
+      const url=URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}));
+      const a=document.createElement('a');a.href=url;a.download='oneboard-workspace.json';a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+      setDataMessage('Consistent workspace snapshot prepared.');
+    }catch(e){setDataError(e instanceof Error?e.message:'Export failed');}
+    finally{setDataBusy(false);}
+  };
 
   useEffect(() => {
     loadStatus();
@@ -160,6 +191,22 @@ export const SettingsTab: React.FC = () => {
           </div>
         )}
       </div>
+
+      <section aria-label="Workspace data management" className="p-6 rounded-2xl glass-panel space-y-3 text-xs">
+        <h2 className="text-sm font-bold text-white">Workspace data management (owner)</h2>
+        <p className="text-slate-400">A consistent bounded JSON snapshot excludes credential fields. It is not an encrypted backup or a guarantee that user-entered text contains no secrets.</p>
+        <button disabled={dataBusy||!dataLoaded} onClick={downloadSnapshot} className="px-4 py-2 rounded bg-indigo-600 disabled:opacity-50">Download workspace snapshot</button>
+        <p className="text-slate-400">Retention is opt-in. Blank means keep indefinitely; enter 30–3650 days. Active alerts, financial evidence and audit history are not automatically removed.</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {fields.map((key,index)=><label key={key} className="space-y-1">
+            {['Document retention days','Resolved alert retention days','Expired session retention days'][index]}
+            <input type="number" min="30" max="3650" step="1" value={retention[key]||''} onChange={e=>setRetention(old=>({...old,[key]:e.target.value}))} disabled={!dataLoaded||dataBusy} className="block w-full bg-slate-900 border rounded p-2 text-white"/>
+          </label>)}
+        </div>
+        <button disabled={!dataLoaded||dataBusy||fields.some(key=>retention[key]&&(Number(retention[key])<30||Number(retention[key])>3650||!Number.isInteger(Number(retention[key]))))} onClick={saveRetention} className="px-4 py-2 rounded bg-indigo-600 disabled:opacity-50">Save retention policy</button>
+        {dataError&&<p role="alert" className="text-rose-300">{dataError}</p>}
+        {dataMessage&&<p role="status" className="text-emerald-300">{dataMessage}</p>}
+      </section>
 
       {/* Hardware Profile Presets */}
       <div className="p-6 rounded-2xl glass-panel space-y-4 text-xs">

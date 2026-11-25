@@ -1166,3 +1166,13 @@ tenant-job traversal and statement/lock deadlines isolate individual
 alert, outbox, workflow and indexing failures. Explicit logout serializes
 with admitted tenant transactions; founder privilege revalidated immediately
 and at later transaction boundaries. CI pending.
+
+
+Batch E increment 5: founder schedule and owner snapshot/retention UI,
+two real browser regressions (mandatory browser count 20), role
+provisioning/operation documentation and corrected historical README
+claims. Earlier restricted-role smoke at 5070976 passed 27 PostgreSQL
+tests, restore at 012 and 2,000 HTTPS requests over 20.18 s with zero
+unexpected errors. Increment 2 load exposed ambiguous PostgreSQL null
+parameter; explicit CAST in increment 3 fixes it. Hash-lock install YAML
+colon repaired in 8926211. Exact final-head CI pending.

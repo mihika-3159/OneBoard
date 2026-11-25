@@ -30,6 +30,47 @@ export const WorkflowStudioTab: React.FC = () => {
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowDef | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [schedule, setSchedule] = useState<any>(null);
+  const [scheduleTime, setScheduleTime] = useState('09:00');
+  const [scheduleDay, setScheduleDay] = useState('*');
+  const [scheduleZone, setScheduleZone] = useState('UTC');
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleBusy,setScheduleBusy] = useState(false);
+  const [scheduleLoaded,setScheduleLoaded] = useState(false);
+  const [scheduleError,setScheduleError] = useState<string|null>(null);
+
+  useEffect(()=>{
+    const id=selectedWorkflow?.id;
+    let cancelled=false;
+    setScheduleLoaded(false);
+    setSchedule(null);
+    setScheduleError(null);
+    if (!id) return;
+    api.getSchedules().then(rows=>{
+      if(cancelled)return;
+      const row=rows.find(x=>x.workflow_id===id);
+      setSchedule(row||null);
+      const [minute,hour,,,day]=(row?.cron||'0 9 * * *').split(' ');
+      setScheduleTime(hour.padStart(2,'0')+':'+minute.padStart(2,'0'));
+      setScheduleDay(day);
+      setScheduleZone(row?.timezone||'UTC');
+      setScheduleEnabled(Boolean(row?.enabled));
+      setScheduleLoaded(true);
+    }).catch(e=>{if(!cancelled)setScheduleError(e instanceof Error?e.message:'Schedule lookup failed');});
+    return ()=>{cancelled=true};
+  },[selectedWorkflow?.id]);
+
+  const saveSchedule=async()=>{
+    if(!selectedWorkflow||!scheduleLoaded||!scheduleTime||!scheduleZone.trim())return;
+    setScheduleBusy(true);
+    setScheduleError(null);
+    try {
+      const [hour,minute]=scheduleTime.split(':').map(Number);
+      const row=await api.saveSchedule(selectedWorkflow.id,`${minute} ${hour} * * ${scheduleDay}`,scheduleZone.trim(),scheduleEnabled);
+      setSchedule(row);
+    } catch(e) {setScheduleError(e instanceof Error?e.message:'Schedule update failed');}
+    finally {setScheduleBusy(false);}
+  };
 
   // Natural Language Prompt Generator & Teach a Process
   const [promptText, setPromptText] = useState(
@@ -196,6 +237,32 @@ export const WorkflowStudioTab: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {selectedWorkflow && <section aria-label="Workflow schedule" className="p-4 rounded-2xl glass-panel space-y-3 text-xs">
+        <h2 className="text-sm font-bold text-white">Scheduled execution</h2>
+        <p className="text-slate-400">Opt-in only. Missed slots coalesce into one run. A pending approval or uncertain run pauses future executions; external delivery remains unavailable.</p>
+        {scheduleError && <p role="alert" className="text-rose-300">{scheduleError}</p>}
+        <div className="flex flex-wrap gap-3 items-end">
+          <label className="space-y-1">Local run time
+            <input aria-label="Local run time" className="block bg-slate-900 border rounded p-2 text-white" type="time" value={scheduleTime} onChange={e=>setScheduleTime(e.target.value)} disabled={!scheduleLoaded||scheduleBusy}/>
+          </label>
+          <label className="space-y-1">Repeat
+            <select aria-label="Repeat schedule" className="block bg-slate-900 border rounded p-2 text-white" value={scheduleDay} onChange={e=>setScheduleDay(e.target.value)} disabled={!scheduleLoaded||scheduleBusy}>
+              {['*','mon','tue','wed','thu','fri','sat','sun'].map(day=><option key={day} value={day}>{day==='*'?'Every day':day.toUpperCase()}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">IANA timezone
+            <input aria-label="IANA timezone" className="block bg-slate-900 border rounded p-2 text-white" value={scheduleZone} onChange={e=>setScheduleZone(e.target.value)} disabled={!scheduleLoaded||scheduleBusy}/>
+          </label>
+          <label className="flex gap-2 items-center"><input type="checkbox" checked={scheduleEnabled} onChange={e=>setScheduleEnabled(e.target.checked)} disabled={!scheduleLoaded||scheduleBusy}/>Enable automatic execution</label>
+          <button className="px-3 py-2 rounded bg-indigo-600 disabled:opacity-50" onClick={saveSchedule} disabled={!scheduleLoaded||scheduleBusy}>Save schedule</button>
+        </div>
+        {schedule && <p role="status" className="text-slate-300">
+          {schedule.enabled?'Schedule enabled':'Schedule paused'}.
+          {schedule.enabled&&` Next due (UTC): ${new Date(schedule.next_due_at*1000).toISOString()}.`}
+          {schedule.last_status&&` Status: ${schedule.last_status}.`}
+        </p>}
+      </section>}
 
       {/* Natural Language Workflow Generator Bar */}
       <div className="p-4 rounded-2xl bg-indigo-950/20 border border-indigo-500/30 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">

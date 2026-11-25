@@ -7,7 +7,7 @@
 [![React + Vite](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB.svg)](https://vite.dev/)
 [![Inference](https://img.shields.io/badge/Inference-Server--side%20Ollama-black.svg)](https://ollama.com/)
 
-> **Release status, 24 November 2026: local-first engineering prototype, not a production-certified SaaS.** Do not deploy publicly or handle real customer data without completing the security, hosting eligibility, backup, privacy and external-operations gates documented in [TEST_REPORT.md](TEST_REPORT.md), [critical readiness controls](docs/CRITICAL_READINESS_CONTROLS.md) and [P1 acceptance limits](docs/P1_ENGINEERING_ACCEPTANCE.md). The current implementation uses authenticated, tenant-scoped application records, sandbox adapters and local/server-side Ollama when available. Offline responses are marked as deterministic fallbacks, **not** real AI inference. Cloud-model failover, live third-party synchronization, background job durability across replicas and production availability are **not implemented or verified**.
+> **Release status, 25 November 2026: local-first engineering prototype, not a production-certified SaaS.** Do not deploy publicly or handle real customer data without completing the security, hosting eligibility, backup, privacy and external-operations gates documented in [TEST_REPORT.md](TEST_REPORT.md), [critical readiness controls](docs/CRITICAL_READINESS_CONTROLS.md) and [P1 acceptance limits](docs/P1_ENGINEERING_ACCEPTANCE.md). The current implementation uses authenticated, tenant-scoped application records, sandbox adapters and local/server-side Ollama when available. Offline responses are marked as deterministic fallbacks, **not** real AI inference. Cloud-model failover, live third-party synchronization and external production availability are **not implemented or verified**. PostgreSQL job leases and scoped runtime roles are implemented and require operator provisioning.
 
 ## What OneBoard currently does
 
@@ -27,13 +27,13 @@ The financial engine calculates recorded active-customer MRR, normalized recurri
 
 ### 4. Tenant-owned business memory and integration sandbox
 
-Business Memory ingests bounded local documents (TXT, Markdown, JSON, CSV, XLSX and PDF), stores tenant-owned chunks and supports bounded retrieval. At most 1,000 recent chunks are examined per search; the output indicates when that window is truncated. This **does not guarantee exhaustive recall** or cryptographic verification of source truth. The app uses SQLAlchemy-backed records rather than a deployed ChromaDB vector service.
+Business Memory ingests bounded local documents (TXT, Markdown, JSON, CSV, XLSX and PDF), stores tenant-owned chunks and supports bounded retrieval. PostgreSQL uses indexed lexical retrieval and genuine model embeddings with multiprobe angular LSH and bounded cosine reranking. Local fallback remains bounded; indexed candidate truncation is labeled. This **does not guarantee exhaustive recall** or cryptographic verification of source truth. The app uses SQLAlchemy-backed records rather than a deployed ChromaDB vector service.
 
 The Integration screen distinguishes synthetic fixture refresh from live provider sync. The fixed Northstar CRM, finance and GitHub examples are only available in an explicitly enabled demo workspace, never to regular businesses or in production. Live provider OAuth and synchronization are unavailable. Sandbox emails are not externally delivered.
 
 ### 5. Server-side AI with honest failure states
 
-The API can call an operator-run Ollama daemon. The selected workspace profile must have its exact model installed before the UI claims inference is ready. Requests are bounded to two concurrent generations per API process; overloaded, offline, missing-model, timeout, malformed and incomplete responses fall back to a clearly labeled deterministic notice. **No browser model download is required by the normal architecture.** Actual free, eligible, reliable server hosting has not been approved or deployed.
+The API can call an operator-run Ollama daemon. The selected workspace profile must have its exact model installed before the UI claims inference is ready. PostgreSQL shares two concurrent inference HTTP admission slots across API workers; SQLite uses process-local slots; overloaded, offline, missing-model, timeout, malformed and incomplete responses fall back to a clearly labeled deterministic notice. **No browser model download is required by the normal architecture.** Actual free, eligible, reliable server hosting has not been approved or deployed.
 
 ## Architecture
 
@@ -116,3 +116,11 @@ Browser tests: from `apps/web` run `npx playwright test` after installing Chromi
 ## Project
 
 Developed for the Dubai AI Agents Championship. Technical questions and reproducible issues can be raised in this repository. The project remains on a draft engineering pull request while production acceptance checks are incomplete.
+
+
+## Restricted runtime and scheduled workflows
+
+Use the hash-locked Python installation on supported Python 3.11 environments.
+See [Batch E operator notes](docs/BATCH_E_ENGINEERING.md) for separate migration
+and runtime database roles, daily/weekly IANA timezone schedules, retention
+and bounded consistent export. Local CI evidence is not deployment approval.
