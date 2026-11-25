@@ -28,7 +28,7 @@ async def test_council_deliberation_and_approval(db):
     assert len(meeting.deliberation_transcript) > 0
     assert "Evaluate annual prepay incentives" in meeting.synthesis_summary
     assert meeting.recommended_actions
-    assert all(action.get("source") in ("meeting_topic", "tenant_financial_snapshot")
+    assert all(action.get("source") in ("meeting_topic", "tenant_financial_snapshot", "tenant_evidence_conflict")
                for action in meeting.recommended_actions)
     # Do not fabricate consensus when the offline model cannot establish it.
     assert not meeting.areas_of_agreement
