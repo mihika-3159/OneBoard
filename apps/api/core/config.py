@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     AUTH_SECRET_KEY: str = ""
     AUTH_PREVIOUS_SECRET_KEY: str = ""
     ACCOUNT_SECURITY_KEY: str = ""
+    TENANT_CONTEXT_KEY: str = ""
     AUTH_GLOBAL_ATTEMPTS: int = 600
     ONEBOARD_DEMO_MODE: bool = False
     ONEBOARD_PRODUCTION_MODE: bool = False

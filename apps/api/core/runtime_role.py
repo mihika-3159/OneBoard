@@ -26,8 +26,14 @@ def verify_runtime_role(engine):
         if inherited:
             raise RuntimeError("Production runtime role must have no role memberships")
         from apps.api.core.database import Base
-        expected=sorted(t.name for t in Base.metadata.tables.values()
-                        if "business_id" in t.c and t.name not in {"users","business_memberships","user_sessions"})+["sync_history"]
+        expected=sorted({t.name for t in Base.metadata.tables.values() if "business_id" in t.c}|{"businesses","sync_history"})
+        from apps.api.core.tenant_context import apply_context,context_key
+        context_key()
+        apply_context(conn,"oneboard-startup-probe")
+        if conn.execute(text("SELECT public.ob_scope_valid()")).scalar_one()!="oneboard-startup-probe":
+            raise RuntimeError("Runtime tenant context signing key does not match database")
+        if conn.execute(text("SELECT has_schema_privilege(current_user,'oneboard_private','USAGE')")).scalar_one():
+            raise RuntimeError("Runtime may not access private context schema")
         for table in expected:
             rows=conn.execute(text("""SELECT c.relrowsecurity,c.relforcerowsecurity,p.polpermissive,
                  pg_get_expr(p.polqual,c.oid),pg_get_expr(p.polwithcheck,c.oid),p.polname,p.polcmd
@@ -35,6 +41,6 @@ def verify_runtime_role(engine):
                  JOIN pg_policy p ON p.polrelid=c.oid
                  WHERE n.nspname='public' AND c.relname=:table"""),{"table":table}).all()
             if len(rows)!=1 or not all(rows[0][:3]) or rows[0][5:]!=("oneboard_tenant_scope","*") or not all(
-                    "nullif" in (expr or "").lower() and "current_user" in (expr or "").lower()
+                    "ob_scope_valid" in (expr or "").lower() and "current_user" in (expr or "").lower()
                     for expr in rows[0][3:5]):
                 raise RuntimeError("Production tenant policy missing or unexpected")

@@ -90,7 +90,8 @@ def register(
         # so a failed transaction cannot silently reset the abuse budget.
         record_failed_login(source_key, db)
 
-    existing_user = db.query(User).filter(User.email == clean_email).first()
+    from apps.api.core.tenant_context import restricted,lookup
+    existing_user = lookup(db,"email",clean_email) if restricted(db) else db.query(User).filter(User.email == clean_email).first()
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -108,6 +109,12 @@ def register(
         monthly_burn_rate=0.0,
         runway_months=0.0
     )
+    if restricted(db):
+        from uuid import uuid4
+        from apps.api.core.database import scope_tenant_session
+        business.id=str(uuid4())
+        db.info["oneboard_registration"]=True
+        scope_tenant_session(db,business.id)
     db.add(business)
     db.flush()
 
@@ -152,6 +159,8 @@ def register(
         db.rollback()
         raise
 
+    if isinstance(db,Session):
+        db.info.pop("oneboard_registration",None)
     token = create_access_token(
         user_id=user.id,
         business_id=business.id,
@@ -221,7 +230,18 @@ def login(
     # Throttle expensive password verification by source first. Its DB advisory
     # lock stays held until the successful reset or failed-attempt commit.
     check_login_throttle(source_key, db)
-    user = db.query(User).filter(User.email == clean_email).first()
+    from apps.api.core.tenant_context import restricted,lookup
+    if restricted(db):
+        found=lookup(db,"email",clean_email)
+        if found:
+            from apps.api.core.database import scope_tenant_session
+            db.info["oneboard_exclusive_lifecycle"]=True
+            scope_tenant_session(db,found.tenant)
+            user=db.query(User).filter_by(id=found.uid,business_id=found.tenant).first()
+        else:
+            user=None
+    else:
+        user = db.query(User).filter(User.email == clean_email).first()
     valid_credentials = (
         user is not None
         and verify_password(req.password, user.hashed_password)
@@ -332,6 +352,11 @@ def logout(
         if payload:
             jti = payload.get("jti")
             if jti:
+                from apps.api.core.tenant_context import restricted
+                if restricted(db):
+                    from apps.api.core.database import scope_tenant_session
+                    db.info["oneboard_exclusive_lifecycle"]=True
+                    scope_tenant_session(db,payload["biz"])
                 session_record = db.query(UserSession).filter(UserSession.id == jti).first()
                 # A signed token is not authority to revoke an unrelated session.
                 # Check the persisted owner and tenant before changing state.

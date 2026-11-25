@@ -467,6 +467,9 @@ def get_current_user(
 
         jti = payload.get("jti")
         user_id = payload.get("sub")
+        from apps.api.core.tenant_context import restricted
+        if restricted(db):
+            scope_tenant_session(db,payload["biz"])
 
         # Verify session revocation in database if jti is present
         if jti:
@@ -517,6 +520,12 @@ def get_current_user(
             ):
                 raise invalid_key
         # Production never compares a raw API key against stored secrets.
+        from apps.api.core.tenant_context import restricted,lookup
+        if restricted(db):
+            found=lookup(db,"key",hash_api_key(api_key))
+            if not found:
+                raise invalid_key
+            scope_tenant_session(db,found.tenant)
         user = db.query(User).filter(
             User.api_key == hash_api_key(api_key),
             User.is_active == True,

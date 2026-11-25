@@ -61,9 +61,9 @@ def scope_tenant_session(db, tenant):
         raise PermissionError("Cannot switch tenant on authenticated session")
     db.info["oneboard_tenant"] = tenant
     if db.get_bind().dialect.name == "postgresql":
-        db.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
-                   {"tenant": tenant})
-        if db.info.get("oneboard_request"):
+        from apps.api.core.tenant_context import apply_context
+        apply_context(db.connection(),tenant)
+        if db.info.get("oneboard_request") and not db.info.get("oneboard_registration"):
             _request_lifecycle_scope(db.connection(), tenant, db.info.get('oneboard_exclusive_lifecycle', False),db.info.get('oneboard_auth'),db.info.get('oneboard_founder',False))
 
 
@@ -74,9 +74,9 @@ def _restore_tenant_scope(session, transaction, connection):
         if session.info.get("oneboard_worker"):
             connection.execute(text("SET LOCAL lock_timeout = '3s'"))
             connection.execute(text("SET LOCAL statement_timeout = '15s'"))
-        connection.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
-                           {"tenant": tenant})
-        if session.info.get("oneboard_request"):
+        from apps.api.core.tenant_context import apply_context
+        apply_context(connection,tenant)
+        if session.info.get("oneboard_request") and not session.info.get("oneboard_registration"):
             _request_lifecycle_scope(connection, tenant, session.info.get('oneboard_exclusive_lifecycle', False),session.info.get('oneboard_auth'),session.info.get('oneboard_founder',False))
 
 
