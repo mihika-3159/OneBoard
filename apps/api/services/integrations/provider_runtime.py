@@ -242,3 +242,142 @@ def retry_sync(db,tenant,ident):
     if row.generation!=job.generation or row.state!="connected":raise ValueError("Reconnect and queue a new sync")
     job.state="queued";job.attempts=0;job.next_attempt=now();job.error_code=None;job.finished_at=None
     db.commit();return sync_public(job)
+
+
+# Explicit founder-approved actions only. The provider must support idempotency
+# and read-only lookup by request key; an ambiguous send is never replayed.
+ACTION_FIELDS={"contact.upsert":({"name","email"},{"company"}),"email.send":({"recipient","subject","body"},set()),
+    "event.create":({"title","start","end"},{"description"}),"issue.create":({"repository","title","body"},set()),
+    "page.create":({"parent_id","title","body"},set()),"document.create":({"title","body"},set())}
+
+def action_payload(action,payload):
+    required,optional=ACTION_FIELDS[action];json_payload(payload)
+    if not required<=set(payload)<=required|optional:raise ValueError("Invalid action fields")
+    for name,value in payload.items():bounded_string(value,12000 if name=="body" else 1000)
+    if action=="email.send" and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",payload["recipient"]):raise ValueError("Invalid recipient")
+    if action=="event.create":
+        try:
+            start=datetime.fromisoformat(payload["start"].replace("Z","+00:00"))
+            end=datetime.fromisoformat(payload["end"].replace("Z","+00:00"))
+            if start.tzinfo is None or end.tzinfo is None or end<=start:raise ValueError()
+        except ValueError:raise ValueError("Event requires ordered timezone-aware dates") from None
+    return payload
+
+def delivery_public(row):
+    return {"id":row.id,"action":row.action,"state":row.state,"request_key":row.request_key,"remote_reference":row.remote_reference,
+            "error_code":row.error_code,"created_at":row.created_at.isoformat()+"Z","updated_at":row.updated_at.isoformat()+"Z",
+            "provider_confirmed":row.state=="confirmed"}
+
+def approve_action(db,tenant,actor,provider,action,payload,request_key,confirmation):
+    key(request_key)
+    if provider not in CAPABILITIES or action not in CAPABILITIES[provider][1] or confirmation!="APPROVE "+action:raise ValueError("Explicit supported action confirmation required")
+    payload=action_payload(action,payload)
+    _lock(db,tenant);row=connection(db,tenant,provider)
+    checksum=digest([action,payload])
+    old=db.query(ProviderDelivery).filter_by(business_id=tenant,connection_id=row.id,request_key=request_key).first()
+    if old:
+        if old.request_hash!=checksum:raise ValueError("Request key already used for different action")
+        return delivery_public(old)
+    if row.state!="connected" or CAPABILITIES[provider][1][action] not in row.scopes:raise ValueError("Connected write scope required")
+    if db.query(ProviderDelivery).filter_by(business_id=tenant).count()>=2000:raise ValueError("Delivery capacity reached")
+    action_row=ProviderDelivery(business_id=tenant,connection_id=row.id,generation=row.generation,request_key=request_key,
+      request_hash=checksum,action=action,payload=payload,actor_id=actor)
+    db.add(action_row);db.commit();return delivery_public(action_row)
+
+def apply_delivery_status(action,result):
+    if result.get("idempotency_key")!=action.request_key:raise ValueError("Delivery identity mismatch")
+    state=result.get("status")
+    if state=="confirmed":
+        action.remote_reference=bounded_string(result.get("remote_reference"),255);action.state="confirmed";action.error_code=None
+    elif state=="rejected":
+        action.state="rejected";action.error_code="provider_rejected"
+    elif state in ("pending","not_found","unknown"):
+        action.state="uncertain";action.error_code="delivery_unconfirmed"
+    else:raise ValueError("Invalid delivery status")
+
+def dispatch_one(db,tenant):
+    from apps.api.models.business import Business,User
+    from apps.api.services.durable_jobs import execution_lock
+    # Durable dispatching marker precedes network. A separate execution lock
+    # prevents a reconciliation racing an active worker in PostgreSQL.
+    _lock(db,tenant)
+    action=db.query(ProviderDelivery).filter_by(business_id=tenant,state="approved").order_by(ProviderDelivery.created_at,ProviderDelivery.id).first()
+    if not action:db.rollback();return None
+    ident=action.id
+    with execution_lock(db.get_bind(),"provider-delivery:"+tenant+":"+ident) as held:
+        if not held:db.rollback();return None
+        row=by_id(db,tenant,action.connection_id)
+        owner=db.query(Business).filter_by(id=tenant,owner_id=action.actor_id).first()
+        actor=db.query(User).filter_by(id=action.actor_id,business_id=tenant,is_active=True).first()
+        if not owner or not actor or row.state!="connected" or row.generation!=action.generation or CAPABILITIES[row.provider][1].get(action.action) not in row.scopes:
+            action.state="cancelled";action.updated_at=now();db.commit();return delivery_public(action)
+        try:
+            adapter=adapter_for(row.provider);token=credentials(db,row,adapter)
+        except (ValueError,ProviderFailure):
+            action.state="cancelled";action.error_code="authorization_unavailable";row.state="auth_required";db.commit();return delivery_public(action)
+        action.state="dispatching";action.updated_at=now();db.commit()
+        _lock(db,tenant)
+        action=db.query(ProviderDelivery).filter_by(business_id=tenant,id=ident).one()
+        row=by_id(db,tenant,action.connection_id)
+        if row.generation!=action.generation or row.state!="connected":
+            action.state="cancelled";action.updated_at=now();db.commit();return delivery_public(action)
+        try:
+            result=adapter.deliver(token,action.action,action.payload,action.request_key)
+            apply_delivery_status(action,result)
+        except (ProviderFailure,ValueError):
+            # Even a timeout or 5xx may have occurred after side effect.
+            action.state="uncertain";action.error_code="delivery_uncertain"
+        action.updated_at=now();db.commit();return delivery_public(action)
+
+def reconcile_delivery(db,tenant,ident):
+    from apps.api.services.durable_jobs import execution_lock
+    with execution_lock(db.get_bind(),"provider-delivery:"+tenant+":"+ident) as held:
+        if not held:raise ValueError("Delivery worker is active")
+        _lock(db,tenant)
+        action=db.query(ProviderDelivery).filter_by(business_id=tenant,id=ident).first()
+        if not action:raise ValueError("Delivery unavailable")
+        if action.state in ("confirmed","rejected","cancelled"):return delivery_public(action)
+        if action.state not in ("dispatching","uncertain"):raise ValueError("Delivery has not been dispatched")
+        row=by_id(db,tenant,action.connection_id)
+        try:
+            adapter=adapter_for(row.provider);token=credentials(db,row,adapter)
+            apply_delivery_status(action,adapter.delivery_status(token,action.request_key))
+        except (ValueError,ProviderFailure):
+            action.state="uncertain";action.error_code="status_unavailable"
+        action.updated_at=now();db.commit();return delivery_public(action)
+
+def cancel_action(db,tenant,ident):
+    _lock(db,tenant);action=db.query(ProviderDelivery).filter_by(business_id=tenant,id=ident,state="approved").first()
+    if not action:raise ValueError("Only undispatched approved actions may be cancelled")
+    action.state="cancelled";action.updated_at=now();db.commit();return delivery_public(action)
+
+def webhook_signature(provider,tenant,connection_id,timestamp,body,signature):
+    from apps.api.services.integrations.provider_transport import configuration
+    import time
+    config=configuration(provider)
+    secret=config.get("webhook_secret")
+    if not isinstance(secret,str) or len(secret)<32 or len(secret)>512:raise ValueError("Webhook unavailable")
+    if not re.fullmatch(r"[0-9]{1,12}",timestamp or "") or abs(time.time()-int(timestamp))>300:raise ValueError("Webhook timestamp outside window")
+    if not re.fullmatch(r"[a-f0-9]{64}",signature or ""):raise ValueError("Invalid webhook signature")
+    signed=b"\n".join([provider.encode(),tenant.encode(),connection_id.encode(),timestamp.encode(),body])
+    expected=hmac.new(secret.encode(),signed,hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected,signature):raise ValueError("Invalid webhook signature")
+
+def accept_webhook(db,tenant,provider,connection_id,body):
+    # The router authenticates the exact raw bytes before applying tenant scope.
+    try:
+        data=json.loads(body)
+        if not isinstance(data,dict) or set(data)!={"event_id","account_id","type"} or data["type"]!="records.changed":raise ValueError()
+        event=key(data["event_id"]);account=bounded_string(data["account_id"],255)
+    except (ValueError,TypeError,UnicodeError):raise ValueError("Invalid webhook event") from None
+    _lock(db,tenant);row=by_id(db,tenant,connection_id)
+    if row.provider!=provider or row.state!="connected" or row.remote_account!=account:raise ValueError("Webhook account unavailable")
+    checksum=hashlib.sha256(body).hexdigest()
+    old=db.query(ProviderWebhookReceipt).filter_by(business_id=tenant,connection_id=row.id,event_id=event).first()
+    if old:
+        if old.body_hash!=checksum:raise ValueError("Webhook event identity conflict")
+        return {"accepted":True,"duplicate":True}
+    if db.query(ProviderWebhookReceipt).filter_by(business_id=tenant).count()>=10000:raise ValueError("Webhook receipt capacity reached")
+    db.add(ProviderWebhookReceipt(business_id=tenant,connection_id=row.id,event_id=event,body_hash=checksum))
+    enqueue(db,tenant,provider,"webhook:"+hashlib.sha256(event.encode()).hexdigest(),commit=False)
+    db.commit();return {"accepted":True,"duplicate":False}
