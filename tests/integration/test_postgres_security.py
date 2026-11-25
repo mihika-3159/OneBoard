@@ -280,7 +280,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
                 {"id": session_id, "user": user_id, "business": tenant_id},
             )
 
-        alembic("downgrade", "-6")
+        alembic("downgrade", "003_app_schema")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
             assert revision == "003_app_schema"
@@ -373,7 +373,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
         )
 
     try:
-        result = run_migration("downgrade", "-5")
+        result = run_migration("downgrade", "004_schema_indexes")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             assert conn.execute(
@@ -670,7 +670,7 @@ def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch
     try:
         # A disposable, isolated CI schema without active hashed keys can
         # safely return to 005 for a representative legacy upgrade.
-        result = migrate("downgrade", "-4")
+        result = migrate("downgrade", "005_auth_foreign_keys")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             assert conn.execute(
@@ -757,7 +757,7 @@ def test_15_postgres_rejects_weak_legacy_api_key_without_data_loss():
         )
 
     try:
-        result = migrate("downgrade", "-4")
+        result = migrate("downgrade", "005_auth_foreign_keys")
         assert result.returncode == 0, result.stderr[-2000:]
         with engine.begin() as conn:
             conn.execute(

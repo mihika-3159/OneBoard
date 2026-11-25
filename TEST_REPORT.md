@@ -968,3 +968,12 @@ New tests cover stale lease fencing, concurrent claims, rollback of draft
 intent, quota bytes and tenant separation, cross-tenant FK denial, restricted
 role RLS, and browser tenant outbox isolation. All new tests are unexecuted
 at authoring. No independent certification, real provider effects, or deployment.
+
+
+### Batch B CI repair
+
+Increment 2 PostgreSQL CI exposed migration-test drift: relative downgrade
+counts targeted the wrong historical revisions after adding 010, leading to
+a cascade of subsequent fixture errors. Replaced relative counts with the
+same explicit historical revisions the tests already asserted. No security
+assertions or tests removed. Full exact-head CI required again.
