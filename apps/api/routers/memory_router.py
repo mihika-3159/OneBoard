@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 from pathlib import Path
 import logging
+import asyncio
 from apps.api.core.database import get_db
 from apps.api.core.config import settings
 from apps.api.services.tenant_resource_budget import consume_tenant_budget
@@ -128,7 +129,7 @@ async def upload_document(
         )
 
     try:
-        extracted = local_files_adapter.extract_text(contents, filename)
+        extracted = await asyncio.to_thread(local_files_adapter.extract_text,contents,filename)
     except Exception as exc:
         # Avoid returning parser exceptions, internal paths or document contents.
         logger.warning("Rejected document upload (%s parser: %s)", ext, type(exc).__name__)

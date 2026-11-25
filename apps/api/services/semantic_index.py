@@ -86,10 +86,12 @@ async def index_pending(db,tenant,limit=16,gateway=None):
         ).update({"model_key":key,"status":"pending","attempts":0,"indexed_count":0,
                   "next_attempt_at":0,"lease_until":0,"claim_token":None,"error":None},synchronize_session=False)
         db.flush();db.expire_all()
-        rows=pending_chunks(db,tenant,key).filter(or_(MemoryDocumentState.document_id.is_(None),
+        candidates=pending_chunks(db,tenant,key).filter(or_(MemoryDocumentState.document_id.is_(None),
             and_(MemoryDocumentState.next_attempt_at<=now,MemoryDocumentState.lease_until<=now,
-                 MemoryDocumentState.status!="failed"))).order_by(
-            MemoryChunk.created_at,MemoryChunk.id).limit(limit).all()
+                 MemoryDocumentState.status!="failed")))
+        # Interleave documents so a long report cannot starve small new sources.
+        ranked=candidates.with_entities(MemoryChunk.id.label("cid"),func.row_number().over(partition_by=MemoryChunk.document_id,order_by=(MemoryChunk.chunk_index,MemoryChunk.id)).label("rn")).subquery()
+        rows=db.query(MemoryChunk).join(ranked,MemoryChunk.id==ranked.c.cid).order_by(ranked.c.rn,MemoryChunk.created_at,MemoryChunk.id).limit(limit).all()
         work=[(row.id,row.document_id,row.content) for row in rows]
         token=str(uuid4())
         for did in set(x[1] for x in work):
@@ -180,12 +182,13 @@ def progress(db,tenant):
     model,key=model_identity(ollama_gateway)
     rows=db.query(MemoryDocument,MemoryDocumentState).outerjoin(MemoryDocumentState,state_join()).filter(
         MemoryDocument.business_id==tenant).order_by(MemoryDocument.created_at.desc()).limit(200).all()
+    counts=dict(db.query(MemoryChunk.document_id,func.count()).join(SemanticVector,and_(SemanticVector.chunk_id==MemoryChunk.id,SemanticVector.business_id==MemoryChunk.business_id)).filter(MemoryChunk.business_id==tenant,SemanticVector.model==key).group_by(MemoryChunk.document_id).all())
     return {"model":model,"model_identity":key,"documents":[
         {"document_id":d.id,"title":d.title,"file_type":d.file_type,"source_connector":d.source_connector,
          "version":s.version if s else 1,"root_id":s.root_id if s else d.id,
          "active":s.active if s else True,"total_chunks":d.chunk_count,
-         "indexed_chunks":s.indexed_count if s and s.model_key==key else 0,
-         "status":s.status if s and s.model_key==key else "pending",
+         "indexed_chunks":counts.get(d.id,0),
+         "status":"superseded" if s and not s.active else "ready" if d.chunk_count and counts.get(d.id,0)==d.chunk_count else s.status if s and s.model_key==key else "pending",
          "attempts":s.attempts if s else 0,"error":s.error if s and s.model_key==key else None}
         for d,s in rows]}
 

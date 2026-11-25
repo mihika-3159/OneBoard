@@ -3,6 +3,9 @@ import csv
 import io
 import json
 import zipfile
+import os,sys,subprocess
+from threading import BoundedSemaphore
+_PARSE_SLOTS=BoundedSemaphore(2)
 from itertools import islice
 from pathlib import Path
 from typing import Dict, Any
@@ -19,7 +22,7 @@ MAX_ARCHIVE_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
 
 
 def _bounded_text(text: str) -> str:
-    if len(text) > MAX_EXTRACTED_CHARS:
+    if "\x00" in text or len(text) > MAX_EXTRACTED_CHARS:
         raise ValueError("Extracted document text exceeds processing limit")
     return text
 
@@ -29,6 +32,33 @@ class LocalFilesAdapter:
 
     @staticmethod
     def extract_text(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+        if not isinstance(file_bytes,bytes) or not 1<=len(file_bytes)<=10*1024*1024:
+            raise ValueError("Invalid upload length")
+        ext=Path(filename.replace("\\","/")).suffix.lower()
+        if ext not in (".pdf",".xlsx"):
+            return LocalFilesAdapter._extract(file_bytes,filename)
+        # Untrusted compressed document parsing is isolated from the API
+        # process. Bound concurrency and kill timed-out parser workers.
+        if not _PARSE_SLOTS.acquire(timeout=2):
+            raise ValueError("Parser busy; retry")
+        try:
+            env={key:os.environ[key] for key in ("PATH","SYSTEMROOT","WINDIR","TEMP","TMP","PYTHONPATH","LANG","LC_ALL") if key in os.environ}
+            result=subprocess.run([sys.executable,"-m","apps.api.services.integrations.local_file_worker",ext],
+                input=file_bytes,capture_output=True,timeout=25,env=env,check=False)
+            if result.returncode or len(result.stdout)>8*1024*1024:
+                raise ValueError("Document parser rejected input")
+            parsed=json.loads(result.stdout)
+            if not isinstance(parsed,dict) or parsed.get("file_type")!=ext[1:] or not isinstance(parsed.get("text"),str):
+                raise ValueError("Invalid parser result")
+            parsed["metadata"]={**parsed.get("metadata",{}),"filename":Path(filename.replace("\\","/")).name}
+            return parsed
+        except (subprocess.TimeoutExpired,OSError,ValueError):
+            raise ValueError("Document could not be parsed within resource limits") from None
+        finally:
+            _PARSE_SLOTS.release()
+
+    @staticmethod
+    def _extract(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         safe_filename = Path(filename.replace("\\", "/")).name
         ext = Path(safe_filename).suffix.lower()
         metadata = {"filename": safe_filename}
@@ -98,7 +128,8 @@ class LocalFilesAdapter:
         if ext == ".pdf":
             if b"%PDF-" not in file_bytes[:1024]:
                 raise ValueError("Invalid PDF signature")
-            reader = PdfReader(io.BytesIO(file_bytes))
+            reader = PdfReader(io.BytesIO(file_bytes),strict=True)
+            if reader.is_encrypted:raise ValueError("Encrypted PDF unsupported")
             if len(reader.pages) > MAX_PDF_PAGES:
                 raise ValueError("PDF page limit exceeded")
             pages = []

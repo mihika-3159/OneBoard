@@ -38,7 +38,7 @@ class MemoryEngine:
         from apps.api.services.memory_sources import citation
         semantic=await retrieve(db,business_id,query,min(200,max(50,top_k*4)),filters)
         indexed=db.get_bind().dialect.name=="postgresql"
-        scope=db.query(MemoryChunk,MemoryDocument,MemoryDocumentState).join(MemoryDocument,
+        scope=db.query(MemoryChunk,MemoryDocument.title).join(MemoryDocument,
             and_(MemoryChunk.document_id==MemoryDocument.id,MemoryChunk.business_id==MemoryDocument.business_id)
         ).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id==business_id,active_state())
         scope=filter_scope(scope,filters)
@@ -53,24 +53,30 @@ class MemoryEngine:
         elif indexed:
             entries=[];strategy="postgresql_indexed_fulltext"
         else:
-            entries=scope.order_by(MemoryChunk.created_at.desc(),MemoryChunk.id.desc()).limit(cap+1).all()
-            strategy="recent_window_dev"
+            # Development SQLite scans the bounded tenant corpus for lexical
+            # matches before applying the candidate limit; no fake vectors.
+            entries=scope.filter(or_(*(func.lower(MemoryChunk.content).contains(token,autoescape=True) for token in sorted(tokens)[:32]))).order_by(MemoryChunk.created_at.desc(),MemoryChunk.id.desc()).limit(cap+1).all() if tokens else []
+            strategy="sqlite_bounded_lexical_scan"
         lexical=[]
-        for chunk,doc,state in entries[:cap]:
+        for chunk,title in entries[:cap]:
             overlap=len(tokens & terms(chunk.content))
             if not overlap:continue
-            lexical.append({"chunk_id":chunk.id,"document_id":doc.id,"source_title":doc.title,
+            lexical.append({"chunk_id":chunk.id,"document_id":chunk.document_id,"source_title":title,
               "content":chunk.content,"score":overlap/max(1,len(tokens)),"metadata":chunk.metadata_tags or {},
-              "search_strategy":strategy,"candidate_limit_applied":len(entries)>cap,"candidate_count":min(len(entries),cap),
-              "citation":citation(doc,chunk,state)})
+              "search_strategy":strategy,"candidate_limit_applied":len(entries)>cap,"candidate_count":min(len(entries),cap)})
         lexical.sort(key=lambda row:(-row["score"],row["chunk_id"]))
-        if semantic:
-            candidates=scope.filter(MemoryChunk.id.in_([x["chunk_id"] for x in semantic])).all()
-            sources={c.id:(c,d,state) for c,d,state in candidates}
-            semantic=[{**x,"citation":citation(sources[x["chunk_id"]][1],sources[x["chunk_id"]][0],sources[x["chunk_id"]][2])}
-                      for x in semantic if x["chunk_id"] in sources and sources[x["chunk_id"]][0].content==x["content"]]
         votes=feedback_scores(db,business_id,query,list({x["chunk_id"] for x in lexical+semantic}))
-        return fuse(lexical,semantic,top_k,votes)
+        ranked=fuse(lexical,semantic,top_k,votes)
+        if not ranked:return []
+        # Load full source text only for final results, then revalidate
+        # active state and the exact quotation. No per-result query.
+        sources=db.query(MemoryChunk,MemoryDocument,MemoryDocumentState).join(MemoryDocument,
+            and_(MemoryChunk.document_id==MemoryDocument.id,MemoryChunk.business_id==MemoryDocument.business_id)
+        ).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id==business_id,active_state(),
+            MemoryChunk.id.in_([x["chunk_id"] for x in ranked])).all()
+        byid={c.id:(c,d,state) for c,d,state in sources}
+        return [{**x,"citation":citation(byid[x["chunk_id"]][1],byid[x["chunk_id"]][0],byid[x["chunk_id"]][2])}
+                for x in ranked if x["chunk_id"] in byid and byid[x["chunk_id"]][0].content==x["content"]]
 
     def get_relationship_graph(self,db:Session,business_id:str):
         from apps.api.services.memory_graph import graph
