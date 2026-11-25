@@ -54,7 +54,7 @@ def verify_encrypted_roundtrip() -> dict:
         restore_env = dict(os.environ, ONEBOARD_RESTORE_DRILL_APPROVED="YES",
                            ONEBOARD_RESTORE_SCRATCH_URL=scratch)
         report = drill(archive, identity, restore_env)
-        if not report["restore_verified"] or report["schema_head"] != "016_batch_f_relationships":
+        if not report["restore_verified"] or report["schema_head"] != "018_batch_h_agent_runs":
             raise RuntimeError("Encrypted decryption and restore failed")
         if report["table_count"] < 20:
             raise RuntimeError("Recovered schema incomplete")

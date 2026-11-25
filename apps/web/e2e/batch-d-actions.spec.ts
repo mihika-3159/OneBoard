@@ -99,6 +99,18 @@ test('real command, workflow, agent, boardroom and settings controls operate on 
   await page.getByLabel('Test simulation input').fill('Synthetic question');
   await clickRequest(page,'Test Agent in Sandbox','/api/agents/'+agent.id+'/test');
   await expect(page.getByText('Agent Output:')).toBeVisible();
+  await page.getByLabel('Run goal').fill('Read synthetic customer records');
+  await page.getByLabel('Step 1 tool').selectOption('read_crm');
+  const durable = await clickRequest(page,'Create durable run','/api/agents/'+agent.id+'/runs');
+  expect(durable.status).toBe('ready');
+  expect(durable.external_effects_enabled).toBe(false);
+  await expect(page.getByText('Read synthetic customer records', {exact:false})).toBeVisible();
+  const finished = await clickRequest(page,'Advance or recover checkpoint','/api/agents/runs/'+durable.id+'/advance');
+  expect(finished.status).toBe('completed');
+  expect(finished.results[0].tool).toBe('read_crm');
+  await tab(page,'Overview');
+  await tab(page,'Agent Studio');
+  await expect(page.getByText(/Read synthetic customer records.*completed/)).toBeVisible();
   await tab(page,'Accountability');
   await tab(page,'Settings');
   await clickRequest(page,'Refresh Status','/api/ai/status','GET');

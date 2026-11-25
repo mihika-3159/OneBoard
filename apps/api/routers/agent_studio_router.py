@@ -168,14 +168,14 @@ def start_agent_run(agent_id: str, req: RuntimeStart, current_user: User = Depen
 
 @router.get("/runs")
 def list_agent_runs(current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
-    rows = db.query(AgentRun.id).filter_by(business_id=current_user.business_id, approval_state="runtime_read_only")\
+    rows = db.query(AgentRun).filter_by(business_id=current_user.business_id, approval_state="runtime_read_only")\
         .order_by(AgentRun.created_at.desc()).limit(50).all()
-    return [agent_runtime.serialize(agent_runtime.expire_or_recover(db, current_user.business_id, row[0])) for row in rows]
+    return [agent_runtime.serialize(row) for row in rows]
 
 
 @router.get("/runs/{run_id}")
 def get_agent_run(run_id: str, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
-    run = agent_runtime.expire_or_recover(db, current_user.business_id, run_id)
+    run = agent_runtime.get_run(db, current_user.business_id, run_id)
     if not run:
         raise HTTPException(404, "Run unavailable")
     return agent_runtime.serialize(run)

@@ -33,7 +33,7 @@ export function AgentRuntimePanel({agents,selectedAgent}:{agents:CustomAgent[];s
     {error&&<p role="alert" className="text-rose-400">{error}</p>}
     {runs.map(run=><article key={run.id} className="border border-slate-700 rounded p-3 space-y-2">
       <div>{run.goal} · <strong>{run.status}</strong> · {run.next_step}/{run.steps} steps</div>
-      <div className="flex gap-3">{['ready','running'].includes(run.status)&&<>
+      <div className="flex gap-3">{['ready','running','recoverable'].includes(run.status)&&<>
         <button disabled={busy} onClick={()=>void act(()=>api.advanceAgentRun(run.id))}>Advance or recover checkpoint</button>
         <button onClick={()=>void act(()=>api.cancelAgentRun(run.id))}>Cancel run</button></>}</div>
       <details><summary>Recorded checkpoint results</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify({results:run.results,errors:run.errors},null,2)}</pre></details>

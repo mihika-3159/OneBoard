@@ -34,8 +34,14 @@ def get_run(db, tenant, run_id):
 
 
 def serialize(run):
+    state = run.status
+    now = datetime.utcnow()
+    if state not in TERMINAL and run.deadline and run.deadline <= now:
+        state = "expired"
+    if state == "running" and run.lease_until and run.lease_until <= now:
+        state = "failed" if run.attempt_count >= MAX_ATTEMPTS else "recoverable"
     return {"id": run.id, "agent_id": run.agent_id, "goal": run.goal,
-            "status": run.status, "next_step": run.next_step, "steps": len(run.planned_steps or []),
+            "status": state, "next_step": run.next_step, "steps": len(run.planned_steps or []),
             "results": run.tool_results or [], "errors": run.errors or [],
             "deadline": run.deadline, "checkpoint_at": run.checkpoint_at,
             "external_effects_enabled": False}
@@ -192,25 +198,34 @@ async def execute_step(db, tenant, run, step, agent):
         rows = db.query(MemoryChunk).join(MemoryDocument, (MemoryDocument.id == MemoryChunk.document_id) &
             (MemoryDocument.business_id == tenant)).filter(MemoryChunk.business_id == tenant,
             MemoryChunk.document_id == step["document_id"]).order_by(MemoryChunk.chunk_index).limit(5)
+        if not db.query(MemoryDocument.id).filter_by(business_id=tenant,id=step["document_id"]).first():
+            raise ValueError("Granted document no longer exists")
         return {"chunks": [{"id": row.id, "content": row.content[:500]} for row in rows]}
     # Handoffs use only previous bounded checkpoint data, quoted and explicitly
     # restricted to this run. Previous agents cannot grant tools to successors.
     previous = run.tool_results or []
     # Handoff data are explicitly filtered against the receiving agent's own
     # grants. Free-form analysis is never forwarded across agent boundaries.
-    visible = [p for p in previous if p["agent_id"] == agent.id]
+    def can_share(entry):
+        source_step = run.planned_steps[entry["step"]]
+        try:
+            authorize(agent, source_step)
+        except ValueError:
+            return False
+        if source_step["tool"] == "read_memory":
+            return bool(db.query(MemoryDocument.id).filter_by(
+                business_id=tenant,id=source_step["document_id"]).first())
+        return True
+
+    visible = [p for p in previous if p["agent_id"] == agent.id and can_share(p)]
     handoffs = []
     for entry in previous:
         if entry["agent_id"] == agent.id:
             continue
         item = {"agent_id": entry["agent_id"], "tool": entry["tool"], "status": "completed"}
         source_step = run.planned_steps[entry["step"]]
-        if entry["tool"] in TOOLS - {"analyze"}:
-            try:
-                authorize(agent, source_step)
-                item["data"] = entry["data"]
-            except ValueError:
-                pass
+        if entry["tool"] in TOOLS - {"analyze"} and can_share(entry):
+            item["data"] = entry["data"]
         handoffs.append(item)
     with inference_tenant(tenant):
         response = await ollama_gateway.chat_complete(

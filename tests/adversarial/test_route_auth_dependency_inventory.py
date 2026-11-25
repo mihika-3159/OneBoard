@@ -42,6 +42,12 @@ PUBLIC_API = {
 FOUNDER_MUTATIONS = {
     "/api/agents",
     "/api/agents/{agent_id}/toggle-status",
+    "/api/agents/{agent_id}/runs",
+    "/api/agents/runs/{run_id}/advance",
+    "/api/agents/runs/{run_id}/cancel",
+    "/api/council/meetings/reconcile-interrupted",
+    "/api/accountability/decisions/{decision_id}/forecast",
+    "/api/accountability/meetings/{meeting_id}/forecast/{argument_id}",
     "/api/workflows",
     "/api/workflows/{workflow_id}/execute",
     "/api/workflows/runs/reconcile-interrupted",

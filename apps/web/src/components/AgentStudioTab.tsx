@@ -36,7 +36,8 @@ export const AgentStudioTab: React.FC = () => {
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b');
-  const [allowedTools, setAllowedTools] = useState<string[]>(['read_crm', 'check_telemetry']);
+  const [allowedTools, setAllowedTools] = useState<string[]>(['read_crm']);
+  const [runtimeSteps, setRuntimeSteps] = useState(4);
   const [memoryScopes, setMemoryScopes] = useState('');
   const [requiresApproval, setRequiresApproval] = useState<string[]>(['send_email']);
 
@@ -72,7 +73,7 @@ export const AgentStudioTab: React.FC = () => {
       setDepartment(config.department || 'Operations');
       setDescription(config.description || '');
       setSystemPrompt(config.system_prompt || '');
-      setAllowedTools(config.allowed_tools || ['read_crm']);
+      setAllowedTools((config.allowed_tools || []).filter((tool: string)=>['read_crm','calculate_metrics','read_memory'].includes(tool)));
       setRequiresApproval(config.requires_approval_for || ['send_email']);
       setCreateMode('visual');
     } catch (e) {
@@ -95,7 +96,7 @@ export const AgentStudioTab: React.FC = () => {
         allowed_tools: allowedTools,
         allowed_memory_collections: memoryScopes.split(',').map(value=>value.trim()).filter(Boolean),
         requires_approval_for: requiresApproval,
-        max_steps: 4,
+        max_steps: runtimeSteps,
       });
       await loadAgents();
       setSelectedAgent(newAgent);
@@ -150,6 +151,13 @@ export const AgentStudioTab: React.FC = () => {
       </div>
 
       {/* Creation Modal / Drawer */}
+      {isCreating && <div className="rounded-xl border border-slate-700 p-3 space-y-2">
+        <p className="text-sm text-slate-300">Explicit read-only runtime tool grants</p>
+        {['read_crm','calculate_metrics','read_memory'].map(tool=><label className="flex gap-2 text-sm" key={tool}>
+          <input type="checkbox" checked={allowedTools.includes(tool)} onChange={e=>setAllowedTools(old=>e.target.checked?[...old,tool]:old.filter(t=>t!==tool))}/>{tool}
+        </label>)}
+        <label className="block text-sm">Maximum runtime steps<input type="number" min={1} max={12} value={runtimeSteps} onChange={e=>setRuntimeSteps(Math.max(1,Math.min(12,Number(e.target.value)||1)))} className="block bg-slate-900 border rounded p-2"/></label>
+        </div>}
       {isCreating && <label className="block text-sm text-slate-300">Permitted memory document IDs (comma-separated; blank grants none)
         <input className="block w-full bg-slate-900 border rounded p-2" value={memoryScopes} onChange={e=>setMemoryScopes(e.target.value)}/>
       </label>}
@@ -304,7 +312,7 @@ export const AgentStudioTab: React.FC = () => {
                 <div className="text-[11px] text-slate-400 mt-1">{a.role_title} • {a.department}</div>
                 <div className="text-[10px] text-slate-500 mt-2 font-mono flex items-center justify-between">
                   <span>Model: {a.selected_model}</span>
-                  <span>Tools: {a.allowed_tools?.length || 2}</span>
+                  <span>Tools: {a.allowed_tools?.length ?? 0}</span>
                 </div>
               </div>
             ))}
@@ -340,7 +348,7 @@ export const AgentStudioTab: React.FC = () => {
                 <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1.5 text-[11px]">
                   <div className="flex justify-between">
                     <span className="text-slate-400">Permitted Tools:</span>
-                    <span className="text-indigo-300 font-mono">{selectedAgent.allowed_tools?.join(', ') || 'read_crm'}</span>
+                    <span className="text-indigo-300 font-mono">{selectedAgent.allowed_tools?.join(', ') || 'None'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Approval Required For:</span>
