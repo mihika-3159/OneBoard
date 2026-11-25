@@ -160,6 +160,11 @@ async function withWorkflowLock<T>(identity:string,operation:()=>Promise<T>):Pro
 // Exported API Client
 // ---------------------------------------------------------------------------
 export const api = {
+  dataRead: async(path:string)=>request<any>('/data/'+path),
+  dataWrite: async(path:string,payload?:unknown,method='POST')=>request<any>('/data/'+path,{method,body:payload===undefined?undefined:JSON.stringify(payload)}),
+  dataDownload: async(path:string)=>(await checkedResponse('/data/'+path)).blob(),
+  dataUpload: async(path:string,file:File)=>request<any>('/data/'+path,{method:'PUT',body:file,headers:{'Content-Type':'application/json'}}),
+  databaseDiagnostics: async()=>request<any>('/diagnostics/database'),
   providerRead: async(path:string)=>request<any>('/integrations/providers/'+path),
   providerWrite: async(path:string,payload:unknown)=>request<any>('/integrations/providers/'+path,{method:'POST',body:JSON.stringify(payload)}),
   financeRead: async(path:string)=>request<any>('/business/financial/'+path),

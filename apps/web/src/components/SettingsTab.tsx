@@ -3,6 +3,7 @@ import { Cpu, CheckCircle2, AlertTriangle, Zap, Server, ShieldCheck, RefreshCw }
 import { api } from '../services/api';
 import { useInferenceOperation } from './useInferenceOperation';
 import { AccountSecurityPanel } from './AccountSecurityPanel';
+import { PortableArchivePanel } from './PortableArchivePanel';
 import { GatewayStatus } from '../types';
 
 export const SettingsTab: React.FC = () => {
@@ -13,7 +14,7 @@ export const SettingsTab: React.FC = () => {
   const [isBenchmarking, setIsBenchmarking] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const fields=['document_days','resolved_alert_days','expired_session_days'];
+  const fields=['document_days','resolved_alert_days','expired_session_days','completed_sync_days','resolved_conflict_days','completed_draft_days','performance_sample_days'];
   const [retention,setRetention]=useState<Record<string,string>>({});
   const [dataLoaded,setDataLoaded]=useState(false);
   const [dataBusy,setDataBusy]=useState(false);
@@ -199,6 +200,7 @@ export const SettingsTab: React.FC = () => {
         )}
       </div>
 
+      <PortableArchivePanel />
       <section aria-label="Workspace data management" className="p-6 rounded-2xl glass-panel space-y-3 text-xs">
         <h2 className="text-sm font-bold text-white">Workspace data management (owner)</h2>
         <p className="text-slate-400">A consistent bounded JSON snapshot excludes credential fields. It is not an encrypted backup or a guarantee that user-entered text contains no secrets.</p>
@@ -206,7 +208,7 @@ export const SettingsTab: React.FC = () => {
         <p className="text-slate-400">Retention is opt-in. Blank means keep indefinitely; enter 30–3650 days. Active alerts, financial evidence and audit history are not automatically removed.</p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {fields.map((key,index)=><label key={key} className="space-y-1">
-            {['Document retention days','Resolved alert retention days','Expired session retention days'][index]}
+            {['Document retention days','Resolved alert retention days','Expired session retention days','Finished sync diagnostics retention days','Resolved provider conflict payload retention days','Completed draft payload retention days','Performance sample retention days'][index]}
             <input type="number" min="30" max="3650" step="1" value={retention[key]||''} onChange={e=>setRetention(old=>({...old,[key]:e.target.value}))} disabled={!dataLoaded||dataBusy} className="block w-full bg-slate-900 border rounded p-2 text-white"/>
           </label>)}
         </div>

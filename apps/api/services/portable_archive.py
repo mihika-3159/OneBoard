@@ -6,7 +6,7 @@ Credential/security identities and derived indexes are not portable.
 """
 from datetime import datetime,timedelta
 import base64,hashlib,hmac,json,math,re
-from sqlalchemy import select,delete,func,insert,update
+from sqlalchemy import select,delete,func,insert,update,tuple_
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError,SQLAlchemyError
 from sqlalchemy.sql.sqltypes import DateTime,Integer,Float,Boolean,String,JSON
@@ -52,7 +52,8 @@ def signature(manifest):
     return hmac.new(signing_key(),encode({k:v for k,v in manifest.items() if k!="signature"}).encode(),hashlib.sha256).hexdigest()
 def manifest_public(row):
     return {"id":row.id,"kind":row.kind,"state":row.state,"page_count":row.page_count,"row_count":row.row_count,"byte_count":row.byte_count,
-            "created_at":row.created_at.isoformat()+"Z","expires_at":row.expires_at.isoformat()+"Z","manifest":row.manifest if row.state in ("ready","applied") else None}
+            "created_at":row.created_at.isoformat()+"Z","expires_at":row.expires_at.isoformat()+"Z","expected_pages":len(row.manifest["pages"]) if row.manifest else row.page_count,
+            "manifest":row.manifest if row.kind=="import" or row.state in ("ready","applied") else None}
 def lookup(db,tenant,ident,kind=None):
     query=db.query(PortableArchive).filter_by(business_id=tenant,id=ident)
     if kind:query=query.filter_by(kind=kind)
@@ -241,14 +242,20 @@ def restore(db,user,ident,confirmation):
             page=db.query(PortableArchivePage).filter_by(business_id=tenant,archive_id=ident,page_number=d["number"]).one_or_none()
             if not page or page.table_name!=d["table"] or hash_text(page.content)!=d["sha256"]:raise ValueError("Archive page integrity failure")
             name=d["table"];table=Base.metadata.tables[name];columns=[c for c in table.c if c.name not in lifecycle.SECRET_COLUMNS]
-            for value in json.loads(page.content):
+            records=json.loads(page.content)
+            if len(records)!=d["rows"]:raise ValueError("Archive page row count mismatch")
+            candidates=[];seen=set()
+            primary=list(table.primary_key.columns)
+            for value in records:
                 if set(value)!={c.name for c in columns}:raise ValueError("Archive schema mismatch")
                 if name=="businesses":
                     if value["id"]!=tenant:raise ValueError("Foreign business row")
-                    # Never change workspace ownership; update only profile fields
-                    # if the destination profile already matches the snapshot.
                     existing=db.execute(select(*columns).where(table.c.id==tenant)).mappings().one()
-                    if encode(lifecycle._safe(dict(existing)))!=encode(value):raise ValueError("Business profile differs; restore requires matching workspace profile")
+                    # Preserve current ownership and identity, but recover
+                    # profile values in an explicitly empty destination.
+                    stored=lifecycle._safe(dict(existing))
+                    if encode(stored)!=encode(value):
+                        raise ValueError("Business profile differs; restore requires matching workspace profile")
                     unchanged+=1;continue
                 if name=="sync_history":
                     from apps.api.models.integrations import IntegrationAccount
@@ -256,14 +263,25 @@ def restore(db,user,ident,confirmation):
                 elif value.get("business_id")!=tenant:raise ValueError("Foreign archive row")
                 original={c.name:typed(c,value[c.name]) for c in columns}
                 new=sanitized(name,original)
-                where=[c==new[c.name] for c in table.primary_key.columns]
-                existing=db.execute(select(*columns).where(*where,lifecycle._scope(table,tenant))).mappings().one_or_none()
-                if existing is not None:
-                    stored=encode(lifecycle._safe(dict(existing)))
+                identity=tuple(new[c.name] for c in primary)
+                if identity in seen:raise ValueError("Duplicate archive record identity")
+                seen.add(identity);candidates.append((identity,value,new))
+            if not candidates:continue
+            identities=[c[0] for c in candidates]
+            predicate=primary[0].in_([x[0] for x in identities]) if len(primary)==1 else tuple_(*primary).in_(identities)
+            existing={tuple(row[c.name] for c in primary):dict(row) for row in db.execute(select(*columns).where(predicate,lifecycle._scope(table,tenant))).mappings()}
+            pending=[]
+            for identity,value,new in candidates:
+                old=existing.get(identity)
+                if old is not None:
+                    stored=encode(lifecycle._safe(old))
                     if stored not in (encode(value),encode(lifecycle._safe({k:v for k,v in new.items() if k in value}))):
                         raise ValueError("Existing application record differs; restore never overwrites")
                     unchanged+=1;continue
-                db.execute(insert(table).values(**new));inserted+=1;touched.add(name)
+                pending.append(new)
+            if pending:
+                check_table_rows(db,tenant,name,len(pending))
+                db.execute(insert(table),pending);inserted+=len(pending);touched.add(name)
         for name in sorted(touched & set(ROW_LIMITS)):check_table_rows(db,tenant,name,0)
         archive.state="applied";db.commit()
     except (SQLAlchemyError,ValueError,TypeError,KeyError,OverflowError) as exc:
