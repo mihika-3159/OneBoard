@@ -78,7 +78,7 @@ def test_invoice_tool_rejects_null_record_without_guessing_zero():
     from types import SimpleNamespace
     from unittest.mock import MagicMock
     db = MagicMock()
-    db.query.return_value.filter.return_value.all.return_value = [
+    db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
         SimpleNamespace(amount=None)
     ]
     with pytest.raises(ValueError, match="invoice.amount"):
