@@ -1,6 +1,7 @@
 """Owner-only export/deletion and opt-in document retention."""
 from datetime import datetime,timedelta
 import math
+from decimal import Decimal
 from sqlalchemy import select,delete
 from apps.api.core.database import Base,tenant_lifecycle_lock
 from apps.api.models.business import Business,User,BusinessMembership,UserSession
@@ -13,6 +14,7 @@ EXCLUDED={"login_throttle_states","scheduled_job_leases","user_sessions","schedu
 SECRET_COLUMNS={"password_hash","hashed_password","api_key","token","token_hash",
                 "encrypted_token","configuration","vector","embedding","mfa_ciphertext","pending_mfa_ciphertext","recovery_hashes","email_challenge_hash","email_challenge_ciphertext"}
 def _safe(value):
+    if isinstance(value,Decimal):return format(value,'f')
     if isinstance(value,float) and not math.isfinite(value):
         return None
     if isinstance(value,dict):

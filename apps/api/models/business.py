@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy.orm import deferred
 import uuid
 from apps.api.core.database import Base
+from apps.api.core.money import ExactMoney
 
 class Business(Base):
     __tablename__ = "businesses"
@@ -26,8 +27,8 @@ class Business(Base):
     founder_preferences = Column(JSON, default=dict)
     
     # Financial health baseline cache
-    monthly_burn_rate = Column(Float, default=0.0)
-    current_cash_balance = Column(Float, default=0.0)
+    monthly_burn_rate = Column(ExactMoney(), default=0.0)
+    current_cash_balance = Column(ExactMoney(), default=0.0)
     runway_months = Column(Float, default=0.0)
     
     created_at = Column(DateTime, default=datetime.utcnow)

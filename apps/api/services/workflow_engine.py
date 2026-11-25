@@ -31,7 +31,7 @@ class ToolRegistry:
         return {
             "count": len(invoices),
             "invoices": [
-                {"id": i.id, "number": i.invoice_number, "customer": i.customer_name, "amount": i.amount, "due_date": str(i.due_date)}
+                {"id": i.id, "number": i.invoice_number, "customer": i.customer_name, "amount": float(i.amount) if i.amount is not None else None, "due_date": str(i.due_date)}
                 for i in invoices
             ]
         }

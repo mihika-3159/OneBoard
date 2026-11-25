@@ -59,7 +59,7 @@ def parse_customer_csv(csv_text: str) -> list[dict]:
             if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
                 raise ValueError("Invalid customer email")
             records.append({
-                "name": name, "mrr": float(number), "status": status,
+                "name": name, "mrr": number, "status": status,
                 "company": company or None, "email": email or None,
             })
         if not records:
@@ -86,7 +86,7 @@ def import_customer_csv(
             "status": "preview", "is_simulated": False,
             "source": "user_supplied_csv_unverified",
             "rows_validated": len(parsed),
-            "sample": [{key: row[key] for key in ("name", "mrr", "status")} for row in parsed[:3]],
+            "sample": [{**{key: row[key] for key in ("name", "status")},"mrr":float(row["mrr"])} for row in parsed[:3]],
             "written": False,
         }
     if db.get_bind().dialect.name == "postgresql":

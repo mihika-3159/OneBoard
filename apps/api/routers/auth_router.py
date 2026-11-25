@@ -186,7 +186,7 @@ def register(
             "id": business.id,
             "name": business.name,
             "industry": business.industry,
-            "current_cash_balance": business.current_cash_balance
+            "current_cash_balance": float(business.current_cash_balance or 0)
         },
         "token": token,
         "csrf_token": csrf_token
@@ -331,7 +331,7 @@ def login(
             "id": business.id if business else user.business_id,
             "name": business.name if business else "OneBoard Business",
             "industry": business.industry if business else "B2B SaaS",
-            "current_cash_balance": business.current_cash_balance if business else 0.0
+            "current_cash_balance": float(business.current_cash_balance or 0) if business else 0.0
         },
         "token": token,
         "csrf_token": csrf_token
@@ -422,7 +422,7 @@ def get_current_user_profile(
             "id": business.id if business else current_user.business_id,
             "name": business.name if business else "OneBoard Business",
             "industry": business.industry if business else "B2B SaaS",
-            "current_cash_balance": business.current_cash_balance if business else 0.0,
+            "current_cash_balance": float(business.current_cash_balance or 0) if business else 0.0,
             "currency": business.currency if business else "USD"
         }
     }

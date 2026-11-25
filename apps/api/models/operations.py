@@ -215,3 +215,80 @@ class WorkflowEvent(Base):
     run_id = Column(String(36), nullable=True)
     error = Column(String(200), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+# Accounting journal, immutable closed periods, and reproducible forecast records.
+# Integer amounts represent currency-specific minor units (not floating point).
+from sqlalchemy import BigInteger, CheckConstraint, Text
+
+class JournalEntry(Base):
+    __tablename__="journal_entries"
+    __table_args__=(UniqueConstraint("business_id","reference",name="uq_journal_reference"),
+                    Index("ix_journal_period","business_id","period","id"),
+                    Index("ix_journal_invoice","business_id","invoice_id"),
+                    CheckConstraint("original_minor > 0 AND base_minor > 0",name="ck_journal_positive"),
+                    CheckConstraint("debit_account <> credit_account",name="ck_journal_balanced_pair"))
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    reference=Column(String(128),nullable=False)
+    request_hash=Column(String(64),nullable=False)
+    kind=Column(String(24),nullable=False)
+    invoice_id=Column(String(36),nullable=True)
+    related_entry_id=Column(String(36),nullable=True)
+    debit_account=Column(String(40),nullable=False)
+    credit_account=Column(String(40),nullable=False)
+    currency=Column(String(3),nullable=False)
+    original_minor=Column(BigInteger,nullable=False)
+    base_currency=Column(String(3),nullable=False)
+    base_minor=Column(BigInteger,nullable=False)
+    fx_rate=Column(String(40),nullable=False)
+    fx_source=Column(String(200),nullable=False)
+    booked_on=Column(String(10),nullable=False)
+    period=Column(String(7),nullable=False)
+    evidence_hash=Column(String(64),nullable=False)
+    actor_id=Column(String(36),nullable=False)
+    recorded_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class AccountingClose(Base):
+    __tablename__="accounting_closes"
+    __table_args__=(UniqueConstraint("business_id","period",name="uq_accounting_close"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    period=Column(String(7),nullable=False)
+    snapshot=Column(JSON,nullable=False)
+    snapshot_hash=Column(String(64),nullable=False)
+    actor_id=Column(String(36),nullable=False)
+    closed_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class BankStatementLine(Base):
+    __tablename__="bank_statement_lines"
+    __table_args__=(UniqueConstraint("business_id","account","reference",name="uq_bank_reference"),
+                    UniqueConstraint("business_id","journal_id",name="uq_bank_journal_match"),
+                    Index("ix_bank_period","business_id","period"))
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    account=Column(String(80),nullable=False)
+    reference=Column(String(128),nullable=False)
+    booked_on=Column(String(10),nullable=False)
+    period=Column(String(7),nullable=False)
+    currency=Column(String(3),nullable=False)
+    signed_minor=Column(BigInteger,nullable=False)
+    source_hash=Column(String(64),nullable=False)
+    journal_id=Column(String(36),nullable=True)
+    matched_by=Column(String(36),nullable=True)
+    matched_at=Column(DateTime,nullable=True)
+    recorded_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class FinanceForecast(Base):
+    __tablename__="finance_forecasts"
+    __table_args__=(Index("ix_finance_forecast_tenant","business_id","created_at"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    actor_id=Column(String(36),nullable=False)
+    assumptions=Column(JSON,nullable=False)
+    baseline=Column(JSON,nullable=False)
+    baseline_hash=Column(String(64),nullable=False)
+    results=Column(JSON,nullable=False)
+    due_period=Column(String(7),nullable=False)
+    outcome=Column(JSON,nullable=True)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)

@@ -183,14 +183,14 @@ def get_operations_overview(
         } for c in commitments[:max_rows]],
         "customers": [{
             "id": c.id, "name": c.name, "company": c.company, "tier": c.tier,
-            "mrr": c.mrr, "status": c.status,
+            "mrr": float(c.mrr) if c.mrr is not None else None, "status": c.status,
             # A legacy hard-coded health_score default is not source-backed.
             "health_score": None,
         } for c in customers[:max_rows]],
         "leads": [{
             "id": l.id, "name": l.name, "company": l.company,
             "pipeline_stage": l.pipeline_stage, "source": l.source,
-            "estimated_value": l.estimated_value,
+            "estimated_value": float(l.estimated_value) if l.estimated_value is not None else None,
         } for l in leads[:max_rows]],
     }
 

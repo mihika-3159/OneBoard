@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from apps.api.models.business import Business
 from apps.api.models.entities import Customer, Expense, Invoice
+from apps.api.services.tenant_storage import _lock
 
 
 def _money(value: Any, label: str) -> Decimal:
@@ -50,15 +51,16 @@ def monthly_expense_amount(expense: Expense) -> float:
 
 def runway_from_records(cash: float, monthly_burn: float, mrr: float) -> tuple[float | None, str, float]:
     """Return months, status and signed net burn without an invented 999-month runway."""
-    net_burn = round(monthly_burn - mrr, 2)
+    net_burn_decimal = Decimal(str(monthly_burn)) - Decimal(str(mrr))
+    net_burn = float(net_burn_decimal.quantize(Decimal("0.01"),rounding=ROUND_HALF_UP))
     if net_burn < 0:
         return None, "profitable", net_burn
     if net_burn == 0:
         return None, "breakeven", net_burn
     if cash <= 0:
         return 0.0, "critical_depleted", net_burn
-    exact_months = cash / net_burn
-    months = round(exact_months, 1)
+    exact_months = Decimal(str(cash)) / Decimal(str(net_burn))
+    months = float(round(exact_months, 1))
     return months, ("healthy" if exact_months >= 12 else "warning" if exact_months >= 6 else "critical"), net_burn
 
 
@@ -70,6 +72,7 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     accounting balances. Invalid records are reported instead of silently
     converted or used to produce reassuring health indicators.
     """
+    _lock(db,business_id)
     business = db.query(Business).filter(Business.id == business_id).first()
     if business is None:
         raise ValueError("Business not found")
@@ -84,10 +87,10 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     expense_total = Decimal("0.00")
     overdue_total = Decimal("0.00")
     overdue_count = 0
-    cash = float(business.current_cash_balance or 0.0)
-    if not isfinite(cash):
+    cash = business.current_cash_balance
+    if cash is None or not isfinite(cash):
         issues.append("invalid_business_cash_balance")
-        cash = 0.0
+        cash = Decimal(0)
     for customer in customers:
         try:
             customer_total += _money(customer.mrr, "customer.mrr")
@@ -130,12 +133,13 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     }
     return {
         "mrr": mrr,
+        "exact_amounts": {"mrr":str(customer_total),"monthly_burn":str(expense_total),"cash_balance":str(cash),"overdue_receivables":str(overdue_total)},
         "monthly_burn": monthly_burn,
         "net_burn": net_burn,
         "is_profitable": net_burn < 0 if not issues else None,
         "runway_months": runway,
         "runway_status": runway_status,
-        "cash_balance": round(cash, 2),
+        "cash_balance": float(round(cash, 2)),
         "overdue_receivables_amount": overdue,
         "overdue_invoices_count": overdue_count,
         "active_customers_count": len(customers),
