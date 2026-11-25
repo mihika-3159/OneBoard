@@ -181,3 +181,28 @@ async def test_benchmark_never_passes_simulated_fallback(monkeypatch):
     assert result["inference_available"] is False
     assert result["fallback_reason"] == "model_unavailable"
     assert fake.await_args.kwargs["model"] == settings.MODEL_PROFILES["lightweight"]["chat_model"]
+
+@pytest.mark.asyncio
+async def test_local_ollama_retries_transient_500_exactly_once(monkeypatch):
+    monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", False)
+    monkeypatch.setattr(settings, "OLLAMA_MODEL_DIGESTS", {})
+    gateway=OllamaGateway("http://127.0.0.1:11434")
+    adapter=gateway._adapters[gateway.base_url]
+    send=AsyncMock(side_effect=[httpx.Response(500),httpx.Response(200,json={"message":{"content":"OK"},"done":True})])
+    monkeypatch.setattr(adapter,"send",send)
+    charge=AsyncMock()
+    monkeypatch.setattr(gateway_module,"charge_provider_attempt",charge)
+    result=await gateway._post_to_origin(gateway.base_url,"/api/chat",{"model":"synthetic"},3)
+    assert result.status_code==200 and send.await_count==2 and charge.await_count==2
+
+@pytest.mark.asyncio
+async def test_persistent_local_500_is_not_reported_as_success(monkeypatch):
+    monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", False)
+    monkeypatch.setattr(settings, "OLLAMA_MODEL_DIGESTS", {})
+    gateway=OllamaGateway("http://127.0.0.1:11434")
+    send=AsyncMock(return_value=httpx.Response(500))
+    monkeypatch.setattr(gateway._adapters[gateway.base_url],"send",send)
+    monkeypatch.setattr(gateway_module,"charge_provider_attempt",AsyncMock())
+    result=await gateway.chat_complete([{"role":"user","content":"Synthetic request"}])
+    assert result["simulated"] is True and result["fallback_reason"]=="provider_http_error"
+    assert send.await_count==2

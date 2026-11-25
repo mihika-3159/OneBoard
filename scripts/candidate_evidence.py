@@ -46,7 +46,7 @@ def main():
         statuses[path]["artifacts"]=artifacts
         statuses[path]["missing_artifacts"]=sorted(REQUIRED[path]-artifacts.keys())
         ok=ok and r["conclusion"]=="success" and not statuses[path]["missing_artifacts"]
-    report={"schema":"oneboard-candidate-acceptance-v1","source_head_sha":sha,"build_commit_sha":os.environ["GITHUB_SHA"],"release_run":os.environ["GITHUB_RUN_ID"],"workflows":statuses,"missing_workflows":sorted(REQUIRED-by_path.keys()) if isinstance(REQUIRED,set) else sorted(set(REQUIRED)-set(by_path)),"release_receipt":receipt,"engineering_gate":"PASS" if ok else "NO_GO","external_production_gate":"NO_GO","scope":"GitHub Actions source-revision evidence; not an independently signed external attestation"}
+    report={"schema":"oneboard-candidate-acceptance-v1","source_head_sha":sha,"build_commit_sha":os.environ["GITHUB_SHA"],"release_run":os.environ["GITHUB_RUN_ID"],"workflows":statuses,"missing_workflows":sorted(set(REQUIRED)-set(by_path)),"release_receipt":receipt,"engineering_gate":"PASS" if ok else "NO_GO","external_production_gate":"NO_GO","scope":"GitHub Actions source-revision evidence; not an independently signed external attestation"}
     a.output.write_text(json.dumps(report,indent=2,sort_keys=True))
     if not ok:raise SystemExit("Candidate engineering gates are incomplete")
 if __name__=="__main__":main()

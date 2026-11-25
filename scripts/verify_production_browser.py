@@ -17,7 +17,7 @@ def main():
     provision(admin,role,password,context)
     runtime=url.set(username=role,password=password).render_as_string(hide_password=False)
     base="https://127.0.0.1:8443"
-    env=dict(os.environ,DATABASE_URL=runtime,TENANT_CONTEXT_KEY=base64.b64encode(context).decode(),ACCOUNT_SECURITY_KEY=base64.b64encode(secrets.token_bytes(32)).decode(),ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",COOKIE_SECURE="true",PUBLIC_API_ORIGIN=base,CORS_ORIGINS=base,TRUSTED_PROXY_IPS="127.0.0.1",AUTH_SECRET_KEY=secrets.token_hex(32),OLLAMA_BASE_URL="http://127.0.0.1:1")
+    env=dict(os.environ,DATABASE_URL=runtime,TENANT_CONTEXT_KEY=base64.b64encode(context).decode(),ACCOUNT_SECURITY_KEY=base64.b64encode(secrets.token_bytes(32)).decode(),ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",SERVE_WEB_BUILD="true",COOKIE_SECURE="true",PUBLIC_API_ORIGIN=base,CORS_ORIGINS=base,TRUSTED_PROXY_IPS="127.0.0.1",AUTH_SECRET_KEY=secrets.token_hex(32),OLLAMA_BASE_URL="http://127.0.0.1:1")
     with tempfile.TemporaryDirectory() as tmp:
         cert=pathlib.Path(tmp)/"cert.pem";key=pathlib.Path(tmp)/"key.pem"
         subprocess.run(["openssl","req","-x509","-newkey","rsa:2048","-nodes","-days","1","-keyout",str(key),"-out",str(cert),"-subj","/CN=127.0.0.1","-addext","subjectAltName=IP:127.0.0.1"],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -31,6 +31,8 @@ def main():
                     except httpx.HTTPError:pass
                     time.sleep(1)
                 else:raise RuntimeError("Production API startup timed out")
+                root=client.get("/")
+                if root.status_code!=200 or '<div id="root"' not in root.text:raise RuntimeError("Verified frontend bundle not served by production API")
             verify_security(base,str(cert),pathlib.Path('dynamic-security.json'))
             subprocess.run(["npx","--no-install","playwright","test","--config","playwright.production.config.ts","--reporter=line,json"],cwd="apps/web",env=dict(os.environ,PLAYWRIGHT_JSON_OUTPUT_NAME="production-browser.json"),check=True)
             subprocess.run([sys.executable,"scripts/require_browser_suite.py","apps/web/production-browser.json","1"],check=True)

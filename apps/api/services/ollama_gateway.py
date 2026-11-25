@@ -116,7 +116,8 @@ class OllamaGateway:
                     response = await asyncio.wait_for(
                         retry_provider(
                             send,
-                            lambda reply: not published and reply.status_code in (502, 503, 504),
+                            lambda reply: not published and (reply.status_code in (502, 503, 504) or
+                                (reply.status_code == 500 and isinstance(adapter, OllamaAdapter) and not is_remote(origin))),
                             (httpx.ConnectError, httpx.ConnectTimeout),
                         ),
                         timeout=timeout,
