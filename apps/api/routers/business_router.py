@@ -232,3 +232,165 @@ def get_dashboard_metrics(
         "health_score": health_score,
         "tenant_id": biz_id,
     }
+
+
+# Batch K: all financial mutations require founder permission and a tenant-scoped transaction.
+from apps.api.services import finance_ledger as ledger, bank_reconciliation as bank, finance_forecasting as forecasts
+from apps.api.models.operations import JournalEntry,AccountingClose,BankStatementLine,FinanceForecast
+from apps.api.services.tenant_storage import _lock
+
+class JournalRequest(BaseModel):
+    reference:str=Field(min_length=8,max_length=128)
+    kind:str=Field(min_length=1,max_length=24)
+    amount:str=Field(min_length=1,max_length=32)
+    currency:str=Field(min_length=3,max_length=3)
+    fx_rate:str=Field(default="1",max_length=32)
+    fx_source:str=Field(default="same_currency",max_length=200)
+    booked_on:str=Field(min_length=10,max_length=10)
+    evidence_text:str=Field(min_length=1,max_length=262144,repr=False)
+    invoice_id:str|None=Field(default=None,max_length=36)
+    related_entry_id:str|None=Field(default=None,max_length=36)
+
+def finance_budget(db,user):
+    if settings.ONEBOARD_PRODUCTION_MODE:consume_tenant_budget(db,user.business_id,"financial_reconciliation")
+
+def invalid_finance(db,exc):
+    db.rollback()
+    raise HTTPException(422,str(exc)) from exc
+
+@router.post("/financial/journal")
+def journal_post(req:JournalRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    finance_budget(db,current_user)
+    try:return ledger.serialize(ledger.post(db,current_user.business_id,current_user.id,**req.model_dump()))
+    except ValueError as exc:invalid_finance(db,exc)
+
+@router.get("/financial/journal")
+def journal_list(period:str,offset:int=0,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    try:ledger.period_key(period)
+    except ValueError as exc:invalid_finance(db,exc)
+    if not 0<=offset<=20000:raise HTTPException(422,"Invalid page offset")
+    rows=db.query(JournalEntry).filter_by(business_id=current_user.business_id,period=period).order_by(JournalEntry.booked_on,JournalEntry.id).offset(offset).limit(101).all()
+    return {"records":[ledger.serialize(r) for r in rows[:100]],"next_offset":offset+100 if len(rows)>100 else None}
+
+@router.get("/financial/invoices")
+def finance_invoices(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    tenant=current_user.business_id;_lock(db,tenant)
+    rows=db.query(Invoice).filter_by(business_id=tenant).order_by(Invoice.id).limit(501).all()
+    return {"records":[{"id":r.id,"invoice_number":r.invoice_number,"customer_name":r.customer_name,"status":r.status,
+        "amount":str(r.amount),"outstanding":str(ledger.invoice_balance(db,tenant,r)) if r.amount is not None else None,
+        "enrolled":bool(ledger.invoice_entries(db,tenant,r.id))} for r in rows[:500]],"truncated":len(rows)>500}
+
+class InvoiceCreateRequest(BaseModel):
+    reference:str=Field(min_length=8,max_length=128)
+    invoice_number:str=Field(min_length=1,max_length=50)
+    customer_name:str=Field(min_length=1,max_length=255)
+    amount:str=Field(min_length=1,max_length=32)
+    booked_on:str=Field(min_length=10,max_length=10)
+    due_date:str=Field(min_length=10,max_length=10)
+    evidence_text:str=Field(min_length=1,max_length=262144,repr=False)
+
+@router.post("/financial/invoices")
+def finance_create_invoice(req:InvoiceCreateRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    from datetime import date,datetime
+    from apps.api.core.money import cents
+    tenant=current_user.business_id;finance_budget(db,current_user);_lock(db,tenant)
+    try:
+        biz=ledger.workspace(db,tenant);ledger.date_key(req.booked_on)
+        due=date.fromisoformat(req.due_date)
+        if due.isoformat()!=req.due_date or due.isoformat()<req.booked_on:raise ValueError("Invalid invoice due date")
+        cents(req.amount)
+        old=db.query(JournalEntry).filter_by(business_id=tenant,reference=req.reference).first()
+        if old:
+            inv=db.query(Invoice).filter_by(business_id=tenant,id=old.invoice_id).first()
+            if not inv or inv.invoice_number!=req.invoice_number or inv.customer_name!=req.customer_name or inv.due_date.date()!=due:raise ValueError("Invoice request reference conflict")
+        else:
+            if db.query(Invoice.id).filter_by(business_id=tenant,invoice_number=req.invoice_number).first():raise ValueError("Invoice number already exists")
+            inv=Invoice(business_id=tenant,invoice_number=req.invoice_number,customer_name=req.customer_name,
+                amount=req.amount,status="sent",due_date=datetime.combine(due,datetime.min.time()))
+            db.add(inv);db.flush()
+        row=ledger.post(db,tenant,current_user.id,reference=req.reference,kind="invoice_issue",amount=req.amount,
+            currency=biz.currency,fx_rate="1",fx_source="same_currency",booked_on=req.booked_on,evidence_text=req.evidence_text,invoice_id=inv.id)
+        return ledger.serialize(row)
+    except ValueError as exc:invalid_finance(db,exc)
+
+@router.get("/financial/periods/{period}")
+def financial_period(period:str,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    tenant=current_user.business_id;_lock(db,tenant)
+    try:
+        ledger.period_key(period)
+        row=db.query(AccountingClose).filter_by(business_id=tenant,period=period).first()
+        return {"closed":bool(row),"statement":ledger.serialize_close(row)["snapshot"] if row else ledger.statement(db,tenant,period)}
+    except ValueError as exc:invalid_finance(db,exc)
+
+class CloseRequest(BaseModel):
+    confirmation:str=Field(max_length=20)
+@router.post("/financial/periods/{period}/close")
+def financial_close(period:str,req:CloseRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    finance_budget(db,current_user)
+    try:return ledger.close_period(db,current_user.business_id,current_user.id,period,req.confirmation)
+    except ValueError as exc:invalid_finance(db,exc)
+
+@router.get("/financial/trends")
+def finance_trends(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    rows=db.query(AccountingClose).filter_by(business_id=current_user.business_id).order_by(AccountingClose.period.desc()).limit(60).all()
+    return {"periods":[ledger.serialize_close(r) for r in reversed(rows)],"basis":"immutable_closed_periods"}
+
+class BankImportRequest(BaseModel):
+    account:str=Field(min_length=1,max_length=80)
+    csv_text:str=Field(min_length=1,max_length=262144,repr=False)
+    preview:bool=True
+@router.post("/financial/bank/import")
+def bank_import(req:BankImportRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    finance_budget(db,current_user)
+    try:return bank.import_lines(db,current_user.business_id,req.account,req.csv_text,req.preview)
+    except ValueError as exc:invalid_finance(db,exc)
+
+@router.get("/financial/bank")
+def bank_list(period:str,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    tenant=current_user.business_id
+    try:ledger.period_key(period)
+    except ValueError as exc:invalid_finance(db,exc)
+    rows=db.query(BankStatementLine).filter_by(business_id=tenant,period=period).order_by(BankStatementLine.id).limit(501).all()
+    return {"records":[bank.serialize(r) for r in rows[:500]],"truncated":len(rows)>500}
+
+@router.get("/financial/bank/{line_id}/candidates")
+def bank_candidates(line_id:str,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    tenant=current_user.business_id;row=db.query(BankStatementLine).filter_by(business_id=tenant,id=line_id).first()
+    if not row:raise HTTPException(404,"Bank line unavailable")
+    return {"candidates":[ledger.serialize(r) for r in bank.candidates(db,tenant,row)]}
+
+class MatchRequest(BaseModel):
+    journal_id:str=Field(min_length=1,max_length=36)
+@router.post("/financial/bank/{line_id}/match")
+def bank_match(line_id:str,req:MatchRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    finance_budget(db,current_user)
+    try:return bank.match(db,current_user.business_id,current_user.id,line_id,req.journal_id)
+    except ValueError as exc:invalid_finance(db,exc)
+
+class ScenarioAssumption(BaseModel):
+    revenue_growth:str=Field(max_length=32)
+    expense_growth:str=Field(max_length=32)
+    collection_fraction:str=Field(max_length=32)
+class ForecastRequest(BaseModel):
+    baseline_period:str=Field(min_length=7,max_length=7)
+    months:int=Field(ge=1,le=24,strict=True)
+    low:ScenarioAssumption
+    base:ScenarioAssumption
+    high:ScenarioAssumption
+@router.post("/financial/forecasts")
+def forecast_create(req:ForecastRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    finance_budget(db,current_user)
+    try:return forecasts.create(db,current_user.business_id,current_user.id,req.baseline_period,req.months,
+        {k:getattr(req,k).model_dump() for k in ("low","base","high")})
+    except ValueError as exc:invalid_finance(db,exc)
+
+@router.get("/financial/forecasts")
+def forecast_list(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    rows=db.query(FinanceForecast).filter_by(business_id=current_user.business_id).order_by(FinanceForecast.created_at.desc()).limit(100).all()
+    return {"forecasts":[forecasts.serialize(r) for r in rows]}
+
+@router.post("/financial/forecasts/{forecast_id}/observe")
+def forecast_observe(forecast_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    finance_budget(db,current_user)
+    try:return forecasts.observe(db,current_user.business_id,current_user.id,forecast_id)
+    except ValueError as exc:invalid_finance(db,exc)

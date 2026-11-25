@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from apps.api.models.business import Business
 from apps.api.models.entities import Invoice, Expense
+from apps.api.services.tenant_storage import _lock
 
 _COLUMNS = ["record_type", "record_id", "amount", "currency", "as_of"]
 _MAX_BYTES = 256 * 1024
@@ -87,6 +88,7 @@ def reconcile_financial_evidence(
     if not business_id or not isinstance(source_label, str) or not 1 <= len(source_label) <= 100:
         raise ValueError("Tenant and source label are required")
     rows = parse_evidence(csv_text)
+    _lock(db,business_id)
     business = db.query(Business).filter(Business.id == business_id).first()
     if business is None:
         raise ValueError("Business not found")

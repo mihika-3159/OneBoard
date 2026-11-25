@@ -66,6 +66,12 @@ def test_invoice_tool_rejects_negative_and_nonfinite_totals(records, invalid):
         Invoice.business_id == a, Invoice.status == "overdue"
     ).one()
     invoice.amount = invalid
+    if invalid != -1.0:
+        from sqlalchemy.exc import StatementError
+        with pytest.raises(StatementError,match="Nonfinite"):
+            db.commit()
+        db.rollback()
+        return
     db.commit()
     with pytest.raises(ValueError, match="invoice.amount"):
         ToolRegistry.calculate_invoice_totals(db, a)

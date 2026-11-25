@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from apps.api.models.business import Business
 from apps.api.models.entities import Customer, Expense, Invoice
 from apps.api.services.tenant_storage import _lock
+from apps.api.models.operations import JournalEntry
 
 
 def _money(value: Any, label: str) -> Decimal:
@@ -87,6 +88,9 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     expense_total = Decimal("0.00")
     overdue_total = Decimal("0.00")
     overdue_count = 0
+    journal_rows=db.query(JournalEntry).filter(JournalEntry.business_id==business_id,JournalEntry.invoice_id.isnot(None)).all()
+    by_invoice={}
+    for row in journal_rows:by_invoice.setdefault(row.invoice_id,[]).append(row)
     cash = business.current_cash_balance
     if cash is None or not isfinite(cash):
         issues.append("invalid_business_cash_balance")
@@ -107,7 +111,12 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
         if invoice.status == "overdue":
             overdue_count += 1
             try:
-                overdue_total += _money(invoice.amount, "invoice.amount")
+                if invoice.id in by_invoice:
+                    from apps.api.services.finance_ledger import receivable,major
+                    rows=by_invoice[invoice.id]
+                    if any(r.base_currency!=business.currency for r in rows):raise ValueError("Ledger currency mismatch")
+                    overdue_total += _money(major(receivable(rows),business.currency),"invoice.balance")
+                else:overdue_total += _money(invoice.amount, "invoice.amount")
             except ValueError:
                 issues.append(f"invalid_overdue_invoice_amount:{invoice.id}")
 

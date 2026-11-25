@@ -74,6 +74,12 @@ def test_invalid_active_customer_mrr_suppresses_runway_and_health(db, value):
     db.flush()
     cust = Customer(business_id=biz.id, name="Unsafe", mrr=value, status="active")
     db.add(cust)
+    if value != -1:
+        from sqlalchemy.exc import StatementError
+        with pytest.raises(StatementError,match="Nonfinite"):
+            db.commit()
+        db.rollback()
+        return
     db.commit()
     snapshot = calculate_business_financials(db, biz.id)
     assert snapshot["financial_data_status"] == "needs_review"

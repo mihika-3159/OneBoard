@@ -83,9 +83,14 @@ def test_amount_currency_and_invalid_db_records_are_flagged(records):
     assert [row["comparison"] for row in result["results"]] == ["amount_mismatch", "currency_mismatch"]
     assert result["discrepancy_count"] == 2
     db.get(Invoice, inv.id).amount = float("inf")
+    from sqlalchemy.exc import StatementError
+    with pytest.raises(StatementError,match="Nonfinite"):
+        db.flush()
+    db.rollback()
+    db.get(Invoice,inv.id).amount=-1
     db.flush()
-    result = reconcile_financial_evidence(db, a.id, source)
-    assert result["results"][0]["comparison"] == "invalid_application_record"
+    result=reconcile_financial_evidence(db,a.id,source)
+    assert result["results"][0]["comparison"]=="invalid_application_record"
 
 
 @pytest.mark.parametrize("source", [

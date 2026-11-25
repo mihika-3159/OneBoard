@@ -7,7 +7,7 @@ import re
 from sqlalchemy import text
 from apps.api.models.business import Business
 from apps.api.models.entities import Invoice
-from apps.api.models.operations import SettlementEvidence
+from apps.api.models.operations import SettlementEvidence,JournalEntry
 from apps.api.services.financial_reconciliation import money
 from apps.api.services.tenant_storage import _lock
 
@@ -56,6 +56,9 @@ def record_settlement(db, tenant, *, invoice_id, source_reference, source_sha256
         if old.request_sha256 != digest:
             raise ValueError("Source reference already used with different settlement")
         return old
+    from apps.api.services.finance_ledger import ensure_open
+    ensure_open(db,tenant,period)
+    if db.query(JournalEntry.id).filter_by(business_id=tenant,invoice_id=invoice_id).first():raise ValueError("Invoice enrolled in journal; use journal payment endpoint")
     if db.query(SettlementEvidence).filter_by(business_id=tenant).count()>=10000:
         raise ValueError("Tenant settlement record limit reached")
     existing = db.query(SettlementEvidence).filter_by(business_id=tenant,invoice_id=invoice_id).all()

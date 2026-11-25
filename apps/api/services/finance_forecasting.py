@@ -46,7 +46,7 @@ def create(db,tenant,actor,baseline_period,months,assumptions):
     closed=db.query(AccountingClose).filter_by(business_id=tenant,period=baseline_period).first()
     if not closed:raise ValueError("Forecast requires a closed accounting baseline")
     base=serialize_close(closed)
-    if next_month(baseline_period,1)<=date.today().isoformat()[:7]:raise ValueError("Forecast baseline must immediately precede a future observation period")
+    if next_month(baseline_period,1)<date.today().isoformat()[:7]:raise ValueError("Forecast baseline must be the most recent completed month")
     normalized,result=scenarios(base["snapshot"],months,assumptions)
     row=FinanceForecast(business_id=tenant,actor_id=actor,assumptions={"months":months,"scenarios":normalized,"method":"monthly_compound_growth_and_collection_fraction","uncertainty":"assumption_based_not_probability"},
         baseline={"close_id":base["id"],"period":baseline_period,"snapshot":base["snapshot"]},baseline_hash=base["snapshot_sha256"],results=result,due_period=next_month(baseline_period,months))
