@@ -243,9 +243,10 @@ def login(
     else:
         user = db.query(User).filter(User.email == clean_email).first()
     from apps.api.core.tenant_context import password_verifier
+    verified_hash = password_verifier(db,user) if user is not None else None
     valid_credentials = (
         user is not None
-        and verify_password(req.password, password_verifier(db,user))
+        and verify_password(req.password, verified_hash)
         and user.is_active
     )
     if valid_credentials:
@@ -281,6 +282,13 @@ def login(
     # abuse but can affect shared-NAT users; document this residual risk.
     reset_login_throttle(source_key, db)
     reset_login_throttle(account_key, db)
+    if restricted(db):
+        from apps.api.core.database import scope_tenant_session
+        scope_tenant_session(db,user.business_id)
+        db.refresh(user)
+        if not user.is_active or password_verifier(db,user)!=verified_hash:
+            raise HTTPException(401,"Credentials changed; sign in again.")
+        _require_active_membership(user,db)
 
     business = db.query(Business).filter(Business.id == user.business_id).first()
 

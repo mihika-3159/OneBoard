@@ -55,6 +55,9 @@ export const App: React.FC = () => {
   // Form fields
   const [authEmail, setAuthEmail] = useState<string>('founder@northstar.studio');
   const [authPassword, setAuthPassword] = useState<string>('');
+  const [authFactor,setAuthFactor]=useState('');
+  const [recoverMode,setRecoverMode]=useState(false);
+  const [authMessage,setAuthMessage]=useState('');
   const [authName, setAuthName] = useState<string>('');
   const [authBizName, setAuthBizName] = useState<string>('');
 
@@ -99,8 +102,13 @@ export const App: React.FC = () => {
   const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setAuthLoading(true);
-    setAuthError('');
+    setAuthError('');setAuthMessage('');
     try {
+      if(recoverMode){
+        await api.recoverAccount(authEmail.trim(),authFactor,authPassword);
+        setAuthMessage('Password reset. Sign in with your new password and another MFA code if enabled.');
+        setRecoverMode(false);setAuthFactor('');setAuthPassword('');return;
+      }
       if (isRegisterMode) {
         const res = await api.register({
           name: authName.trim() || 'Founder',
@@ -111,11 +119,11 @@ export const App: React.FC = () => {
         setCurrentUser(res.user);
         setCurrentBusiness(res.business);
       } else {
-        const res = await api.login(authEmail.trim(), authPassword);
+        const res = await api.login(authEmail.trim(), authPassword, authFactor || undefined);
         setCurrentUser(res.user);
         setCurrentBusiness(res.business);
       }
-      setIsAuthenticated(true);
+      setIsAuthenticated(true);setAuthPassword('');setAuthFactor('');
       await loadAppStatus();
     } catch (err: any) {
       setAuthError(err.detail || err.message || 'Authentication failed. Please check your credentials.');
@@ -457,6 +465,8 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
+              {!isRegisterMode && <label className="block text-xs text-slate-300">{recoverMode ? "Recovery code" : "Authenticator or recovery code (if enabled)"}<input aria-label="Authenticator or recovery code" autoComplete="one-time-code" maxLength={64} value={authFactor} onChange={e=>setAuthFactor(e.target.value)} required={recoverMode} className="block w-full rounded-xl bg-slate-950 border border-slate-800 p-2.5 mt-1" /></label>}
+              {authMessage && <p role="status" className="text-xs text-emerald-300">{authMessage}</p>}
               <button
                 type="submit"
                 disabled={authLoading}
@@ -464,7 +474,7 @@ export const App: React.FC = () => {
               >
                 {authLoading ? (
                   <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : isRegisterMode ? (
+                ) : recoverMode ? ('Reset password using recovery code') : isRegisterMode ? (
                   'Create Workspace & Sign In'
                 ) : (
                   'Sign In to OneBoard'
@@ -472,10 +482,11 @@ export const App: React.FC = () => {
               </button>
             </form>
 
+            {!isRegisterMode && <button type="button" onClick={()=>{setRecoverMode(!recoverMode);setAuthFactor('');setAuthPassword('');setAuthError('');}} className="text-xs text-indigo-300">{recoverMode?"Return to sign in":"Recover account with code"}</button>}
             <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
               <button
                 onClick={() => {
-                  setIsRegisterMode(!isRegisterMode);
+                  setRecoverMode(false);setAuthFactor('');setIsRegisterMode(!isRegisterMode);
                   setAuthError('');
                 }}
                 className="text-indigo-400 hover:text-indigo-300 transition"

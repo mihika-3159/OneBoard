@@ -147,10 +147,10 @@ const pendingWorkflowKeys = new Map<string, string>();
 // ---------------------------------------------------------------------------
 export const api = {
   // Authentication & Session
-  login: async (email: string, password: string): Promise<AuthResponse> => {
+  login: async (email: string, password: string, mfa_code?: string): Promise<AuthResponse> => {
     const res = await request<AuthResponse>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, mfa_code }),
     });
     if (res.csrf_token) setCsrfToken(res.csrf_token);
     if (res.token) setBearerToken(res.token);
@@ -188,6 +188,14 @@ export const api = {
 
   regenerateApiKey: async (): Promise<{ api_key: string }> => {
     return request<{ api_key: string }>('/auth/regenerate-api-key', { method: 'POST' });
+  },
+
+  securityStatus: () => request<any>("/auth/security"),
+  securityAction: (path:string, payload:Record<string,unknown>, method="POST") => request<any>("/auth/security"+path,{method,body:JSON.stringify(payload)}),
+  securityList: (path:string) => request<any>("/auth/security"+path),
+  recoverAccount: async(email:string,recovery_code:string,new_password:string) => {
+    const result=await request<any>("/auth/security/recover",{method:"POST",body:JSON.stringify({email,recovery_code,new_password})});
+    setBearerToken(null);setCsrfToken(null);return result;
   },
 
   // Business & Metrics
