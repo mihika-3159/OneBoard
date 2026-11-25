@@ -38,12 +38,14 @@ jobs:
       - name: Synthetic financial review and seven-provider contract review
         run: |
           python -m pytest -q tests/unit/test_batch_k_finance.py tests/test_financial_boundary_matrix.py tests/adversarial/test_financial_evidence_reconciliation.py tests/unit/test_batch_l_providers.py --junitxml=synthetic-review.xml
-          python -m scripts.require_test_suite 1 synthetic-review.xml tests/unit/test_batch_k_finance.py::test_hackathon_review_fixed_independent_cash_receivables_and_profit_oracle
+          python -m scripts.require_test_suite 1 synthetic-oracle.xml tests/unit/test_batch_k_finance.py::test_hackathon_review_fixed_independent_cash_receivables_and_profit_oracle
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: synthetic-finance-provider-review
-          path: synthetic-review.xml
+          path: |
+            synthetic-review.xml
+            synthetic-oracle.xml
           if-no-files-found: error
       - name: Alembic migration smoke test (disposable SQLite)
         run: |
