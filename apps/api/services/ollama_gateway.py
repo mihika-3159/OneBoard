@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import httpx
 import asyncio
 import json
@@ -7,7 +8,11 @@ from typing import List, Dict, Any, Optional, AsyncGenerator
 from apps.api.core.config import settings
 from apps.api.services.cluster_capacity import inference_slot
 from apps.api.services.model_identity import matches_pin
-from apps.api.services.inference_budget import TokenBudgetExceeded, charge_provider_attempt
+from apps.api.services.inference_budget import TokenBudgetExceeded, charge_provider_attempt, current_inference_tenant
+from apps.api.services.embedding_cache import EmbeddingCache
+from apps.api.services.inference_resources import has_headroom
+from apps.api.services.inference_routing import route
+from apps.api.services.inference_stream import on_text, read_chat_stream
 
 from apps.api.services.inference_controls import CircuitOpen, ProviderCircuit, fit_prompt, retry_provider
 
@@ -31,16 +36,44 @@ class OllamaGateway:
         self._inference_slots = asyncio.Semaphore(2)
         self._queue_timeout_seconds = 3.0
         self._circuit = ProviderCircuit()
+        self._circuits = {self.base_url: self._circuit}
+        if settings.OLLAMA_LOCAL_REPLICA_PORT:
+            replica = f"http://127.0.0.1:{settings.OLLAMA_LOCAL_REPLICA_PORT}"
+            self._circuits.setdefault(replica, ProviderCircuit())
+        self._embedding_cache = EmbeddingCache()
         
+    def _queued(self):
+        return bool(settings.INFERENCE_QUEUE_URL and current_inference_tenant())
+
     async def _post_inference(self, path, payload, timeout):
-        with self._circuit.attempt() as record_failure:
+        if self._queued():
+            from apps.api.services.inference_queue import dispatch, queue_engine
+            return await dispatch(
+                queue_engine(settings.INFERENCE_QUEUE_URL), current_inference_tenant(), path, payload, timeout
+            )
+        return await self._call_providers(path, payload, timeout)
+
+    async def _call_providers(self, path, payload, timeout):
+        if settings.ONEBOARD_PRODUCTION_MODE and not has_headroom(
+            settings.INFERENCE_MIN_FREE_MIB * 1024 * 1024, settings.INFERENCE_MAX_LOAD_PER_CPU
+        ):
+            raise _CapacityExceeded()
+        async def operation(origin):
+            return await self._post_to_origin(origin, path, payload, timeout)
+
+        return await route(operation, tuple(self._circuits), timeout)
+
+    async def _post_to_origin(self, origin, path, payload, timeout):
+        with self._circuits[origin].attempt() as record_failure:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 if settings.OLLAMA_MODEL_DIGESTS:
-                    await asyncio.wait_for(self._verify_model(client, payload["model"]), timeout=3.0)
+                    await asyncio.wait_for(self._verify_model(client, origin, payload["model"]), timeout=3.0)
 
                 async def send():
                     await charge_provider_attempt(payload)
-                    return await client.post(f"{self.base_url}{path}", json=payload)
+                    if path == "/api/chat" and on_text.get() is not None:
+                        return await read_chat_stream(client, f"{origin}{path}", payload, on_text.get())
+                    return await client.post(f"{origin}{path}", json=payload)
 
                 try:
                     response = await asyncio.wait_for(
@@ -57,12 +90,12 @@ class OllamaGateway:
                 record_failure(response.status_code >= 500)
                 return response
 
-    async def _verify_model(self, client, model):
+    async def _verify_model(self, client, origin, model):
         expected = settings.OLLAMA_MODEL_DIGESTS.get(model)
         if expected is None:
             raise _ModelIdentityMismatch()
         try:
-            response = await client.get(f"{self.base_url}/api/tags", timeout=2.0)
+            response = await client.get(f"{origin}/api/tags", timeout=2.0)
             if response.status_code == 200:
                 data = response.json()
                 if isinstance(data, dict) and matches_pin(data.get("models"), model, expected):
@@ -164,16 +197,17 @@ class OllamaGateway:
                 reason = "provider_unavailable"
             try:
                 if fitted is not None:
-                    await asyncio.wait_for(
-                        self._inference_slots.acquire(),
-                        timeout=self._queue_timeout_seconds,
-                    )
-                    acquired = True
+                    if not self._queued():
+                        await asyncio.wait_for(
+                            self._inference_slots.acquire(),
+                            timeout=self._queue_timeout_seconds,
+                        )
+                        acquired = True
             except asyncio.TimeoutError:
                 reason = "capacity_exceeded"
-            if acquired:
+            if acquired or (fitted is not None and self._queued()):
                 try:
-                    with inference_slot() as admitted:
+                    with (nullcontext(True) if self._queued() else inference_slot()) as admitted:
                         if not admitted:
                             raise _CapacityExceeded()
                         response = await self._post_inference("/api/chat", payload, 45.0)
@@ -247,11 +281,19 @@ class OllamaGateway:
         """Return validated provider embeddings only; never return hash fallback."""
         import math
         target_model = model or self.get_model_for_task("embedding")
+        cache_key = self._embedding_cache.key(
+            current_inference_tenant(), self.base_url, target_model,
+            settings.OLLAMA_MODEL_DIGESTS.get(target_model), text,
+        )
+        cached = self._embedding_cache.get(cache_key)
+        if cached is not None:
+            return cached
         acquired = False
         try:
-            await asyncio.wait_for(self._inference_slots.acquire(), timeout=self._queue_timeout_seconds)
-            acquired = True
-            with inference_slot() as admitted:
+            if not self._queued():
+                await asyncio.wait_for(self._inference_slots.acquire(), timeout=self._queue_timeout_seconds)
+                acquired = True
+            with (nullcontext(True) if self._queued() else inference_slot()) as admitted:
                 if admitted:
                     res = await self._post_inference(
                         "/api/embeddings", {"model": target_model, "prompt": text}, 10.0
@@ -262,7 +304,9 @@ class OllamaGateway:
                             and all(isinstance(x, (int, float)) and not isinstance(x, bool)
                                     and math.isfinite(x) and abs(x) <= 1e6 for x in v)
                             and any(v)):
-                            return [float(x) for x in v]
+                            vector = [float(x) for x in v]
+                            self._embedding_cache.put(cache_key, vector)
+                            return vector
         except Exception:
             pass
         finally:

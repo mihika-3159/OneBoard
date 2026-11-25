@@ -55,8 +55,14 @@ test('real command, workflow, agent, boardroom and settings controls operate on 
   await register(page);
   await tab(page,'Founder Command');
   await page.getByPlaceholder(/Ask a question or delegate a task/).fill('What business records should I collect?');
-  const command=await clickRequest(page,'Send founder command','/api/ai/command');
-  expect(command.response).toBeTruthy();
+  const [stream] = await Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === '/api/ai/command/stream'
+      && response.request().method() === 'POST'),
+    page.getByRole('button', {name: 'Send founder command'}).click(),
+  ]);
+  expect(stream.status()).toBe(200);
+  expect(stream.headers()['content-type']).toContain('application/x-ndjson');
+  await expect(page.getByText(/^Offline simulated response: Ollama inference was unavailable/)).toBeVisible();
   await tab(page,'Boardroom');
   await page.getByRole('button',{name:'Convene New Meeting'}).click();
   await expect(page.getByRole('heading',{name:'Convene AI Executive Council'})).toBeVisible();

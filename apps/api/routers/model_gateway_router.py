@@ -207,3 +207,19 @@ async def handle_founder_command(
             "currency": currency,
         }
     }
+
+
+@router.post("/command/stream")
+async def stream_founder_command(
+    req: FounderCommandRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from fastapi.responses import StreamingResponse
+    from apps.api.services.inference_stream import stream_events
+
+    async def command():
+        return await handle_founder_command(req, current_user, db)
+
+    return StreamingResponse(stream_events(command), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

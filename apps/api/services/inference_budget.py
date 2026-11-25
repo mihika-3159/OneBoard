@@ -18,6 +18,10 @@ class TokenBudgetExceeded(Exception):
     pass
 
 
+def current_inference_tenant():
+    return _inference_tenant.get()
+
+
 @contextmanager
 def inference_tenant(tenant):
     token = _inference_tenant.set(tenant)

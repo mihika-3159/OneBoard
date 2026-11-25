@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # Centralized Ollama Model Gateway
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     OLLAMA_MODEL_DIGESTS: dict[str, str] = {}
+    INFERENCE_MIN_FREE_MIB: int = 512
+    INFERENCE_MAX_LOAD_PER_CPU: float = 2.0
+    INFERENCE_QUEUE_URL: str = ""
+    OLLAMA_LOCAL_REPLICA_PORT: int = 0
     OLLAMA_CONTEXT_WINDOW: int = 8192
     OLLAMA_MAX_OUTPUT_TOKENS: int = 768
     OLLAMA_MAX_JSON_OUTPUT_TOKENS: int = 1536
@@ -115,6 +119,10 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("ONEBOARD_DEMO_MODE must be disabled")
     if config.DEBUG:
         errors.append("DEBUG must be disabled")
+    if not 1 <= config.INFERENCE_MIN_FREE_MIB <= 1_048_576 or not 0 < config.INFERENCE_MAX_LOAD_PER_CPU <= 100:
+        errors.append("Invalid inference memory or CPU admission limit")
+    if not 0 <= config.OLLAMA_LOCAL_REPLICA_PORT <= 65535:
+        errors.append("Invalid local inference replica port")
     if not 4096 <= config.OLLAMA_CONTEXT_WINDOW <= 32768:
         errors.append("OLLAMA_CONTEXT_WINDOW must be between 4096 and 32768")
     if config.OLLAMA_CONTEXT_WINDOW <= max(config.OLLAMA_MAX_OUTPUT_TOKENS, config.OLLAMA_MAX_JSON_OUTPUT_TOKENS) + 64:

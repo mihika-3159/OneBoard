@@ -66,7 +66,7 @@ export function setBearerToken(token: string | null): void {
 // ---------------------------------------------------------------------------
 // Central HTTP Request Handler
 // ---------------------------------------------------------------------------
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function checkedResponse(path: string, options: RequestInit = {}): Promise<Response> {
   const url = `${API_BASE}${path}`;
   const headers = new Headers(options.headers || {});
 
@@ -129,6 +129,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new ApiError(res.status, detail);
   }
 
+  return res;
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const res = await checkedResponse(path, options);
   // 204 No Content
   if (res.status === 204) {
     return {} as T;
@@ -261,6 +266,33 @@ export const api = {
     return request<any>('/ai/benchmark', { method: 'POST' });
   },
 
+  streamCommand: async (command: string, signal: AbortSignal, append: (text: string) => void) => {
+    const res = await checkedResponse('/ai/command/stream', {
+      method: 'POST', signal, body: JSON.stringify({ command }),
+    });
+    if (!res.body) throw new Error('Missing response stream');
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = '';
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) throw new Error('Generation interrupted');
+        buffer += value;
+        let end;
+        while ((end = buffer.indexOf('\n')) >= 0) {
+          const event = JSON.parse(buffer.slice(0, end));
+          buffer = buffer.slice(end + 1);
+          if (event.error) throw new Error(event.error);
+          if (event.result) return event.result;
+          if (typeof event.delta !== 'string') throw new Error('Invalid generation event');
+          append(event.delta);
+        }
+      }
+    } finally {
+      await reader.cancel();
+      reader.releaseLock();
+    }
+  },
   executeCommand: async (command: string): Promise<any> => {
     return request<any>('/ai/command', {
       method: 'POST',

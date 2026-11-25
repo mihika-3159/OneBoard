@@ -71,7 +71,8 @@ jobs:
       CORS_ORIGINS: "http://127.0.0.1:8000"
       DATABASE_URL: "sqlite:///./oneboard_mandatory_live_ci.sqlite3"
       MODEL_PROFILES: '{"balanced":{"chat_model":"qwen2.5:0.5b","reasoning_model":"qwen2.5:0.5b","embedding_model":"all-minilm","context_size":"4096","description":"Disposable CI model profile"}}'
-      OLLAMA_BASE_URL: "http://127.0.0.1:11434"
+      OLLAMA_HOST: "127.0.0.1:11459"
+      OLLAMA_BASE_URL: "http://127.0.0.1:11459"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -85,10 +86,11 @@ jobs:
         run: curl -fsSL https://ollama.com/install.sh | sh
       - name: Start Ollama
         run: |
+          export OLLAMA_NUM_PARALLEL=1
           export OLLAMA_MODELS="$RUNNER_TEMP/oneboard-models"
           ollama serve > /tmp/oneboard-ollama.log 2>&1 &
           for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:11434/api/tags > /dev/null; then exit 0; fi
+            if curl -fsS "$OLLAMA_BASE_URL/api/tags" > /dev/null; then exit 0; fi
             sleep 2
           done
           cat /tmp/oneboard-ollama.log
@@ -100,16 +102,35 @@ jobs:
       - name: Verify downloaded model manifests and blobs
         run: |
           models="$RUNNER_TEMP/oneboard-models"
-          curl -fsS "$OLLAMA_BASE_URL/api/tags" > "$RUNNER_TEMP/oneboard-tags.json"
           for tag in "$ONEBOARD_CI_OLLAMA_MODEL" "$ONEBOARD_CI_EMBEDDING_MODEL"; do
             if [[ "$tag" != *:* ]]; then tag="$tag:latest"; fi
-            digest=$(jq -er --arg tag "$tag" '.models[] | select(.name == $tag) | .digest' "$RUNNER_TEMP/oneboard-tags.json")
-            python scripts/verify_model_artifacts.py "$models/manifests/registry.ollama.ai/library/${tag%:*}/${tag##*:}" "$models/blobs" "sha256:${digest#sha256:}"
+            name="${tag%:*}"
+            version="${tag##*:}"
+            upstream="$RUNNER_TEMP/registry-manifest.json"
+            curl --fail --silent --show-error --retry 3 \
+              -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+              "https://registry.ollama.ai/v2/library/$name/manifests/$version" -o "$upstream"
+            local_manifest="$models/manifests/registry.ollama.ai/library/$name/$version"
+            digest=$(sha256sum "$upstream" | cut -d' ' -f1)
+            size=$(wc -c < "$upstream")
+            jq -e --slurpfile remote "$upstream" --arg digest "sha256:$digest" --argjson size "$size" '
+              .config == $remote[0].config and
+              (.layers == $remote[0].layers or
+               .layers == ($remote[0].layers + [{
+                 mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+                 digest: $digest, size: $size
+               }]))
+            ' "$local_manifest" > /dev/null
+            local_digest=$(sha256sum "$local_manifest" | cut -d' ' -f1)
+            python scripts/verify_model_artifacts.py "$local_manifest" "$models/blobs" "sha256:$local_digest"
+            python scripts/verify_model_artifacts.py "$upstream" "$models/blobs" "sha256:$digest"
           done
       - name: Mandatory full Ollama suite (including smoke and genuine embeddings)
         run: |
           python scripts/require_test_suite.py 20 ollama-full.xml tests/test_ollama_integration.py -k 'not TestLiveAPIEndpoints'
           python scripts/require_test_suite.py 5 ollama-smoke.xml tests/test_ollama_live_ci.py
+      - name: Verify provider slot release on disconnect and worker termination
+        run: python -m scripts.verify_provider_cancellation
       - name: Benchmark the real model with synthetic quality and resource cases
         run: python -m scripts.benchmark_inference --model "$ONEBOARD_CI_OLLAMA_MODEL" --output model-benchmark.json
       - name: Start fresh authenticated local API and execute every live API test
@@ -178,6 +199,13 @@ jobs:
           cache-dependency-path: apps/api/requirements.lock
       - name: Install dependencies
         run: 'python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements.lock'
+      - name: Verify queue scheduling, ownership and crash recovery
+        env:
+          ONEBOARD_QUEUE_TEST_URL: postgresql+psycopg://oneboard_ci:disposable-ci-only@127.0.0.1:5432/queue_test
+          PGPASSWORD: disposable-ci-only
+        run: |
+          createdb -h 127.0.0.1 -U oneboard_ci queue_test
+          python scripts/require_test_suite.py 2 queue.xml tests/test_inference_queue_postgres.py
       - name: Run disposable PostgreSQL migration and concurrency tests
         run: python scripts/require_test_suite.py 31 postgres-required.xml tests/integration/test_postgres_security.py
       - name: Verify full PostgreSQL 16 logical backup and restore in disposable CI
