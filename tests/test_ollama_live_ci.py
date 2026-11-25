@@ -93,7 +93,7 @@ async def test_real_embedding_index_and_retrieval(monkeypatch):
             result = await semantic_index.retrieve(db, "synthetic-live-ci", phrase, 5)
             assert result and result[0]["document_id"] == doc.id
             assert result[0]["score"] > 0.99
-            assert result[0]["search_strategy"] == "indexed_angular_lsh_approximate"
+            assert result[0]["search_strategy"] == "exact_cosine_small_corpus"
             assert await semantic_index.retrieve(db, "another-tenant", phrase, 5) == []
     finally:
         engine.dispose()

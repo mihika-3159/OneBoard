@@ -43,7 +43,7 @@ async def test_index_never_uses_fake_embedding_and_retrieves_nonlexical(db,monke
     rows=await semantic_index.retrieve(db,"a","turnover",5)
     assert len(rows)==1 and rows[0]["document_id"]==a.id
     assert rows[0]["document_id"]!=b.id
-    assert rows[0]["search_strategy"]=="indexed_angular_lsh_approximate"
+    assert rows[0]["search_strategy"]=="exact_cosine_small_corpus"
 
 def test_settlement_fx_period_provenance_and_replay(db):
     db.add(Business(id="a",name="A",currency="AED"))

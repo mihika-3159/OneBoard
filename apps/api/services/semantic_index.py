@@ -219,17 +219,24 @@ async def retrieve(db, tenant, query, top_k, filters=None):
     ).join(MemoryDocument, and_(MemoryDocument.id == MemoryChunk.document_id,
                                MemoryDocument.business_id == MemoryChunk.business_id)
     ).outerjoin(MemoryDocumentState,state_join()).filter(active_state(),SemanticVector.business_id == tenant, SemanticVector.model == key,
-             SemanticVector.dimension == len(vector),
-             or_(*(col.in_(near) for col,near in zip(columns,probes)))
+             SemanticVector.dimension == len(vector)
     )
     from apps.api.services.memory_ranking import filter_scope
-    candidate_cap=600
-    rows=filter_scope(rows,filters).order_by(priority.desc(),SemanticVector.chunk_id).limit(candidate_cap+1).all()
+    scope=filter_scope(rows,filters)
+    exact_cap=min(2048,1_000_000//len(vector))
+    small=scope.with_entities(SemanticVector.chunk_id).limit(exact_cap+1).count()<=exact_cap
+    candidate_cap=exact_cap if small else min(1000,1_000_000//len(vector))
+    strategy="exact_cosine_small_corpus" if small else "indexed_angular_lsh_approximate"
+    if not small:
+        near2=[near+[band^(1<<i)^(1<<j) for i in range(8) for j in range(i+1,8)] for band,near in zip(bands,probes)]
+        scope=scope.filter(or_(*(col.in_(near) for col,near in zip(columns,near2))))
+        priority=sum(case((col==band,5),(col.in_(near),3),(col.in_(wide),1),else_=0) for col,band,near,wide in zip(columns,bands,probes,near2))
+    rows=scope.order_by(SemanticVector.chunk_id if small else priority.desc(),SemanticVector.chunk_id).limit(candidate_cap+1).all()
     scored = [{"chunk_id": c.id, "document_id": c.document_id, "source_title": title,
                "content": c.content, "score": round(cosine(vector, v.vector),4),
                "score_kind": "genuine_model_cosine_not_verified_relevance",
-               "search_strategy": "indexed_angular_lsh_approximate",
-               "candidate_limit_applied": len(rows)>candidate_cap, "candidate_count": min(len(rows),candidate_cap),
+               "search_strategy": strategy,
+               "candidate_limit_applied": not small, "candidate_count": min(len(rows),candidate_cap),
                "embedding_model": model, "metadata": c.metadata_tags or {}}
               for v,c,title in rows[:candidate_cap]]
     return sorted(scored, key=lambda row: row["score"], reverse=True)[:top_k]

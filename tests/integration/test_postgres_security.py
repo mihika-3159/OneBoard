@@ -1284,7 +1284,7 @@ async def test_26_postgres_indexed_semantic_retrieves_old_synonym_and_isolates_t
             db.commit()
             result=await memory_engine.search_semantic_memory(db,a,"turnover",5)
             assert len(result)==1 and result[0]["document_id"]==old_id
-            assert result[0]["search_strategy"]=="indexed_angular_lsh_approximate"
+            assert result[0]["search_strategy"]=="exact_cosine_small_corpus"
             assert {x["name"] for x in inspect(engine).get_indexes("semantic_vectors")} >= {f"ix_semantic_band_{i}" for i in range(4)}
     finally:
         with factory() as db:

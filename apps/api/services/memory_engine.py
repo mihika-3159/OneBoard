@@ -66,7 +66,7 @@ class MemoryEngine:
               "search_strategy":strategy,"candidate_limit_applied":len(entries)>cap,"candidate_count":min(len(entries),cap)})
         lexical.sort(key=lambda row:(-row["score"],row["chunk_id"]))
         votes=feedback_scores(db,business_id,query,list({x["chunk_id"] for x in lexical+semantic}))
-        ranked=fuse(lexical,semantic,top_k,votes)
+        ranked=fuse(lexical,semantic,top_k,votes,query)
         if not ranked:return []
         # Load full source text only for final results, then revalidate
         # active state and the exact quotation. No per-result query.
