@@ -8,3 +8,5 @@ Do not claim completion without passing evidence for the exact current revision.
 - Automated evidence cannot establish independent screen-reader usability, external production hosting, real financial provenance, provider authorization, regulatory compliance, or signed independent attestations. Preserve the distinction in release notes.
 
 For all new changes, inspect the CI run on the exact revision and record failures instead of removing or bypassing checks. The release-candidate receipt includes source head and build SHA, individual run IDs, artifact metadata, and a separate external NO_GO.
+
+The manual screen-reader review is a separate human acceptance activity, not a remaining coding batch. See `docs/SCREEN_READER_ACCEPTANCE.md` for the structured review record. Automated checks must pass before engineering closure, and no human review may be claimed on their basis.

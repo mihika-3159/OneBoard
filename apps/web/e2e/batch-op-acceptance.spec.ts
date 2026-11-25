@@ -27,6 +27,14 @@ test('accessibility tree, keyboard navigation and automated WCAG checks for all 
   violations.push(...result.violations.map((v:any)=>({tab,id:v.id,impact:v.impact,targets:v.nodes.map((n:any)=>n.target)})));
   const tree=await main.ariaSnapshot();expect(tree.length).toBeGreaterThan(0);
  }
+ // Real keyboard focus/escape behavior is verified separately from axe.
+ const alerts=page.getByRole('button',{name:'Proactive Scheduler Alerts'});await alerts.focus();await page.keyboard.press('Enter');
+ const alertDialog=page.getByRole('dialog',{name:'Tenant proactive alerts'});await expect(alertDialog).toBeVisible();await expect(alertDialog.getByRole('button',{name:'Close'})).toBeFocused();
+ await page.keyboard.press('Escape');await expect(alertDialog).toHaveCount(0);await expect(alerts).toBeFocused();
+ const workflowNav=page.getByRole('navigation',{name:'Workspace sections'}).getByRole('button',{name:'Workflow Studio'});await workflowNav.focus();await page.keyboard.press('Enter');
+ const teach=page.getByRole('button',{name:'Teach OneBoard a Process'});await teach.focus();await page.keyboard.press('Enter');
+ const teachDialog=page.getByRole('dialog',{name:'Teach OneBoard a Repetitive Process'});await expect(teachDialog).toBeVisible();await expect(teachDialog.getByRole('textbox',{name:'Describe manual process'})).toBeFocused();
+ await page.keyboard.press('Tab');await expect(teachDialog.getByRole('button',{name:'Cancel',exact:true})).toBeFocused();await page.keyboard.press('Escape');await expect(teachDialog).toHaveCount(0);await expect(teach).toBeFocused();
  await info.attach('accessibility-audit.json',{body:JSON.stringify(violations,null,2),contentType:'application/json'});
  expect(violations).toEqual([]);
 });
@@ -42,5 +50,6 @@ test('large workflow inventory remains bounded and keyboard-selectable',async({p
  await page.getByRole('button',{name:'Next page'}).click();
  await expect(page.getByRole('group',{name:'List pagination'})).toContainText('26–50 of 250');
  const row=page.getByRole('button',{name:/Synthetic workflow 25 /});await row.focus();await page.keyboard.press('Enter');await expect(row).toHaveAttribute('aria-pressed','true');
+ const alternative=page.getByText('Workflow text alternative',{exact:true});await alternative.focus();await page.keyboard.press('Enter');const structure=page.getByRole('region',{name:'Workflow structure'});await expect(structure).toBeVisible();await expect(structure.getByText('Start',{exact:true})).toBeVisible();
  expect(Date.now()-start).toBeLessThan(15000);
 });

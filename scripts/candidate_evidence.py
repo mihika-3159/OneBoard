@@ -17,6 +17,7 @@ REQUIRED={
  ".github/workflows/container-verification.yml":{"container-build-identities"},
  ".github/workflows/windows-startup.yml":{"oneboard-windows-startup"},
  ".github/workflows/acceptance-evidence.yml":{"oneboard-acceptance-evidence"},
+ ".github/workflows/browser-ai-spike.yml":set(),
 }
 def main():
     p=argparse.ArgumentParser();p.add_argument("--receipt",type=Path,required=True);p.add_argument("--output",type=Path,required=True);a=p.parse_args()

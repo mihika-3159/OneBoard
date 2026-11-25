@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 import httpx
 
-READS=("/api/auth/me","/api/auth/security","/api/business/metrics","/api/workflows","/api/workflows/runs","/api/agents","/api/agents/runs","/api/accountability/decisions","/api/data/export-snapshot","/api/ai/status","/api/integrations/live")
+READS=("/api/auth/me","/api/auth/security","/api/business/metrics","/api/workflows","/api/workflows/runs","/api/agents","/api/agents/runs","/api/accountability/decisions","/api/data/export-snapshot","/api/ai/status","/api/integrations/providers/live")
 def verify(base,cert,out):
     url=urlsplit(base)
     if os.environ.get("ONEBOARD_CI_PRODUCTION_BROWSER")!="1" or url.scheme!="https" or url.hostname!="127.0.0.1" or url.port!=8443:

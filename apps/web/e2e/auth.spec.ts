@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
 test('founder registers, sees workspace, logs out and cannot reuse session', async ({ page, request }) => {
+  test.setTimeout(60000);
   const email = `e2e-${randomUUID()}@example.test`;
   await page.goto('/');
   await expect(page.getByText('Founder Login')).toBeVisible();
@@ -10,8 +11,15 @@ test('founder registers, sees workspace, logs out and cannot reuse session', asy
   await page.getByPlaceholder('e.g. Apex SaaS Labs').fill('CI Workspace');
   await page.getByPlaceholder('founder@example.com').fill(email);
   await page.locator('input[type=password]').fill('TestPassword123!');
-  await page.getByRole('button', { name: 'Create Workspace & Sign In' }).click();
-  await expect(page.getByText('CI Founder')).toBeVisible();
+  const [registered] = await Promise.all([
+    page.waitForResponse(response => response.url().endsWith('/api/auth/register') && response.request().method()==='POST'),
+    page.getByRole('button', { name: 'Create Workspace & Sign In' }).click(),
+  ]);
+  expect(registered.status()).toBe(201);
+  // Cold-start WebKit on macOS can take several seconds to paint the shell.
+  // Registration must actually succeed, and the authenticated shell must appear.
+  await expect(page.getByRole('navigation',{name:'Workspace sections'})).toBeVisible({timeout:15000});
+  await expect(page.getByText('CI Founder',{exact:true})).toBeVisible({timeout:15000});
   await expect(page.getByRole('complementary').getByText('CI Workspace')).toBeVisible();
   const me = await page.request.get('/api/auth/me');
   expect(me.status()).toBe(200);

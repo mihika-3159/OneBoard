@@ -1,4 +1,4 @@
-import {LoadState,ListPager} from './ScreenSupport';
+import {LoadState,ListPager,AlertDialog} from './ScreenSupport';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   ReactFlow,
@@ -371,6 +371,7 @@ export const WorkflowStudioTab: React.FC = () => {
 
         {/* React Flow Canvas */}
         <div className="lg:col-span-3 space-y-4">
+          {selectedWorkflow&&<details className="glass-panel p-3 rounded-xl space-y-2"><summary className="font-semibold">Workflow text alternative</summary><section aria-label="Workflow structure"><h3 className="font-semibold">Steps and dependencies: {selectedWorkflow.name}</h3><p className="text-xs text-slate-300">Steps are listed in stored order; connections describe execution dependencies, not a guaranteed serial order.</p><ol className="list-decimal pl-5 space-y-1">{(selectedWorkflow.nodes||[]).map(n=><li key={n.id}><strong>{n.data?.label||n.id}</strong> ({n.type})</li>)}</ol><h4 className="font-semibold">Connections</h4>{selectedWorkflow.edges?.length?<ul className="list-disc pl-5">{selectedWorkflow.edges.map((edge,i)=><li key={edge.id||i}>{selectedWorkflow.nodes?.find(n=>n.id===edge.source)?.data?.label||edge.source} to {selectedWorkflow.nodes?.find(n=>n.id===edge.target)?.data?.label||edge.target}</li>)}</ul>:<p>No connections recorded.</p>}</section></details>}
           <div className="h-[480px] rounded-2xl border border-slate-800/80 bg-[#090d16] relative overflow-hidden">
             <ReactFlow
               nodes={nodes}
@@ -433,7 +434,7 @@ export const WorkflowStudioTab: React.FC = () => {
 
       {/* Teach a Process Modal */}
       {isTeachModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <AlertDialog label="Teach OneBoard a Repetitive Process" onClose={()=>{if(!isGenerating)setIsTeachModal(false)}}>
           <div className="p-6 rounded-2xl bg-slate-900 border border-slate-700 max-w-xl w-full space-y-4">
             <h3 className="text-lg font-bold text-white flex items-center gap-2">
               <BookOpen className="w-5 h-5 text-indigo-400" />
@@ -465,7 +466,7 @@ export const WorkflowStudioTab: React.FC = () => {
               </button>
             </div>
           </div>
-        </div>
+        </AlertDialog>
       )}
     </div>
   );
