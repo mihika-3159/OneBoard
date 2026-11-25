@@ -44,6 +44,10 @@ def _charge(tenant, cost):
 
 
 def estimated_tokens(payload):
+    if "input" in payload:
+        values=payload["input"]
+        if not isinstance(values,list) or not 1<=len(values)<=16 or any(not isinstance(v,str) for v in values):raise ValueError("Invalid embedding batch")
+        return max(1,sum(len(v.encode("utf-8")) for v in values))
     if "prompt" in payload:
         return max(1, len(payload["prompt"].encode("utf-8")))
     messages = payload["messages"]

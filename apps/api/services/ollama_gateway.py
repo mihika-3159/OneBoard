@@ -408,6 +408,39 @@ class OllamaGateway:
                 self._inference_slots.release()
         return None
 
+    async def genuine_embeddings(self,texts,model=None):
+        """Bounded native Ollama batch embedding, preserving order and cache identity."""
+        import math
+        if not isinstance(texts,list) or not 1<=len(texts)<=16 or any(not isinstance(t,str) or not 1<=len(t)<=2048 for t in texts):
+            raise ValueError("Invalid embedding batch")
+        target=model or self.get_model_for_task("embedding")
+        keys=[self._embedding_cache.key(current_inference_tenant(),self.base_url,target,settings.OLLAMA_MODEL_DIGESTS.get(target),t) for t in texts]
+        result=[self._embedding_cache.get(k) for k in keys]
+        missing=[i for i,v in enumerate(result) if v is None]
+        if not missing:return result
+        acquired=False
+        try:
+            if not self._queued():
+                await asyncio.wait_for(self._inference_slots.acquire(),timeout=self._queue_timeout_seconds)
+                acquired=True
+            with (nullcontext(True) if self._queued() else inference_slot()) as admitted:
+                if not admitted:return result
+                response=await self._post_inference("/api/embed",{"model":target,"input":[texts[i] for i in missing],"truncate":False},30.0)
+                if response.status_code!=200:return result
+                vectors=response.json().get("embeddings")
+                if not isinstance(vectors,list) or len(vectors)!=len(missing):return result
+                if not all(isinstance(v,list) and 1<=len(v)<=4096 and any(v) and all(
+                    type(x) in (int,float) and math.isfinite(x) and abs(x)<=1e6 for x in v) for v in vectors):
+                    return result
+                if len({len(v) for v in vectors})!=1 or any(v is not None and len(v)!=len(vectors[0]) for v in result):return result
+                for i,v in zip(missing,vectors):
+                    result[i]=[float(x) for x in v];self._embedding_cache.put(keys[i],result[i])
+        except Exception:
+            pass
+        finally:
+            if acquired:self._inference_slots.release()
+        return result
+
     async def generate_embedding(self, text: str, model: Optional[str] = None) -> List[float]:
         """Legacy development caller; semantic index never uses this fallback."""
         genuine = await self.genuine_embedding(text, model)

@@ -15,7 +15,8 @@ from sqlalchemy.exc import IntegrityError
 
 from apps.api.models.agent_council import AgentRun
 from apps.api.models.workflow import CustomAgent
-from apps.api.models.memory import MemoryDocument, MemoryChunk
+from apps.api.models.memory import MemoryDocument, MemoryChunk, MemoryDocumentState
+from apps.api.services.semantic_index import active_state,state_join
 from apps.api.models.entities import Customer
 from apps.api.services.financial_metrics import calculate_business_financials
 from apps.api.services.inference_budget import inference_tenant
@@ -75,6 +76,10 @@ def authorize(agent, step):
         raise ValueError("Document scope only allowed for read_memory")
 
 
+def active_document(db,tenant,did):
+    return db.query(MemoryDocument.id).outerjoin(MemoryDocumentState,state_join()).filter(
+        MemoryDocument.business_id==tenant,MemoryDocument.id==did,active_state()).first()
+
 def plan_run(db, tenant, root_agent_id, goal, steps, key):
     if not isinstance(goal, str) or not goal.strip() or len(goal) > 2000:
         raise ValueError("Invalid goal")
@@ -105,8 +110,7 @@ def plan_run(db, tenant, root_agent_id, goal, steps, key):
             last = agent_id
         agent = load_agent(db, tenant, agent_id)
         authorize(agent, step)
-        if step["tool"] == "read_memory" and not db.query(MemoryDocument.id).filter_by(
-                business_id=tenant, id=step["document_id"]).first():
+        if step["tool"] == "read_memory" and not active_document(db,tenant,step["document_id"]):
             raise ValueError("Document unavailable")
         counts[agent_id] = counts.get(agent_id, 0) + 1
         if counts[agent_id] > min(25, agent.max_steps or 0):
@@ -196,9 +200,9 @@ async def execute_step(db, tenant, run, step, agent):
         return calculate_business_financials(db, tenant)
     if tool == "read_memory":
         rows = db.query(MemoryChunk).join(MemoryDocument, (MemoryDocument.id == MemoryChunk.document_id) &
-            (MemoryDocument.business_id == tenant)).filter(MemoryChunk.business_id == tenant,
+            (MemoryDocument.business_id == tenant)).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id == tenant,active_state(),
             MemoryChunk.document_id == step["document_id"]).order_by(MemoryChunk.chunk_index).limit(5)
-        if not db.query(MemoryDocument.id).filter_by(business_id=tenant,id=step["document_id"]).first():
+        if not active_document(db,tenant,step["document_id"]):
             raise ValueError("Granted document no longer exists")
         return {"chunks": [{"id": row.id, "content": row.content[:500]} for row in rows]}
     # Handoffs use only previous bounded checkpoint data, quoted and explicitly
@@ -213,8 +217,7 @@ async def execute_step(db, tenant, run, step, agent):
         except ValueError:
             return False
         if source_step["tool"] == "read_memory":
-            return bool(db.query(MemoryDocument.id).filter_by(
-                business_id=tenant,id=source_step["document_id"]).first())
+            return bool(active_document(db,tenant,source_step["document_id"]))
         return True
 
     visible = [p for p in previous if p["agent_id"] == agent.id and can_share(p)]

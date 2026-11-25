@@ -85,7 +85,7 @@ async def index_pending(db,tenant,limit=16,gateway=None):
             MemoryDocumentState.active.is_(True),or_(MemoryDocumentState.model_key.is_(None),MemoryDocumentState.model_key!=key)
         ).update({"model_key":key,"status":"pending","attempts":0,"indexed_count":0,
                   "next_attempt_at":0,"lease_until":0,"claim_token":None,"error":None},synchronize_session=False)
-        db.flush()
+        db.flush();db.expire_all()
         rows=pending_chunks(db,tenant,key).filter(or_(MemoryDocumentState.document_id.is_(None),
             and_(MemoryDocumentState.next_attempt_at<=now,MemoryDocumentState.lease_until<=now,
                  MemoryDocumentState.status!="failed"))).order_by(
@@ -94,7 +94,7 @@ async def index_pending(db,tenant,limit=16,gateway=None):
         token=str(uuid4())
         for did in set(x[1] for x in work):
             state=ensure_state(db,tenant,did)
-            state.model_key=key;state.status="indexing";state.claim_token=token;state.lease_until=now+1800
+            state.model_key=key;state.status="indexing";state.claim_token=token;state.lease_until=now+180
         db.commit()
         if not work:return {"indexed":0,"attempted":0,"model":model,"provider_available":None}
         sem=asyncio.Semaphore(2)
@@ -106,19 +106,39 @@ async def index_pending(db,tenant,limit=16,gateway=None):
                     return (item,vector,signatures(vector)) if vector is not None else (item,None,None)
                 except Exception:
                     return item,None,None
-        outcomes=await asyncio.gather(*(embed(item) for item in work))
+        # Native batched inference reduces provider round trips; fallback for
+        # single-chunk jobs and legacy test/adapter contracts only.
+        batch=getattr(gateway,"genuine_embeddings",None)
+        if callable(batch) and len(work)>1:
+            async def embed_batch(items):
+                try:
+                    with inference_tenant(tenant):
+                        vectors=await batch([x[2] for x in items],model)
+                    if len(vectors)!=len(items):raise ValueError("Wrong embedding count")
+                    return [(item,v,signatures(v)) if v is not None else (item,None,None) for item,v in zip(items,vectors)]
+                except Exception:
+                    return [(item,None,None) for item in items]
+            outcomes=[]
+            for offset in range(0,len(work),16):outcomes.extend(await embed_batch(work[offset:offset+16]))
+        else:
+            outcomes=await asyncio.gather(*(embed(item) for item in work))
         tenant_lifecycle_lock(db,tenant)
         _lock(db,tenant)
         indexed=0
         errors=set()
-        states={did:db.query(MemoryDocumentState).filter_by(business_id=tenant,document_id=did,active=True,claim_token=token,model_key=key).first() for did in set(x[1] for x in work)}
+        doc_ids={x[1] for x in work};chunk_ids={x[0] for x in work}
+        states={row.document_id:row for row in db.query(MemoryDocumentState).filter(
+            MemoryDocumentState.business_id==tenant,MemoryDocumentState.document_id.in_(doc_ids),
+            MemoryDocumentState.active.is_(True),MemoryDocumentState.claim_token==token,MemoryDocumentState.model_key==key).all()}
+        chunks={row.id:row for row in db.query(MemoryChunk).filter(MemoryChunk.business_id==tenant,MemoryChunk.id.in_(chunk_ids)).all()}
+        stored={row.chunk_id:row for row in db.query(SemanticVector).filter(SemanticVector.business_id==tenant,SemanticVector.chunk_id.in_(chunk_ids)).all()}
         for (cid,did,content),vector,bands in outcomes:
-            if not states[did]:continue
+            if did not in states:continue
             if vector is None:
                 errors.add(did);continue
-            chunk=db.query(MemoryChunk).filter_by(id=cid,business_id=tenant,document_id=did).first()
-            if chunk is None or chunk.content!=content:continue
-            row=db.get(SemanticVector,cid)
+            chunk=chunks.get(cid)
+            if chunk is None or chunk.content!=content or chunk.document_id!=did:continue
+            row=stored.get(cid)
             if row is None:
                 row=SemanticVector(chunk_id=cid,business_id=tenant);db.add(row)
             elif row.business_id!=tenant:raise PermissionError("Vector tenant mismatch")
@@ -126,10 +146,11 @@ async def index_pending(db,tenant,limit=16,gateway=None):
             row.band0,row.band1,row.band2,row.band3=bands
             indexed+=1
         db.flush()
+        totals=dict(db.query(MemoryChunk.document_id,func.count()).filter(MemoryChunk.business_id==tenant,MemoryChunk.document_id.in_(doc_ids)).group_by(MemoryChunk.document_id).all())
+        remaining_counts=dict(pending_chunks(db,tenant,key).with_entities(MemoryChunk.document_id,func.count()).filter(MemoryChunk.document_id.in_(doc_ids)).group_by(MemoryChunk.document_id).all())
         for did,state in states.items():
-            if not state:continue
-            total=db.query(MemoryChunk).filter_by(business_id=tenant,document_id=did).count()
-            remaining=pending_chunks(db,tenant,key).filter(MemoryChunk.document_id==did).count()
+            total=totals.get(did,0)
+            remaining=remaining_counts.get(did,0)
             state.indexed_count=total-remaining;state.claim_token=None;state.lease_until=0
             if not remaining:
                 state.status="ready";state.attempts=0;state.error=None;state.next_attempt_at=0

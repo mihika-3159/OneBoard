@@ -8,7 +8,8 @@ import json
 from math import isfinite
 from apps.api.models.entities import Customer, Invoice, Expense, Product
 from apps.api.models.decision_evidence import Evidence
-from apps.api.models.memory import MemoryChunk, MemoryConflict, MemoryDocument
+from apps.api.models.memory import MemoryChunk, MemoryConflict, MemoryDocument, MemoryDocumentState
+from apps.api.services.semantic_index import active_state,state_join
 
 
 def evidence_inventory(db, tenant):
@@ -19,7 +20,7 @@ def evidence_inventory(db, tenant):
         records["evidence:" + row.id] = {"text": row.snippet[:450], "source": "tenant_evidence"}
     chunks = (db.query(MemoryChunk).join(MemoryDocument, (MemoryChunk.document_id == MemoryDocument.id)
               & (MemoryDocument.business_id == tenant))
-              .filter(MemoryChunk.business_id == tenant).order_by(MemoryChunk.id).limit(12))
+              .outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id == tenant,active_state()).order_by(MemoryChunk.id).limit(12))
     for row in chunks:
         records["chunk:" + row.id] = {"text": row.content[:450], "source": "tenant_document"}
     conflicts = db.query(MemoryConflict).filter_by(business_id=tenant, status="unresolved").order_by(MemoryConflict.id).limit(12)
@@ -55,7 +56,7 @@ def current_record(db, tenant, ref):
     if kind == "chunk":
         row = db.query(MemoryChunk).join(MemoryDocument,
             (MemoryChunk.document_id == MemoryDocument.id) & (MemoryDocument.business_id == tenant)
-            ).filter(MemoryChunk.business_id == tenant, MemoryChunk.id == ident).first()
+            ).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id == tenant, MemoryChunk.id == ident,active_state()).first()
         return {"text": row.content[:450], "source": "tenant_document"} if row else None
     if kind == "conflict":
         row = db.query(MemoryConflict).filter_by(business_id=tenant,id=ident,status="unresolved").first()

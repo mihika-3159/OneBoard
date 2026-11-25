@@ -36,6 +36,8 @@ async def test_index_never_uses_fake_embedding_and_retrieves_nonlexical(db,monke
     assert (await semantic_index.index_pending(db,"a"))["indexed"]==0
     assert db.query(SemanticVector).count()==0
     monkeypatch.setattr(semantic_index.ollama_gateway,"genuine_embedding",AsyncMock(return_value=[1.,0.2,0.1]))
+    assert (await semantic_index.index_pending(db,"a"))["indexed"]==0  # durable backoff
+    semantic_index.retry_document(db,"a",a.id)
     assert (await semantic_index.index_pending(db,"a"))["indexed"]==1
     assert (await semantic_index.index_pending(db,"b"))["indexed"]==1
     rows=await semantic_index.retrieve(db,"a","turnover",5)
@@ -142,15 +144,16 @@ def test_ingestion_rolls_back_document_when_chunk_write_fails(db):
     assert db.query(MemoryChunk).filter_by(business_id="a").count()==0
 
 @pytest.mark.asyncio
-async def test_scheduled_index_uses_fresh_gateway_and_only_one_chunk(db,monkeypatch):
+async def test_scheduled_index_uses_fresh_gateway_and_bounded_batch(db,monkeypatch):
     db.add(Business(id="a",name="A"))
     db.commit()
-    memory_engine.add_document_with_chunks(db,"a","queued","one\n\ntwo")
+    memory_engine.add_document_with_chunks(db,"a","queued","one " * 400+"two " * 400)
     worker=SimpleNamespace(get_model_for_task=lambda task:"nomic-embed-text",
                            genuine_embedding=AsyncMock(return_value=[1.,0.2]))
     monkeypatch.setattr(semantic_index,"OllamaGateway",lambda:worker)
     monkeypatch.setattr(semantic_index.ollama_gateway,"get_model_for_task",lambda task:"nomic-embed-text")
     monkeypatch.setattr(semantic_index.ollama_gateway,"genuine_embedding",AsyncMock(side_effect=AssertionError("API gateway used in worker")))
-    assert (await semantic_index.scheduled_index(db))["indexed"]==1
-    worker.genuine_embedding.assert_awaited_once()
-    assert db.query(SemanticVector).count()==1
+    result=await semantic_index.scheduled_index(db)
+    assert 1<result["indexed"]<=16
+    assert worker.genuine_embedding.await_count==result["indexed"]
+    assert db.query(SemanticVector).count()==result["indexed"]
