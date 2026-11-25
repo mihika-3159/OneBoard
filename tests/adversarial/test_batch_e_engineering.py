@@ -177,3 +177,29 @@ def test_history_scan_finds_removed_secret_without_printing_value(tmp_path):
     count,findings=history_scan(tmp_path)
     assert count>=1 and any(label=="GitHub token" for _,label in findings)
     assert marker not in repr(findings)
+
+
+@pytest.mark.asyncio
+async def test_multiprobe_large_synthetic_corpus_top_ten_recall(db,monkeypatch):
+    """Compare indexed candidate reranking with exact cosine, not textual QA."""
+    rng=random.Random(431)
+    q=[rng.gauss(0,1) for _ in range(48)]
+    model=semantic_index.ollama_gateway.get_model_for_task("embedding")
+    doc=MemoryDocument(id="recall-document",business_id="a",title="Synthetic corpus",content_hash="a"*64)
+    db.add(doc)
+    db.flush()
+    scores={}
+    for i in range(1000):
+        v=([x+rng.gauss(0,.55) for x in q] if i<10 else [rng.gauss(0,1) for _ in q])
+        cid=f"corpus-{i:04d}"
+        b=semantic_index.signatures(v)
+        db.add(MemoryChunk(id=cid,business_id="a",document_id=doc.id,content=f"synthetic vector {i}",chunk_index=i))
+        db.add(SemanticVector(chunk_id=cid,business_id="a",model=model,dimension=len(v),vector=v,band0=b[0],band1=b[1],band2=b[2],band3=b[3]))
+        scores[cid]=semantic_index.cosine(q,v)
+    db.commit()
+    exact=set(sorted(scores,key=scores.get,reverse=True)[:10])
+    monkeypatch.setattr(semantic_index.ollama_gateway,"genuine_embedding",AsyncMock(return_value=q))
+    rows=await semantic_index.retrieve(db,"a","synthetic query",10)
+    recall=len(exact&{row["chunk_id"] for row in rows})/10
+    print(f"SYNTHETIC_ANGULAR_RECALL corpus=1000 top_k=10 recall={recall:.2f}")
+    assert recall>=.9 and len(rows)==10

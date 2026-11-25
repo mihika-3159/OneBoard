@@ -76,6 +76,7 @@ def run_due(db,tenant,now=None,limit=10):
         WorkflowSchedule.next_due_at<=now).order_by(WorkflowSchedule.next_due_at,WorkflowSchedule.workflow_id).limit(limit).all()]
     db.rollback()
     completed=0
+    failures=0
     for wid in ids:
         with execution_lock(db.get_bind(),"workflow-schedule:"+wid) as acquired:
             if not acquired:
@@ -87,6 +88,15 @@ def run_due(db,tenant,now=None,limit=10):
                     continue
                 slot=row.next_due_at
                 cron,zone=row.cron,row.timezone
+                try:
+                    next_due=next_slot(cron,zone,now)
+                    coalesced=next_slot(cron,zone,slot)<=now
+                except ValueError:
+                    row.enabled=False
+                    row.last_status="invalid_schedule"
+                    db.commit()
+                    failures+=1
+                    continue
                 wf=db.query(WorkflowDefinition).filter_by(id=wid,business_id=tenant,is_active=True,is_valid=True).first()
                 if wf is None:
                     row.enabled=False
@@ -104,14 +114,17 @@ def run_due(db,tenant,now=None,limit=10):
                 if run.status in ("running","pending","paused","failed","awaiting_approval"):
                     # Require the founder to review or resolve before future dispatch.
                     row.enabled=False
-                row.coalesced=next_slot(cron,zone,slot)<=now
-                row.next_due_at=next_slot(cron,zone,now)
+                row.coalesced=coalesced
+                row.next_due_at=next_due
                 db.commit()
                 completed+=1
             except Exception:
                 db.rollback()
+                failures+=1
                 # Preserve due slot for stable-id retry. A committed running
                 # checkpoint returns without dispatch; then pauses the schedule.
                 import logging
                 logging.getLogger(__name__).error("Scheduled workflow attempt failed")
+    if failures:
+        raise RuntimeError('One or more scheduled workflow attempts failed')
     return completed

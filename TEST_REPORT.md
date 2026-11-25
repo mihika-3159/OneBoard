@@ -1176,3 +1176,19 @@ tests, restore at 012 and 2,000 HTTPS requests over 20.18 s with zero
 unexpected errors. Increment 2 load exposed ambiguous PostgreSQL null
 parameter; explicit CAST in increment 3 fixes it. Hash-lock install YAML
 colon repaired in 8926211. Exact final-head CI pending.
+
+
+Batch E intermediate verified head b6f07141c4f4921d2e6bba016503f538eb326f7c:
+all five workflows passed (verification 45555105632), 31/31 required
+PostgreSQL tests, plaintext 53-table/51-record restore and age-encrypted
+restore at 013. Sustained restricted-login workload 22,948 requests,
+120.24 seconds, 12 concurrent tenants/2 API workers, p95 51.1 ms,
+median 22.2 ms, 5,017 expected quota denials, zero unexpected errors.
+8926211 supply-chain job passed wheel-only hash lock, Python/Node audits,
+747 reachable blobs and 221 tracked files with zero high-confidence
+credential findings. Final increments add actual restricted-role
+background dispatch of a synthetic missed schedule during the load,
+real loopback in-flight inference transport kill (not provider compute
+cancellation), a 1,000-vector exact-cosine geometric recall regression,
+commit/tag secret scan, and explicit failure reporting of schedule
+attempts. Exact final-head CI pending. PR remains draft.

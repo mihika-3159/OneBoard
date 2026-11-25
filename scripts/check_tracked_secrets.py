@@ -60,7 +60,7 @@ def history_scan(cwd=None):
                 if not chunk:
                     raise RuntimeError("Truncated Git object")
                 remaining-=len(chunk)
-                if header[1]==b"blob":
+                if header[1] in (b"blob",b"commit",b"tag"):
                     data=tail+chunk
                     labels.update(name for name,pattern in PATTERNS.items() if pattern.search(data))
                     tail=data[-4096:]
@@ -74,7 +74,7 @@ def history_scan(cwd=None):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-    history_paths=subprocess.check_output(["git","log","--all","--format=","--name-only","-z"],cwd=cwd).split(b"\0")
+    history_paths=subprocess.check_output(["git","log","--all","--full-history","-m","--format=","--name-only","-z"],cwd=cwd).split(b"\0")
     for raw_path in set(history_paths):
         path=raw_path.decode("utf-8",errors="replace").strip("\n")
         if not path:

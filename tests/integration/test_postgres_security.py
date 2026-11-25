@@ -1315,29 +1315,50 @@ def test_27_postgres_workspace_deletion_preserves_other_tenant():
 
 
 def test_28_abrupt_process_death_releases_inference_slot_and_rolls_back_write():
-    import select
+    """Kill a real gateway client while loopback inference HTTP is in flight."""
     import time
+    from threading import Event,Thread
+    from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
     from uuid import uuid4
     from apps.api.services.cluster_capacity import inference_slot
     from apps.api.models.workflow import AuditLog
     engine=_engine()
     marker=str(uuid4())
+    entered,release=Event(),Event()
+    class HoldingInference(BaseHTTPRequestHandler):
+        def log_message(self,*args): pass
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            if self.path!="/api/chat":
+                self.send_error(404)
+                return
+            entered.set()
+            release.wait(35)
+            # Synthetic transport, not a genuine model computation.
+            try:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"done":true,"message":{"content":"synthetic"}}')
+            except OSError:
+                pass
+    server=ThreadingHTTPServer(("127.0.0.1",0),HoldingInference)
+    server.daemon_threads=True
+    server_thread=Thread(target=server.serve_forever,daemon=True)
+    server_thread.start()
     child_code="""
-import os,time
+import os,asyncio
 from sqlalchemy import create_engine,text
-from apps.api.services.cluster_capacity import inference_slot
+from apps.api.services.ollama_gateway import OllamaGateway
 e=create_engine(os.environ['DATABASE_URL'])
-with inference_slot(e) as acquired:
-    assert acquired
-    with e.begin() as c:
-        c.execute(text('INSERT INTO audit_logs (id,business_id,actor,action) VALUES (:id,:tenant,:actor,:action)'),{'id':os.environ['CRASH_MARKER'],'tenant':'synthetic-crash','actor':'ci','action':'uncommitted'})
-        print('READY',flush=True)
-        time.sleep(120)
+with e.begin() as c:
+    c.execute(text('INSERT INTO audit_logs (id,business_id,actor,action) VALUES (:id,:tenant,:actor,:action)'),{'id':os.environ['CRASH_MARKER'],'tenant':'synthetic-crash','actor':'ci','action':'uncommitted'})
+    asyncio.run(OllamaGateway().chat_complete([{'role':'user','content':'synthetic in-flight request'}]))
 """
-    child=subprocess.Popen([sys.executable,"-c",child_code],cwd=ROOT,env=dict(os.environ,CRASH_MARKER=marker),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    child=subprocess.Popen([sys.executable,"-c",child_code],cwd=ROOT,
+        env=dict(os.environ,CRASH_MARKER=marker,OLLAMA_BASE_URL=f"http://127.0.0.1:{server.server_port}",NO_PROXY="127.0.0.1,localhost"),
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
-        ready,_,_=select.select([child.stdout],[],[],20)
-        assert ready and child.stdout.readline().strip()=="READY"
+        assert entered.wait(20),"Gateway failed to enter real loopback inference HTTP"
         with inference_slot(engine) as second:
             assert second
             with inference_slot(engine) as third:
@@ -1357,6 +1378,10 @@ with inference_slot(e) as acquired:
         if child.poll() is None:
             child.kill()
             child.wait()
+        release.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
         engine.dispose()
 
 

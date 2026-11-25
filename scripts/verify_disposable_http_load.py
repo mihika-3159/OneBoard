@@ -35,7 +35,7 @@ def main():
     env=dict(os.environ,DATABASE_URL=runtime_url,ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",
              COOKIE_SECURE="true",PUBLIC_API_ORIGIN=BASE,CORS_ORIGINS=BASE,
              TRUSTED_PROXY_IPS="127.0.0.1",AUTH_SECRET_KEY=secrets.token_hex(32),
-             OLLAMA_BASE_URL="http://127.0.0.1:1")
+             OLLAMA_BASE_URL="http://127.0.0.1:1",SCHEDULER_INTERVAL_SECONDS="10")
     with tempfile.TemporaryDirectory() as tmp:
         cert=pathlib.Path(tmp)/"cert.pem"
         key=pathlib.Path(tmp)/"key.pem"
@@ -84,6 +84,24 @@ def main():
                         wf=auth.post("/api/workflows",json={"name":"Synthetic replay","nodes":[{"id":"start","type":"trigger","data":{}}],"edges":[]})
                         assert wf.status_code==200,wf.status_code
                         tenants.append((reg["business"]["id"],headers,wf.json()["id"],uuid4().hex))
+            # Separate synthetic workspace exercises real scheduled dispatch
+            # by the restricted-role background workers during sustained load.
+            with client() as c:
+                reg=c.post("/api/auth/register",json={"name":"Schedule CI founder","business_name":"Schedule CI tenant","email":uuid4().hex+"@example.test","password":"Synthetic-test-password123!"})
+                assert reg.status_code==201,reg.status_code
+                reg=reg.json()
+            schedule_headers={"Authorization":"Bearer "+reg["token"]}
+            with client(schedule_headers) as c:
+                wf=c.post("/api/workflows",json={"name":"Synthetic scheduled trigger","nodes":[{"id":"start","type":"trigger","data":{}}],"edges":[]})
+                assert wf.status_code==200,wf.status_code
+                scheduled_id=wf.json()["id"]
+                configured=c.put(f"/api/workflows/{scheduled_id}/schedule",json={"cron":"0 9 * * *","timezone":"UTC","enabled":True})
+                assert configured.status_code==200,configured.status_code
+                slot=configured.json()["next_due_at"]-3*86400
+            # Explicit CI-only fault setup simulates several missed days,
+            # without modifying the server's wall clock or any real data.
+            with admin.begin() as conn:
+                conn.execute(text("UPDATE workflow_schedules SET next_due_at=:slot WHERE workflow_id=:wid"),{"slot":slot,"wid":scheduled_id})
             deadline=time.monotonic()+120
             def worker(record):
                 tenant,headers,wid,idem=record
@@ -128,6 +146,28 @@ def main():
             assert elapsed>=115 and len(durations)>=1000
             assert p95<5,(len(durations),p95)
             assert sum(row[1] for row in results)>0,"Expected quota saturation"
+            def verify_schedule():
+                with client(schedule_headers) as c:
+                    res=c.get("/api/workflows/schedules")
+                    assert res.status_code==200,res.status_code
+                    schedules=res.json()
+                    assert len(schedules)==1
+                    row=schedules[0]
+                    if row["last_status"]!="completed":
+                        return None
+                    assert row["enabled"] and row["coalesced"]
+                    assert row["next_due_at"]>time.time()
+                    runs=c.get("/api/workflows/runs").json()
+                    assert len(runs)==1 and runs[0]["trigger_source"]=="schedule"
+                    assert runs[0]["id"]==row["last_run_id"]
+                    return runs[0]["id"]
+            due_deadline=time.monotonic()+35
+            while True:
+                scheduled_run=verify_schedule()
+                if scheduled_run:
+                    break
+                assert time.monotonic()<due_deadline,"Actual background scheduler never executed missed slot"
+                time.sleep(1)
             # A fresh process must preserve auth, durable runs and tenant boundaries.
             stop(proc)
             proc=start()
@@ -136,6 +176,7 @@ def main():
                     assert c.get("/api/business/metrics").json()["tenant_id"]==tenant
                     rows=c.get("/api/workflows/runs")
                     assert rows.status_code==200 and [row["id"] for row in rows.json()]==[run_id]
+            assert verify_schedule()==scheduled_run
             with client(tenants[0][1]) as c:
                 denied=c.post(f"/api/workflows/{tenants[1][2]}/execute",headers={"Idempotency-Key":uuid4().hex})
                 assert denied.status_code in (403,404)
@@ -143,7 +184,7 @@ def main():
                     "requests":len(durations),"p95_ms":round(p95*1000,1),
                     "median_ms":round(statistics.median(durations)*1000,1),
                     "expected_quota_rejections":sum(row[1] for row in results),
-                    "unexpected_errors":0,"restart_verified":True,"restricted_runtime_role":True,"environment":"disposable_loopback_https_postgresql"}
+                    "unexpected_errors":0,"restart_verified":True,"restricted_runtime_role":True,"scheduled_run_restart_verified":True,"environment":"disposable_loopback_https_postgresql"}
             print("LOAD_RESULT "+json.dumps(report,sort_keys=True),flush=True)
             pathlib.Path("http-load-result.json").write_text(json.dumps(report,indent=2))
         finally:
