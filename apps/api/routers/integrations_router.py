@@ -370,3 +370,13 @@ async def live_webhook(provider:str,tenant:str,connection_id:str,request:Request
     scope_tenant_session(db,tenant)
     try:return runtime.accept_webhook(db,tenant,provider,connection_id,bytes(body))
     except ValueError:live_error(db)
+
+
+class ResetCheckpointRequest(BaseModel):
+    provider:str=Field(max_length=30)
+    confirmation:str=Field(max_length=100)
+@router.post("/providers/live/reset-checkpoint")
+def live_reset_checkpoint(req:ResetCheckpointRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    live_owner(db,current_user)
+    try:return runtime.reset_checkpoint(db,current_user.business_id,req.provider,req.confirmation)
+    except ValueError:live_error(db)

@@ -14,9 +14,22 @@ def bounded_string(value,limit):
 def key(value):
     if not isinstance(value,str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}",value):raise ValueError("Invalid request key")
     return value
+def credential_purpose(row):
+    if not row.adapter_fingerprint:raise ValueError("Missing adapter identity")
+    return "oauth:"+row.adapter_fingerprint
+
 def json_payload(value,limit=16384):
     if not isinstance(value,dict):raise ValueError("Provider payload must be an object")
     try:
+        forbidden={"access_token","refresh_token","client_secret","password","authorization","api_key","private_key","encrypted_credentials","token"}
+        def inspect(node,depth=0):
+            if depth>12:raise ValueError()
+            if isinstance(node,dict):
+                if any(not isinstance(k,str) or k.lower() in forbidden for k in node):raise ValueError()
+                for v in node.values():inspect(v,depth+1)
+            elif isinstance(node,list):
+                for v in node:inspect(v,depth+1)
+        inspect(value)
         encoded=json.dumps(value,ensure_ascii=False,allow_nan=False,separators=(",",":")).encode()
         if len(encoded)>limit:raise ValueError()
     except (ValueError,TypeError,RecursionError,UnicodeError):raise ValueError("Invalid or oversized provider payload") from None
@@ -101,7 +114,7 @@ def complete_authorization(db,tenant,actor,state,code=None,denied=False):
         account=bounded_string(identity.get("account_id"),255)
         if row.remote_account and row.remote_account!=account:raise ValueError("Different remote account requires a separate workspace")
         row.remote_account=account;row.scopes=scopes
-        row.encrypted_credentials=crypto.seal(credentials,tenant,row.id,"oauth")
+        row.encrypted_credentials=crypto.seal(credentials,tenant,row.id,credential_purpose(row))
         row.expires_at=expiry;row.state="connected";row.last_error=None
     except (ValueError,ProviderFailure):
         row.state="auth_required";row.encrypted_credentials=None;row.expires_at=None;row.scopes=[]
@@ -112,7 +125,7 @@ def complete_authorization(db,tenant,actor,state,code=None,denied=False):
 def credentials(db,row,adapter):
     if adapter.fingerprint!=row.adapter_fingerprint:raise ProviderFailure("adapter_identity_changed")
     if row.state!="connected" or not row.encrypted_credentials or not row.expires_at:raise ProviderFailure("auth_required")
-    try:value=crypto.unseal(row.encrypted_credentials,row.business_id,row.id,"oauth")
+    try:value=crypto.unseal(row.encrypted_credentials,row.business_id,row.id,credential_purpose(row))
     except ValueError:raise ProviderFailure("credential_decryption_failed") from None
     if row.expires_at>now()+timedelta(seconds=30):return value["access_token"]
     if not value.get("refresh_token"):raise ProviderFailure("refresh_required")
@@ -121,7 +134,7 @@ def credentials(db,row,adapter):
     try:
         updated,scopes,expiry=grant(adapter.refresh(value["refresh_token"]),row.provider,row.scopes,value["refresh_token"])
         if bounded_string(adapter.identity(updated["access_token"]).get("account_id"),255)!=row.remote_account:raise ValueError()
-        row.encrypted_credentials=crypto.seal(updated,row.business_id,row.id,"oauth");row.expires_at=expiry;row.updated_at=now()
+        row.encrypted_credentials=crypto.seal(updated,row.business_id,row.id,credential_purpose(row));row.expires_at=expiry;row.updated_at=now()
         db.flush();return updated["access_token"]
     except (ValueError,ProviderFailure):raise ProviderFailure("refresh_uncertain_reauthorize") from None
 
@@ -129,14 +142,15 @@ def rotate_keys(db,tenant):
     _lock(db,tenant);count=0
     for row in db.query(ProviderConnection).filter_by(business_id=tenant).all():
         if row.encrypted_credentials:
-            old=row.encrypted_credentials;row.encrypted_credentials=crypto.rotate(old,tenant,row.id,"oauth");count+=old!=row.encrypted_credentials
+            old=row.encrypted_credentials;row.encrypted_credentials=crypto.rotate(old,tenant,row.id,credential_purpose(row));count+=old!=row.encrypted_credentials
     for row in db.query(ProviderAuthorization).filter(ProviderAuthorization.business_id==tenant,ProviderAuthorization.consumed_at.is_(None),ProviderAuthorization.expires_at>now()).all():
         old=row.encrypted_verifier;row.encrypted_verifier=crypto.rotate(old,tenant,row.state_hash,"pkce");count+=old!=row.encrypted_verifier
     from apps.api.models.operations import ProviderCredential
     from apps.api.services.provider_staging import decrypt_stored_token,encrypt_token
     for row in db.query(ProviderCredential).filter_by(business_id=tenant).all():
         if not row.encrypted_token.startswith("v2:"+crypto.keyring()[0]+"."):
-            value=decrypt_stored_token(row)
+            try:value=decrypt_stored_token(row)
+            except Exception:raise ValueError("Legacy credential cannot be decrypted") from None
             row.encrypted_token=encrypt_token(tenant,row.provider,row.scopes,row.expires_at,value);count+=1
     db.commit();return {"rotated":count,"active_key_id":crypto.keyring()[0]}
 
@@ -145,7 +159,7 @@ def disconnect(db,tenant,provider):
     remote=False
     if row.encrypted_credentials:
         try:
-            value=crypto.unseal(row.encrypted_credentials,tenant,row.id,"oauth")
+            value=crypto.unseal(row.encrypted_credentials,tenant,row.id,credential_purpose(row))
             adapter=adapter_for(provider)
             if adapter.fingerprint!=row.adapter_fingerprint:raise ValueError("Adapter identity changed")
             remote=adapter.revoke_all(value,row.remote_account)
@@ -177,7 +191,7 @@ def normalize_page(page):
     if not isinstance(page,dict) or not isinstance(page.get("records"),list) or len(page["records"])>100 or type(page.get("has_more")) is not bool:raise ValueError("Invalid provider page")
     cursor=page.get("next_cursor")
     if cursor is not None:bounded_string(cursor,2048)
-    if page["has_more"] and cursor is None:raise ValueError("Missing incremental checkpoint")
+    if (page["has_more"] or page["records"]) and cursor is None:raise ValueError("Missing incremental checkpoint")
     out=[]
     for value in page["records"]:
         if not isinstance(value,dict):raise ValueError("Invalid provider record")
@@ -240,7 +254,7 @@ def run_sync(db,tenant):
         elif exc.retryable and job.attempts<6:
             job.state="retry";job.next_attempt=now()+timedelta(seconds=max(exc.retry_after,min(900,2**job.attempts*15)))
         else:job.state="failed";job.finished_at=now()
-    except ValueError:
+    except (ValueError,TypeError,KeyError,AttributeError,OverflowError):
         job.error_code="invalid_adapter_configuration_or_page";row.last_error=job.error_code;job.state="failed";job.finished_at=now()
     row.updated_at=now();db.commit();return sync_public(job)
 
@@ -396,3 +410,13 @@ def accept_webhook(db,tenant,provider,connection_id,body):
     db.add(ProviderWebhookReceipt(business_id=tenant,connection_id=row.id,event_id=event,body_hash=checksum))
     enqueue(db,tenant,provider,"webhook:"+hashlib.sha256(event.encode()).hexdigest(),commit=False)
     db.commit();return {"accepted":True,"duplicate":False}
+
+
+def reset_checkpoint(db,tenant,provider,confirmation):
+    if confirmation!="RESET CHECKPOINT "+provider:raise ValueError("Explicit checkpoint reset confirmation required")
+    _lock(db,tenant);row=connection(db,tenant,provider)
+    if row.state!="connected":raise ValueError("Connected provider required")
+    db.query(ProviderSyncJob).filter(ProviderSyncJob.business_id==tenant,ProviderSyncJob.connection_id==row.id,ProviderSyncJob.state.in_(["queued","retry"])).update({"state":"cancelled","finished_at":now()},synchronize_session=False)
+    row.checkpoint=None;row.last_sync=None;row.last_error="checkpoint_reset_full_resync_required";row.updated_at=now()
+    db.commit()
+    return {"checkpoint_reset":True,"previous_records_retained":True,"next_step":"Queue full sync; previous records may require review"}

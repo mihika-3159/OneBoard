@@ -206,7 +206,7 @@ class NativeAdapter:
             params={"pageSize":100,"fields":"nextPageToken,files(id,name,mimeType,modifiedTime,trashed,webViewLink)","spaces":"drive"}
             if state.get("page"):params["pageToken"]=state["page"]
             value=self.call(base+"/files",token=token,method="GET",params=params)
-            rows=[record(x.get("id"),{"kind":"drive_file",**subset(x,("name","mimeType","modifiedTime","trashed","webViewLink"))}) for x in safe_rows(value,"files")]
+            rows=[record(x.get("id"),{"kind":"drive_file","removed":False,**subset(x,("name","mimeType","modifiedTime","trashed","webViewLink"))}) for x in safe_rows(value,"files")]
             next_page=value.get("nextPageToken")
             return result(rows,{"phase":"files","start":start,"page":next_page} if next_page else {"phase":"changes","page":start},bool(next_page))
         if phase!="changes" or not state.get("page"):raise ValueError("Invalid Drive changes checkpoint")

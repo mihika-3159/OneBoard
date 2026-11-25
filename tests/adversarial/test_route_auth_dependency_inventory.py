@@ -84,6 +84,7 @@ FOUNDER_MUTATIONS = {
     "/api/integrations/providers/oauth/start",
     "/api/integrations/providers/live/disconnect",
     "/api/integrations/providers/live/rotate",
+    "/api/integrations/providers/live/reset-checkpoint",
     "/api/integrations/providers/live/sync",
     "/api/integrations/providers/live/sync/{job_id}/retry",
     "/api/integrations/providers/live/conflicts/{conflict_id}/resolve",

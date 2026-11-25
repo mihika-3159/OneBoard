@@ -102,7 +102,7 @@ def test_seven_adapter_oauth_incremental_and_revocation_contracts(db,monkeypatch
     f=fake(monkeypatch,provider,scopes)
     row=connect(db,provider,scopes,f);ident=row.id
     assert "access-0" not in row.encrypted_credentials
-    assert crypto.unseal(row.encrypted_credentials,"a",row.id,"oauth")["access_token"]=="access-0"
+    assert crypto.unseal(row.encrypted_credentials,"a",row.id,rt.credential_purpose(row))["access_token"]=="access-0"
     f.pages=[(None,page("cursor-1",[("1","r1",{"name":"record-1"})],True)),
              ("cursor-1",page("cursor-2",[("1","r1",{"name":"record-1"}),("2","r1",{"name":"record-2"})]))]
     job=rt.enqueue(db,"a",provider,"request-1")
@@ -164,7 +164,7 @@ def test_refresh_backoff_and_atomic_checkpoint(db,monkeypatch):
 def test_key_rotation_and_legacy_ciphertext(db,monkeypatch):
     f=fake(monkeypatch,"github",["repository.read"]);row=connect(db,"github",f.scopes,f)
     old=row.encrypted_credentials
-    with pytest.raises(ValueError):crypto.unseal(old,"b",row.id,"oauth")
+    with pytest.raises(ValueError):crypto.unseal(old,"b",row.id,rt.credential_purpose(row))
     monkeypatch.setattr(settings,"PROVIDER_TOKEN_KEY",base64.b64encode(b"l"*32).decode())
     monkeypatch.setattr(settings,"PROVIDER_ACTIVE_KEY_ID","")
     from datetime import timezone
@@ -174,7 +174,7 @@ def test_key_rotation_and_legacy_ciphertext(db,monkeypatch):
     assert rt.rotate_keys(db,"a")["rotated"]==2
     assert row.encrypted_credentials.startswith("v2.")
     monkeypatch.setattr(settings,"PROVIDER_ENCRYPTION_KEYS",{"v2":base64.b64encode(b"2"*32).decode()})
-    assert crypto.unseal(row.encrypted_credentials,"a",row.id,"oauth")["access_token"]=="access-0"
+    assert crypto.unseal(row.encrypted_credentials,"a",row.id,rt.credential_purpose(row))["access_token"]=="access-0"
     assert decrypt_stored_token(db.query(ProviderCredential).one())=="legacy-fixture"
 
 def test_signed_webhook_replay_and_conflicting_event(db,monkeypatch):
