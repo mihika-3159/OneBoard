@@ -53,7 +53,7 @@ def verify_manifest(archive: Path, manifest: Path) -> dict:
     with archive.open("rb") as handle:
         for piece in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(piece)
-    if archive.stat().st_size == 0 or digest.hexdigest() != expected:
+    if archive.stat().st_size == 0 or digest.hexdigest() != expected or (record.get('bytes') is not None and record['bytes']!=archive.stat().st_size):
         raise RuntimeError("Encrypted archive integrity mismatch")
     return record
 
@@ -65,6 +65,7 @@ def backup(directory: Path, recipient: str, source: dict[str, str]) -> tuple[Pat
     directory = Path(directory)
     if not directory.is_dir() or directory.is_symlink() or directory.stat().st_mode & 0o077:
         raise RuntimeError("Use a pre-existing private (0700), non-symlink backup directory")
+    snapshot_started = datetime.now(timezone.utc).isoformat()
     name = ("oneboard-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             + "-" + os.urandom(4).hex() + ".dump.age")
     archive, manifest = directory / name, directory / (name + ".json")
@@ -111,7 +112,8 @@ def backup(directory: Path, recipient: str, source: dict[str, str]) -> tuple[Pat
             metadata = dict(
                 format="age-encrypted-pg-custom-v1", filename=name,
                 sha256=digest.hexdigest(),
-                created_utc=datetime.now(timezone.utc).isoformat(),
+                created_utc=datetime.now(timezone.utc).isoformat(), snapshot_started_utc=snapshot_started,
+                bytes=archive.stat().st_size,
                 verified_restore=False, offsite_replicated=False
             )
             with manifest.open("x", encoding="utf-8") as handle:

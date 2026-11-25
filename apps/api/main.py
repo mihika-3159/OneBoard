@@ -67,12 +67,20 @@ async def lifespan(app: FastAPI):
     logger.info("Starting Proactive Background Monitor...")
     scheduler_service.start()
     
-    yield
-    
-    logger.info("Shutting down OneBoard Services...")
-    scheduler_service.shutdown()
+    from apps.api.services.operational_health import draining
+    draining(False)
+    try:
+        yield
+    finally:
+        draining(True)
+        logger.info("Shutting down OneBoard Services...")
+        scheduler_service.shutdown()
+        from apps.api.core.database import engine
+        engine.dispose()
 
-from sqlalchemy.exc import TimeoutError as DatabasePoolTimeout
+from sqlalchemy.exc import TimeoutError as DatabasePoolTimeout, OperationalError
+from fastapi import Request
+from apps.api.services import operational_health as ops
 
 app = FastAPI(
     title="OneBoard API",
@@ -80,6 +88,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+@app.exception_handler(OperationalError)
+async def database_unavailable(request,exc):
+    logger.warning("database_operation_failed type=%s",type(exc).__name__)
+    return JSONResponse({"detail":"Database temporarily unavailable; reconcile any uncertain write before retrying"},503,headers={"Retry-After":"5"})
 
 @app.exception_handler(DatabasePoolTimeout)
 async def database_pool_exhausted(request,exc):
@@ -160,6 +173,24 @@ def health_check():
         "service": "OneBoard API",
         "version": settings.VERSION
     }
+
+@app.get('/ready',tags=['Health'])
+def readiness():
+    result=ops.dependencies()
+    return JSONResponse({'status':'ready' if result['ready'] else 'not_ready'},200 if result['ready'] else 503,headers={'Cache-Control':'no-store'})
+
+@app.get('/ops/health',include_in_schema=False)
+def operator_health(request:Request):
+    if not ops.authorized(request.headers.get('X-Operator-Key')):return JSONResponse({'detail':'Not found'},404)
+    result=ops.dependencies(check_inference=True)
+    return JSONResponse(result,200 if result['ready'] else 503,headers={'Cache-Control':'no-store'})
+
+@app.get('/ops/metrics',include_in_schema=False)
+def operator_metrics(request:Request):
+    if not ops.authorized(request.headers.get('X-Operator-Key')):return JSONResponse({'detail':'Not found'},404)
+    return JSONResponse(ops.snapshot(),headers={'Cache-Control':'no-store'})
+
+app.add_middleware(ops.Telemetry)
 
 # Mount routers
 app.include_router(auth_router)

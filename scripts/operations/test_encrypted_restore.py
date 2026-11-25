@@ -9,6 +9,8 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import time
+from datetime import datetime,timezone
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
@@ -33,7 +35,9 @@ def require_disposable_restore(source: dict[str, str], identity: Path) -> tuple:
 
 def drill(archive: Path, identity: Path, source: dict[str, str]) -> dict:
     url, identity = require_disposable_restore(source, identity)
-    verify_manifest(archive, Path(str(archive) + ".json"))
+    started=time.monotonic()
+    metadata=verify_manifest(archive, Path(str(archive) + ".json"))
+    recovery_reference=datetime.now(timezone.utc)
     admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
     destination = None
     created = False
@@ -83,7 +87,11 @@ def drill(archive: Path, identity: Path, source: dict[str, str]) -> dict:
             )).scalar_one()
             if tables < 20:
                 raise RuntimeError("Recovered schema is incomplete")
-            return {"restore_verified": True, "schema_head": revision, "table_count": tables}
+            point=metadata.get("snapshot_started_utc")
+            age=max(0,(recovery_reference-datetime.fromisoformat(point)).total_seconds()) if point else None
+            return {"restore_verified": True, "schema_head": revision, "table_count": tables,
+                    "restore_seconds":time.monotonic()-started,"recovery_point_age_upper_bound_seconds":age,
+                    "recovery_point_reference_utc":recovery_reference.isoformat(),"scope":"disposable database restore only; not full service recovery"}
     finally:
         if decrypt is not None and decrypt.poll() is None:
             decrypt.kill()

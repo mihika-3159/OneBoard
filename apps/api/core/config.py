@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     
     # Proactive Background Scheduler
     SCHEDULER_INTERVAL_SECONDS: int = 60
+    OPERATOR_METRICS_KEY: str = ""
+    OPERATOR_DISK_MIN_FREE_MIB: int = 256
+    OPERATOR_DB_CONNECT_TIMEOUT: int = 3
 
 settings = Settings()
 
