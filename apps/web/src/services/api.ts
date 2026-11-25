@@ -157,24 +157,34 @@ export const api = {
     if (!res.headers.get("content-type")?.includes("application/x-ndjson") || !res.body) throw new Error("Missing inference stream");
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
+    let final: {result: T} | undefined;
+    let ended = false;
     try {
       while (true) {
         const {done, value} = await reader.read();
-        if (done) throw new Error("Inference interrupted before a final result");
+        if (done) {
+          ended = true;
+          if (!final || buffer.trim()) throw new Error("Inference interrupted before a complete final result");
+          return final.result;
+        }
         buffer += value;
         if (buffer.length > 8 * 1024 * 1024) throw new Error("Inference response exceeded limit");
         let end;
         while ((end = buffer.indexOf("\n")) >= 0) {
           const event = JSON.parse(buffer.slice(0, end));
           buffer = buffer.slice(end + 1);
+          if (final) throw new Error("Unexpected data after final inference result");
           if (event.error) throw new Error(event.error);
-          if (Object.prototype.hasOwnProperty.call(event, "result")) return event.result as T;
-          if (typeof event.progress !== "string") throw new Error("Invalid inference progress event");
-          progress(event.progress);
+          if (Object.prototype.hasOwnProperty.call(event, "result")) {
+            final = {result: event.result as T};
+          } else {
+            if (typeof event.progress !== "string") throw new Error("Invalid inference progress event");
+            progress(event.progress);
+          }
         }
       }
     } finally {
-      try { await reader.cancel(); } catch { /* Already aborted */ }
+      if (!ended) { try { await reader.cancel(); } catch { /* Already aborted */ } }
       reader.releaseLock();
     }
   },
@@ -300,23 +310,34 @@ export const api = {
     if (!res.body) throw new Error('Missing response stream');
     const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = '';
+    let final: {result: any} | undefined;
+    let ended = false;
     try {
       while (true) {
         const {done, value} = await reader.read();
-        if (done) throw new Error('Generation interrupted');
+        if (done) {
+          ended = true;
+          if (!final || buffer.trim()) throw new Error('Generation interrupted');
+          return final.result;
+        }
         buffer += value;
+        if (buffer.length > 8 * 1024 * 1024) throw new Error('Generation response exceeded limit');
         let end;
         while ((end = buffer.indexOf('\n')) >= 0) {
           const event = JSON.parse(buffer.slice(0, end));
           buffer = buffer.slice(end + 1);
+          if (final) throw new Error('Unexpected data after final generation result');
           if (event.error) throw new Error(event.error);
-          if (event.result) return event.result;
-          if (typeof event.delta !== 'string') throw new Error('Invalid generation event');
-          append(event.delta);
+          if (Object.prototype.hasOwnProperty.call(event, 'result')) {
+            final = {result: event.result};
+          } else {
+            if (typeof event.delta !== 'string') throw new Error('Invalid generation event');
+            append(event.delta);
+          }
         }
       }
     } finally {
-      await reader.cancel();
+      if (!ended) { try { await reader.cancel(); } catch { /* Already aborted */ } }
       reader.releaseLock();
     }
   },
