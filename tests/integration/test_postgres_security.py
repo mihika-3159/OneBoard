@@ -1662,3 +1662,43 @@ async def test_34_postgres_indexes_and_retrieves_full_20000_chunk_quota(monkeypa
             ids=[row[0] for row in db.query(MemoryDocument.id).filter_by(business_id=tenant)]
             delete_documents(db,tenant,ids);db.commit()
         engine.dispose()
+
+
+def test_35_batch_k_concurrent_payments_do_not_overcollect():
+    from uuid import uuid4
+    from datetime import datetime
+    from sqlalchemy.orm import Session
+    from apps.api.models.business import Business
+    from apps.api.models.entities import Invoice
+    from apps.api.models.operations import JournalEntry
+    from apps.api.services import finance_ledger as ledger
+    engine=_engine();tenant=str(uuid4());iid=str(uuid4())
+    def submit(ref,kind,amount):
+        with Session(engine) as db:
+            try:
+                return ledger.post(db,tenant,"fixture",reference=ref,kind=kind,amount=amount,currency="USD",fx_rate="1",fx_source="same_currency",
+                    booked_on="2020-01-01",evidence_text="synthetic",invoice_id=iid).id
+            except ValueError:
+                db.rollback();return None
+    try:
+        with Session(engine) as db:
+            db.add(Business(id=tenant,name="Batch K concurrency",currency="USD"))
+            db.add(Invoice(id=iid,business_id=tenant,invoice_number=iid,customer_name="Synthetic",status="overdue",amount="100.00",due_date=datetime(2020,1,1)))
+            db.commit()
+        assert submit("issue-fixture","invoice_issue","100")
+        gate=Barrier(2)
+        def payment(i):
+            gate.wait(timeout=10)
+            return submit("payment-"+str(i),"payment","60")
+        with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(payment,range(2)))
+        assert sum(x is not None for x in results)==1
+        with Session(engine) as db:
+            assert ledger.invoice_balance(db,tenant,db.get(Invoice,iid))==40
+            assert db.query(JournalEntry).filter_by(business_id=tenant,kind="payment").count()==1
+    finally:
+        with Session(engine) as db:
+            db.query(JournalEntry).filter_by(business_id=tenant).delete()
+            db.query(Invoice).filter_by(business_id=tenant).delete()
+            db.query(Business).filter_by(id=tenant).delete()
+            db.commit()
+        engine.dispose()

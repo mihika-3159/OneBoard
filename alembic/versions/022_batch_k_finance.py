@@ -29,7 +29,10 @@ def upgrade():
                 op.alter_column(table,name,type_=sa.BigInteger(),postgresql_using=f"round({name}::numeric*100)::bigint")
         else:
             for name in change:
-                conn.execute(sa.text(f"UPDATE {table} SET {name}=round({name}*100) WHERE {name} IS NOT NULL"))
+                rows=conn.execute(sa.text(f"SELECT id,{name} FROM {table} WHERE {name} IS NOT NULL")).all()
+                for ident,value in rows:
+                    minor=int((Decimal(str(value))*100).quantize(Decimal(1),rounding=ROUND_HALF_UP))
+                    conn.execute(sa.text(f"UPDATE {table} SET {name}=:minor WHERE id=:ident"),{"minor":minor,"ident":ident})
             with op.batch_alter_table(table,recreate="always") as batch:
                 for name in change:batch.alter_column(name,existing_type=columns[name]["type"],type_=sa.BigInteger())
     for model in MODELS:
