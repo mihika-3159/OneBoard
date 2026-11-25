@@ -15,7 +15,7 @@ test('new real workspace Operations tab displays zero records, not fictional cus
   await expect(page.getByText('Batch A Founder')).toBeVisible();
 
   const nav = page.getByRole('complementary').locator('nav button');
-  await nav.filter({ has: page.locator('span').getByText('Operations', { exact: true }) }).click();
+  await nav.filter({ has: page.locator('span').getByText('Operations & CRM', { exact: true }) }).click();
   await expect(page.getByRole('heading', { name: 'Operations & Customer Deliverables' })).toBeVisible();
   await expect(page.getByText('No customer commitments recorded in this workspace.')).toBeVisible();
   await page.getByRole('tab', { name: 'Customers (0)' }).click();
