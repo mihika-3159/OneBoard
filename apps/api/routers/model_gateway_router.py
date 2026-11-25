@@ -1,15 +1,21 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import time
+from apps.api.services.inference_budget import inference_tenant
 from apps.api.core.database import get_db
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.config import settings
+from apps.api.core.auth import get_current_user, require_founder_role
+from apps.api.models.business import User, Business
 from apps.api.services.ollama_gateway import ollama_gateway
-from apps.api.services.seed_data import DEMO_BUSINESS_ID
-from apps.api.models.business import Business
-from apps.api.models.entities import Customer, Invoice, Commitment
+from apps.api.services.request_inference import run_request_inference
+from apps.api.services.inference_stream import stream_or_wait
+from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
+from apps.api.models.entities import Commitment
 from apps.api.models.goals_tasks import Task
+from apps.api.services.financial_metrics import calculate_business_financials
 
 router = APIRouter(prefix="/api/ai", tags=["Centralized Model Gateway"])
 
@@ -17,76 +23,207 @@ class SwitchProfileRequest(BaseModel):
     profile: str # lightweight, balanced, high_quality
 
 class FounderCommandRequest(BaseModel):
-    command: str
+    command: str = Field(min_length=1, max_length=8000)
+
+def _business_model_profile(db: Session, business_id: str) -> str:
+    """Read a tenant's persisted profile, without modifying global gateway state."""
+    business = db.query(Business).filter(Business.id == business_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    preferences = business.founder_preferences or {}
+    profile = preferences.get("model_profile") if isinstance(preferences, dict) else None
+    return profile if profile in settings.MODEL_PROFILES else settings.DEFAULT_MODEL_PROFILE
+
 
 @router.get("/status")
-async def get_gateway_status():
-    return await ollama_gateway.check_health()
+async def get_gateway_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    health = await ollama_gateway.check_health()
+    profile = _business_model_profile(db, current_user.business_id)
+    requested = ollama_gateway.get_model_for_task(profile=profile)
+    installed = requested in health.get("available_models", [])
+    # A reachable daemon with a *different* downloaded model cannot execute
+    # this tenant's selected profile. Do not advertise inference as ready.
+    health["active_profile"] = profile
+    health["profile_details"] = settings.MODEL_PROFILES[profile]
+    health["requested_model"] = requested
+    health["requested_model_installed"] = bool(installed)
+    health["inference_available"] = bool(
+        health.get("status") == "connected" and installed
+    )
+    if health.get("status") == "connected" and not installed:
+        health["message"] = (
+            "The selected profile model is not installed. "
+            "Real inference is unavailable for this workspace."
+        )
+    return health
+
 
 @router.post("/profile")
-def switch_model_profile(req: SwitchProfileRequest):
-    if req.profile in settings.MODEL_PROFILES:
-        ollama_gateway.active_profile = req.profile
-        return {
-            "status": "success",
-            "active_profile": req.profile,
-            "profile_details": settings.MODEL_PROFILES[req.profile]
-        }
-    return {"status": "error", "message": f"Invalid profile: {req.profile}"}
+def switch_model_profile(
+    req: SwitchProfileRequest,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db)
+):
+    """Persist model preferences per business, never in process-global state."""
+    if req.profile not in settings.MODEL_PROFILES:
+        raise HTTPException(status_code=422, detail="Unsupported model profile")
+    business = db.query(Business).filter(Business.id == current_user.business_id).first()
+    if not business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    business.founder_preferences = {**(business.founder_preferences or {}), "model_profile": req.profile}
+    db.commit()
+    return {
+        "status": "success",
+        "active_profile": req.profile,
+        "profile_details": settings.MODEL_PROFILES[req.profile]
+    }
 
 @router.post("/benchmark")
-async def benchmark_gateway():
-    start = time.time()
-    res = await ollama_gateway.chat_complete(
-        messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
-        system_prompt="Return brief benchmark acknowledgment."
-    )
-    total_time = round((time.time() - start) * 1000, 2)
-    return {
-        "status": "passed",
-        "total_latency_ms": total_time,
-        "model": res.get("model"),
-        "simulated": res.get("simulated", False),
-        "gateway_url": ollama_gateway.base_url
-    }
+async def benchmark_gateway(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    request: Request = None
+):
+    """Run a latency benchmark against the Ollama gateway. Requires authentication."""
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "ai_benchmark")
+    profile = _business_model_profile(db, current_user.business_id)
+    async def work():
+        start = time.time()
+        with inference_tenant(current_user.business_id):
+            res = await ollama_gateway.chat_complete(
+                messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
+                system_prompt="Return brief benchmark acknowledgment.",
+                model=ollama_gateway.get_model_for_task(profile=profile)
+            )
+        total_time = round((time.time() - start) * 1000, 2)
+        is_simulated = res.get("simulated", False)
+    
+        return {
+            "status": "simulated_fallback" if is_simulated else "passed",
+            "inference_available": not is_simulated,
+            "fallback_reason": res.get("fallback_reason") if is_simulated else None,
+            "active_profile": profile,
+            "total_latency_ms": total_time,
+            "model": res.get("model"),
+            "simulated": is_simulated,
+            "inference_engine": "offline_simulated" if is_simulated else res.get("provider_protocol", "local_ollama"),
+            "gateway_url": ollama_gateway.base_url
+        }
+    return await stream_or_wait(request, work)
+
 
 @router.post("/command")
-async def handle_founder_command(req: FounderCommandRequest, db: Session = Depends(get_db)):
+async def handle_founder_command(
+    req: FounderCommandRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    request: Request = None
+):
     """Founder Command Center: Direct conversational interaction backed by structured business facts."""
-    biz = db.query(Business).filter(Business.id == DEMO_BUSINESS_ID).first()
-    customers = db.query(Customer).filter(Customer.business_id == DEMO_BUSINESS_ID).all()
-    invoices = db.query(Invoice).filter(Invoice.business_id == DEMO_BUSINESS_ID).all()
-    commitments = db.query(Commitment).filter(Commitment.business_id == DEMO_BUSINESS_ID).all()
-    tasks = db.query(Task).filter(Task.business_id == DEMO_BUSINESS_ID, Task.status != "done").all()
+    biz_id = current_user.business_id
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, biz_id, "ai_command")
+    biz = db.query(Business).filter(Business.id == biz_id).first()
+    commitments = db.query(Commitment).filter(Commitment.business_id == biz_id).all()
+    tasks = db.query(Task).filter(Task.business_id == biz_id, Task.status != "done").all()
 
-    total_mrr = sum(c.mrr for c in customers if c.status == "active")
-    overdue_invoices = [i for i in invoices if i.status == "overdue"]
+    financials = calculate_business_financials(db, biz_id)
+    total_mrr = financials["mrr"]
     critical_commitments = [c for c in commitments if c.risk_level == "critical"]
 
+    biz_name = biz.name if biz else "Your Enterprise"
+    cash_val = financials["cash_balance"]
+    runway_val = financials['runway_months']
+    runway_description = f'{runway_val} months' if runway_val is not None else financials['runway_status']
+
+    data_status = financials["financial_data_status"]
+    verified = financials["financial_data_verified"]
+    currency = biz.currency if biz and biz.currency else "USD"
+    if data_status == "needs_review":
+        financial_context = (
+            "Financial data require correction: at least one tenant record "
+            "is invalid or has an unknown reporting period. All partially "
+            "calculated amounts are withheld. Do not estimate runway, "
+            "cash health or revenue until records are corrected.\n"
+        )
+    elif data_status == "unconfigured":
+        financial_context = (
+            "Financial data have not been configured. No revenue, "
+            "cash balance or runway can be inferred.\n"
+        )
+    else:
+        financial_context = (
+            f"- User-recorded monthly recurring revenue: {currency} {total_mrr:,.2f} "
+            f"across {financials['active_customers_count']} active customer records\n"
+            f"- User-recorded cash runway estimate: {runway_description} "
+            f"(cash balance: {currency} {cash_val:,.2f})\n"
+            f"- User-recorded overdue invoices: {financials['overdue_invoices_count']} "
+            f"(amount: {currency} {financials['overdue_receivables_amount']:,.2f})\n"
+        )
+
     context = (
-        f"You are the Executive AI Operating System for Northstar Studio.\n"
-        f"Real Business Context:\n"
-        f"- MRR: ${total_mrr:,.2f} across {len(customers)} customers\n"
-        f"- Cash Runway: {biz.runway_months if biz else 7.2} months (Balance: ${biz.current_cash_balance if biz else 132840:,.2f})\n"
-        f"- Overdue Invoices: {len(overdue_invoices)} totaling ${sum(i.amount for i in overdue_invoices):,.2f}\n"
-        f"- Critical Commitments: {len(critical_commitments)} (e.g. {critical_commitments[0].title if critical_commitments else 'None'})\n"
-        f"- Pending Tasks: {len(tasks)}\n"
-        f"Founder Question: {req.command}\n"
-        f"Respond concisely with concrete facts and recommended next steps."
+        f"Business identity: {quoted_data('business_name',biz_name)}.\n"
+        "Company information below comes from the authenticated business database. "
+        "Financial values are self-recorded, not independently reconciled, "
+        "and must never be called audited or bank-verified.\n"
+        f"Financial record status: {data_status}; independently verified: {verified}.\n"
+        f"{financial_context}"
+        f"- Critical commitments: {len(critical_commitments)} "
+        f"(e.g. {quoted_data('commitment',critical_commitments[0].title) if critical_commitments else 'None'})\n"
+        f"- Pending tasks: {len(tasks)}\n"
+        f"Founder question: {req.command}\n"
+        "Respond with supported facts and proportionate next steps. "
+        "Do not invent provider syncs, bank reconciliations, clients, or "
+        "financial health when the underlying records are incomplete."
     )
 
-    res = await ollama_gateway.chat_complete(
-        messages=[{"role": "user", "content": context}],
-        system_prompt="You are OneBoard Founder Command Center."
-    )
+    profile = _business_model_profile(db, biz_id)
+    with inference_tenant(current_user.business_id):
+        res = await run_request_inference(request, ollama_gateway.chat_complete(
+            messages=[{"role": "user", "content": context}],
+            system_prompt="You are OneBoard Founder Command Center. "+DATA_BOUNDARY,
+            model=ollama_gateway.get_model_for_task(profile=profile)
+        ))
+    is_simulated = res.get("simulated", False)
+    
     return {
         "command": req.command,
-        "response": res.get("content"),
+        "response": (("[Output limit reached; incomplete response] " if res.get("output_limit_reached") else "") + (res.get("content") or "")),
+        "output_limit_reached": bool(res.get("output_limit_reached")),
         "model": res.get("model"),
-        "simulated": res.get("simulated", False),
+        "simulated": is_simulated,
+        "fallback_reason": res.get("fallback_reason") if is_simulated else None,
+        "inference_engine": "offline_simulated" if is_simulated else res.get("provider_protocol", "local_ollama"),
         "business_state_summary": {
-            "mrr": total_mrr,
-            "overdue_receivables": sum(i.amount for i in overdue_invoices),
-            "pending_commitments": len(critical_commitments)
+            "mrr": total_mrr if data_status == "recorded" else None,
+            "overdue_receivables": (
+                financials["overdue_receivables_amount"]
+                if data_status == "recorded" else None
+            ),
+            "pending_commitments": len(critical_commitments),
+            "financial_data_status": data_status,
+            "financial_data_verified": verified,
+            "financial_data_issues_count": len(financials["financial_data_issues"]),
+            "currency": currency,
         }
     }
+
+
+@router.post("/command/stream")
+async def stream_founder_command(
+    req: FounderCommandRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from fastapi.responses import StreamingResponse
+    from apps.api.services.inference_stream import stream_events
+
+    async def command():
+        return await handle_founder_command(req, current_user, db)
+
+    return StreamingResponse(stream_events(command), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

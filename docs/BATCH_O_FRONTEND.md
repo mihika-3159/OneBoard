@@ -1,0 +1,7 @@
+# Batch O follow-up acceptance (118–130)
+
+The original Batch O adds security audit, settlement evidence, workspace deletion, responsive navigation, session expiry, view error boundaries and contextual help. This follow-up fixes the release-blocking TypeScript null error, makes the global reload action distinct from local Retry, introduces a workspace setup guide, shared data loading/error/empty states across the major list screens, and bounded workflow-list rendering and visible-node canvas rendering. Keyboard-selectable workflow rows and automated axe WCAG audits supplement the existing mobile/tablet navigation tests.
+
+Acceptance requires actual passing builds, browser matrix, accessibility findings resolved and human assistive-technology verification. Automated accessibility tree checks are not a substitute for a human using a screen reader. UI coverage for every sub-panel and high-volume actual backend datasets must still be reviewed; no claim of complete acceptance is made by this file.
+
+The accessibility engineering work includes native focus-managed dialogs, keyboard focus restoration, a textual alternative for workflow graphs, and automated WCAG and accessibility-tree tests on the browser matrix. Real human screen-reader acceptance is recorded separately; it cannot be inferred from automated tests.

@@ -1,3 +1,4 @@
+import {LoadState} from './ScreenSupport';
 import React, { useState, useEffect } from 'react';
 import {
   Users,
@@ -13,9 +14,12 @@ import {
   Check,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { CouncilRole, CouncilMeeting } from '../types';
 
 export const BoardroomTab: React.FC = () => {
+  const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
   const [roles, setRoles] = useState<CouncilRole[]>([]);
   const [meetings, setMeetings] = useState<CouncilMeeting[]>([]);
   const [selectedMeeting, setSelectedMeeting] = useState<CouncilMeeting | null>(null);
@@ -44,6 +48,7 @@ export const BoardroomTab: React.FC = () => {
   }, []);
 
   const loadData = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const [r, m] = await Promise.all([api.getCouncilRoles(), api.getCouncilMeetings()]);
       setRoles(r);
@@ -52,14 +57,14 @@ export const BoardroomTab: React.FC = () => {
         setSelectedMeeting(m[0]);
       }
     } catch (e) {
-      console.error('Error loading council data', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading council data');
+    } finally {setScreenLoading(false)}
   };
 
   const handleConvene = async () => {
     setIsDeliberating(true);
     try {
-      const newMeeting = await api.deliberateMeeting({
+      const newMeeting = await inference.run<CouncilMeeting>("/council/deliberate", {
         title: meetingTitle,
         meeting_type: meetingType,
         topic: meetingTopic,
@@ -100,6 +105,9 @@ export const BoardroomTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!meetings.length?'No council meetings recorded yet.':undefined} retry={()=>void loadData()}/>
+      {inference.indicator}
+      <button className="text-xs text-slate-300" onClick={async()=>{try{await api.reconcileCouncil();await loadData()}catch(e){console.error(e)}}}>Reconcile interrupted meetings</button>
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -137,7 +145,7 @@ export const BoardroomTab: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="text-xs font-semibold text-slate-300">Meeting Title</label>
-              <input
+              <input aria-label="Meeting Title"
                 type="text"
                 value={meetingTitle}
                 onChange={(e) => setMeetingTitle(e.target.value)}
@@ -146,7 +154,7 @@ export const BoardroomTab: React.FC = () => {
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-300">Review Type</label>
-              <select
+              <select aria-label="Review Type"
                 value={meetingType}
                 onChange={(e) => setMeetingType(e.target.value)}
                 className="w-full mt-1 px-3 py-2 bg-slate-800 text-white text-sm rounded-xl border border-slate-700 focus:outline-none focus:border-indigo-500"
@@ -162,7 +170,7 @@ export const BoardroomTab: React.FC = () => {
 
           <div>
             <label className="text-xs font-semibold text-slate-300">Strategic Deliberation Topic</label>
-            <textarea
+            <textarea aria-label="Strategic Deliberation Topic"
               rows={3}
               value={meetingTopic}
               onChange={(e) => setMeetingTopic(e.target.value)}
@@ -179,7 +187,7 @@ export const BoardroomTab: React.FC = () => {
                 const isSelected = selectedAdviserNames.includes(r.name);
                 return (
                   <div
-                    key={r.name}
+                    role="button" tabIndex={0} aria-pressed={isSelected} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();toggleAdviser(r.name)}}} key={r.name}
                     onClick={() => toggleAdviser(r.name)}
                     className={`p-2.5 rounded-xl border cursor-pointer transition flex items-center justify-between text-xs ${
                       isSelected
@@ -230,7 +238,7 @@ export const BoardroomTab: React.FC = () => {
           ) : (
             meetings.map((m) => (
               <div
-                key={m.id}
+                role="button" tabIndex={0} aria-pressed={selectedMeeting?.id===m.id} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setSelectedMeeting(m)}}} key={m.id}
                 onClick={() => setSelectedMeeting(m)}
                 className={`p-4 rounded-xl border cursor-pointer transition ${
                   selectedMeeting?.id === m.id
@@ -309,9 +317,20 @@ export const BoardroomTab: React.FC = () => {
                   Chief of Staff Consensus Synthesis
                 </div>
                 <p className="text-slate-300 leading-relaxed">
-                  {selectedMeeting.synthesis_summary || 'Council synthesized trade-offs and aligned on recommended actions.'}
+                  {selectedMeeting.synthesis_summary || 'No completed synthesis is available.'}
                 </p>
 
+                <div className="text-xs text-slate-300">Meeting status: {selectedMeeting.stage}</div>
+                {selectedMeeting.deliberation_transcript?.filter(a=>a.forecast_proposal&&a.argument_id).map(a=><div key={a.argument_id} className="border border-slate-700 rounded p-2 text-xs">
+                  <p>{a.adviser} proposed an unverified forecast: {a.forecast_proposal!.metric}, {a.forecast_proposal!.point} ({a.forecast_proposal!.lower}–{a.forecast_proposal!.upper}), {(a.forecast_proposal!.confidence*100).toFixed(0)}% stated confidence, {a.forecast_proposal!.days} days.</p>
+                  <button disabled={selectedMeeting.founder_decision!=='approved'} onClick={async()=>{try{await api.recordModelForecast(selectedMeeting.id,a.argument_id!);window.alert('Adviser forecast recorded for future calibration')}catch(e){window.alert(e instanceof Error?e.message:'Forecast unavailable')}}}>Track this exact adviser forecast</button>
+                </div>)}
+                {selectedMeeting.structured_synthesis && <section className="border border-slate-700 rounded p-3 text-xs space-y-2">
+                  <p>Disposition: {selectedMeeting.structured_synthesis.disposition} · Uncertainty: {selectedMeeting.structured_synthesis.uncertainty}</p>
+                  {selectedMeeting.structured_synthesis.arguments.map(a=><p key={a.id}>{a.adviser} ({a.id}): {a.quote}</p>)}
+                  {selectedMeeting.structured_synthesis.citations.map(c=><p key={c.id}>Record {c.id}: {c.quote}</p>)}
+                  <p>References are validated against recorded text; claims and real-world outcomes remain unverified.</p>
+                </section>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                   <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-300">
                     <span className="font-semibold block mb-1">Areas of Consensus:</span>
@@ -359,7 +378,7 @@ export const BoardroomTab: React.FC = () => {
                     Decision Approved by Founder & Converted into Tracked Tasks
                   </div>
                   <span className="font-mono text-emerald-400 text-[11px]">
-                    Tasks: {selectedMeeting.created_tasks?.length || 3} created
+                    Tasks: {selectedMeeting.created_tasks?.length || 0} created
                   </span>
                 </div>
               ) : (
@@ -370,7 +389,7 @@ export const BoardroomTab: React.FC = () => {
                   </div>
                   <input
                     type="text"
-                    value={approvalNotes}
+                    aria-label="Founder approval notes" value={approvalNotes}
                     onChange={(e) => setApprovalNotes(e.target.value)}
                     placeholder="Optional founder instructions or execution caveats..."
                     className="w-full px-3 py-2 bg-slate-800 text-white text-xs rounded-lg border border-slate-700 focus:outline-none"
@@ -378,7 +397,7 @@ export const BoardroomTab: React.FC = () => {
                   <div className="flex justify-end gap-2">
                     <button
                       onClick={handleApprove}
-                      disabled={isApproving}
+                      disabled={isApproving || selectedMeeting.stage !== 'completed'}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5" />

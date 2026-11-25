@@ -1,0 +1,14 @@
+# Example only. Does not install, sign up or run a proxy.
+# Supply ONEBOARD_PUBLIC_HOST only after owner-approved DNS/TLS setup.
+{$ONEBOARD_PUBLIC_HOST} {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8000 {
+        # Replace inbound proxy claims; the loopback API must trust only this proxy.
+        header_up -Forwarded
+        header_up -X-Real-IP
+        header_up Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-For {remote_host}
+    }
+}

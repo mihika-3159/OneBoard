@@ -1,0 +1,15 @@
+**/.env*
+**/*.pem
+**/*.key
+**/*.sqlite*
+**/*.db
+**/*.age
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.venv
+.git
+data
+backups
+apps/web/dist
+test-results

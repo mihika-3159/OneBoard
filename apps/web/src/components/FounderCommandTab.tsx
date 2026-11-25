@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Send, Bot, Sparkles, Terminal, ShieldAlert, Cpu } from 'lucide-react';
 import { api } from '../services/api';
 
@@ -13,6 +13,10 @@ export const FounderCommandTab: React.FC = () => {
     },
   ]);
 
+  const active = useRef<AbortController | null>(null);
+  const [partial, setPartial] = useState('');
+  useEffect(() => () => active.current?.abort(), []);
+
   const quickPrompts = [
     "What's the most important thing I should work on today?",
     "Find inconsistencies in our pricing documents.",
@@ -23,7 +27,10 @@ export const FounderCommandTab: React.FC = () => {
 
   const handleSend = async (text?: string) => {
     const cmd = text || inputCommand;
-    if (!cmd.trim()) return;
+    if (!cmd.trim() || active.current) return;
+    const controller = new AbortController();
+    active.current = controller;
+    setPartial('');
 
     const userMsg = { role: 'founder' as const, content: cmd };
     setMessages((prev) => [...prev, userMsg]);
@@ -31,7 +38,7 @@ export const FounderCommandTab: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const res = await api.executeCommand(cmd);
+      const res = await api.streamCommand(cmd, controller.signal, delta => setPartial(prev => prev + delta));
       setMessages((prev) => [
         ...prev,
         {
@@ -46,10 +53,12 @@ export const FounderCommandTab: React.FC = () => {
         ...prev,
         {
           role: 'os',
-          content: 'Unable to communicate with local model gateway. Please ensure API server is active.',
+          content: controller.signal.aborted ? 'Generation cancelled.' : 'Generation interrupted. Please retry.',
         },
       ]);
     } finally {
+      active.current = null;
+      setPartial('');
       setIsLoading(false);
     }
   };
@@ -70,7 +79,7 @@ export const FounderCommandTab: React.FC = () => {
 
         <div className="flex items-center gap-2 text-xs font-mono text-slate-400 bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-800">
           <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Gateway: Ollama (Balanced Profile: qwen2.5:7b)</span>
+          <span>Gateway: configured inference providers</span>
         </div>
       </div>
 
@@ -90,6 +99,10 @@ export const FounderCommandTab: React.FC = () => {
         ))}
       </div>
 
+      {isLoading && <div role="status">
+        <span>{partial}</span>
+        <button type="button" onClick={() => active.current?.abort()}>Stop generation</button>
+      </div>}
       {/* Chat Messages Log */}
       <div className="flex-1 overflow-y-auto space-y-4 p-4 rounded-2xl glass-panel">
         {messages.map((m, idx) => (
@@ -140,13 +153,14 @@ export const FounderCommandTab: React.FC = () => {
       <div className="p-2 rounded-2xl glass-panel flex items-center gap-2">
         <input
           type="text"
-          value={inputCommand}
+          aria-label="Founder command" value={inputCommand}
           onChange={(e) => setInputCommand(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           placeholder="Ask a question or delegate a task (e.g., 'Check overdue commitments and draft updates')..."
           className="flex-1 bg-transparent px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none"
         />
         <button
+          aria-label="Send founder command"
           onClick={() => handleSend()}
           disabled={isLoading || !inputCommand.trim()}
           className="p-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl transition shadow-md shadow-indigo-600/20"

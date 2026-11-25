@@ -4,14 +4,10 @@ import {
   DollarSign,
   Clock,
   AlertTriangle,
-  Users,
   ShieldCheck,
-  CheckCircle2,
   ArrowRight,
-  RefreshCw,
   Sparkles,
 } from 'lucide-react';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts';
 import { api } from '../services/api';
 import { DashboardMetrics, BusinessProfile, ProactiveAlert } from '../types';
 
@@ -23,7 +19,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const [business, setBusiness] = useState<BusinessProfile | null>(null);
   const [alerts, setAlerts] = useState<ProactiveAlert[]>([]);
-  const [isResetting, setIsResetting] = useState(false);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -39,26 +35,25 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
       setMetrics(m);
       setBusiness(b);
       setAlerts(a);
+      setLoadError(false);
     } catch (e) {
+      setLoadError(true);
+      setMetrics(null);
       console.error('Error loading dashboard data', e);
     }
   };
 
-  const handleResetDemo = async () => {
-    setIsResetting(true);
-    await api.resetDemo();
-    await loadData();
-    setIsResetting(false);
+  const currency = business?.currency || 'USD';
+  const formatMoney = (amount: number): string => {
+    try {
+      return new Intl.NumberFormat('en', {
+        style: 'currency', currency, maximumFractionDigits: 2,
+      }).format(amount);
+    } catch {
+      return `${amount.toLocaleString()} ${currency}`;
+    }
   };
-
-  const chartData = [
-    { month: 'Nov', revenue: 11200, burn: 10500 },
-    { month: 'Dec', revenue: 13400, burn: 11100 },
-    { month: 'Jan', revenue: 15100, burn: 11800 },
-    { month: 'Feb', revenue: 16900, burn: 12000 },
-    { month: 'Mar', revenue: 17800, burn: 12100 },
-    { month: 'Apr', revenue: metrics?.mrr || 18450, burn: metrics?.monthly_burn || 12200 },
-  ];
+  const figuresAvailable = metrics !== null && metrics.financial_data_status === 'recorded';
 
   return (
     <div className="space-y-6">
@@ -71,11 +66,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
             </span>
             <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-              9-Agent Council Active
+              9 Adviser Roles Available
             </span>
           </div>
           <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight text-white">
-            {business?.name || 'Northstar Studio'} Operating System
+            {business?.name || 'Your Workspace'} Operating System
           </h1>
           <p className="text-sm text-slate-400 mt-1 max-w-2xl">
             Run a company of one with the capabilities of a team. Continuous business memory, visual workflow studio, and empirical outcome accountability.
@@ -90,18 +85,23 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
             <Sparkles className="w-4 h-4" />
             Convene Council
           </button>
-          <button
-            onClick={handleResetDemo}
-            disabled={isResetting}
-            className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium rounded-xl border border-slate-700/60 transition"
-            title="Reset Northstar Studio demo scenario fixtures"
-          >
-            <RefreshCw className={`w-4 h-4 ${isResetting ? 'animate-spin' : ''}`} />
-            Reset Demo
-          </button>
+
         </div>
       </div>
 
+      {loadError && (
+        <div role="alert" className="p-4 border border-rose-500/30 rounded-xl text-rose-300 text-sm">
+          Dashboard records could not be loaded. No financial amounts have been inferred.
+        </div>
+      )}
+      {metrics && (
+        <div className="p-3 border border-amber-500/20 rounded-xl text-amber-300 text-xs">
+          Financial figures are user-recorded and not independently reconciled.
+          {metrics.financial_data_status === 'needs_review'
+            ? ' Invalid or ambiguous entries require correction before any runway assessment.'
+            : ''}
+        </div>
+      )}
       {/* Proactive Hazards & Alerts Banner */}
       {alerts.length > 0 && (
         <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col md:flex-row md:items-center justify-between gap-3">
@@ -137,10 +137,10 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
             </div>
           </div>
           <div className="text-2xl font-bold text-white mt-3 font-mono">
-            ${(metrics?.mrr || 18450).toLocaleString()}
+            {metrics ? formatMoney(metrics.mrr) : 'Unavailable'}
           </div>
           <div className="text-xs text-emerald-400 flex items-center gap-1 mt-1 font-medium">
-            +14.2% vs last month • 38 active SaaS accounts
+            {metrics ? `${metrics.active_customers_count} active customer records (unverified)` : 'No source records loaded'}
           </div>
         </div>
 
@@ -152,10 +152,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
             </div>
           </div>
           <div className="text-2xl font-bold text-white mt-3 font-mono">
-            {metrics?.runway_months || 7.2} <span className="text-sm font-normal text-slate-400">months</span>
+            {figuresAvailable && metrics?.runway_months !== null && metrics?.runway_months !== undefined
+              ? `${metrics.runway_months} months` : 'Unavailable'}
           </div>
           <div className="text-xs text-slate-400 mt-1">
-            Cash: ${(metrics?.cash_balance || 132840).toLocaleString()} • Burn: ${(metrics?.monthly_burn || 12200).toLocaleString()}/mo
+            Cash: {metrics ? formatMoney(metrics.cash_balance) : 'Unavailable'} • Burn: {metrics ? formatMoney(metrics.monthly_burn) : 'Unavailable'}/mo
           </div>
         </div>
 
@@ -167,10 +168,10 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
             </div>
           </div>
           <div className="text-2xl font-bold text-white mt-3 font-mono">
-            ${(metrics?.overdue_receivables_amount || 4170).toLocaleString()}
+            {metrics ? formatMoney(metrics.overdue_receivables_amount) : 'Unavailable'}
           </div>
           <div className="text-xs text-amber-400 mt-1 flex items-center justify-between">
-            <span>{metrics?.overdue_invoices_count || 3} overdue accounts</span>
+            <span>{metrics?.overdue_invoices_count ?? 0} overdue invoice records</span>
             <button onClick={() => onNavigate('workflows')} className="underline hover:text-amber-300">Run Recovery</button>
           </div>
         </div>
@@ -183,49 +184,29 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
             </div>
           </div>
           <div className="text-2xl font-bold text-white mt-3 font-mono">
-            91.4%
+            Not assessed
           </div>
           <div className="text-xs text-purple-400 mt-1">
-            Empirical Council prediction & action score
+            No independently verified outcome score yet
           </div>
         </div>
       </div>
 
       {/* Main Grid: Revenue Trend & Executive Council Status */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Revenue & Burn Trend Chart */}
+        {/* Historical data does not exist in these snapshots. Never draw a
+            time series from fabricated months or repeated current figures. */}
         <div className="lg:col-span-2 p-6 rounded-2xl glass-panel">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-base font-bold text-white">Financial Trajectory & Working Capital</h2>
-              <p className="text-xs text-slate-400">Monthly Recurring Revenue vs Operating Expenditures</p>
-            </div>
-            <span className="text-xs font-mono text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-lg border border-indigo-500/20">
-              Target: $25k MRR
-            </span>
-          </div>
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData}>
-                <defs>
-                  <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
-                  </linearGradient>
-                  <linearGradient id="colorBurn" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#f43f5e" stopOpacity={0.2} />
-                    <stop offset="95%" stopColor="#f43f5e" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="month" stroke="#64748b" fontSize={12} tickLine={false} />
-                <YAxis stroke="#64748b" fontSize={12} tickLine={false} tickFormatter={(val) => `$${val / 1000}k`} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '0.75rem', fontSize: '12px' }}
-                />
-                <Area type="monotone" dataKey="revenue" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#colorRev)" name="MRR ($)" />
-                <Area type="monotone" dataKey="burn" stroke="#f43f5e" strokeWidth={2} fillOpacity={1} fill="url(#colorBurn)" name="Burn ($)" />
-              </AreaChart>
-            </ResponsiveContainer>
+          <h2 className="text-base font-bold text-white">Financial Records & Provenance</h2>
+          <p className="text-xs text-slate-400 mt-2">
+            Historical financial trajectory is unavailable. This API provides a current,
+            user-recorded snapshot rather than a dated, independently reconciled ledger.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5 text-sm">
+            <p className="text-slate-200">Recurring revenue: {metrics ? formatMoney(metrics.mrr) : 'Unavailable'}</p>
+            <p className="text-slate-200">Recurring expenses: {metrics ? formatMoney(metrics.monthly_burn) : 'Unavailable'}</p>
+            <p className="text-slate-200">Source records: {metrics?.financial_record_ids?.active_customer_ids.length ?? 0} active customers</p>
+            <p className="text-slate-200">Last record update: {metrics?.financial_data_updated_at || 'Not available'}</p>
           </div>
         </div>
 
@@ -247,10 +228,10 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({ onNavigate }) => {
           <div className="space-y-2.5">
             {[
               { role: 'Chief of Staff', dept: 'Executive Office', status: 'Ready for Agenda' },
-              { role: 'Finance Adviser', dept: 'Finance', status: 'Runway: 7.2mo' },
-              { role: 'Marketing Adviser', dept: 'Growth', status: 'Auditing CAC' },
-              { role: 'Operations Adviser', dept: 'Operations', status: '1 Workflow Paused' },
-              { role: 'Technology Adviser', dept: 'Engineering', status: 'Exporter PR #14' },
+              { role: 'Finance Adviser', dept: 'Finance', status: 'Review recorded financials' },
+              { role: 'Marketing Adviser', dept: 'Growth', status: 'Analysis not verified' },
+              { role: 'Operations Adviser', dept: 'Operations', status: 'Review workflow runs' },
+              { role: 'Technology Adviser', dept: 'Engineering', status: 'Availability unverified' },
             ].map((adv) => (
               <div key={adv.role} className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800/80 flex items-center justify-between">
                 <div>

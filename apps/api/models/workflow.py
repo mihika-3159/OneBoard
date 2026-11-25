@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Boolean, Integer
+from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Boolean, Integer, UniqueConstraint
 from datetime import datetime
 import uuid
 from apps.api.core.database import Base
@@ -64,8 +64,15 @@ class WorkflowDefinition(Base):
 
 class WorkflowRun(Base):
     __tablename__ = "workflow_runs"
+    # A retry with the same client idempotency key cannot create a second
+    # run, even when different workers receive it concurrently.
+    __table_args__ = (
+        UniqueConstraint("business_id", "idempotency_key",
+                         name="uq_workflow_run_tenant_idempotency"),
+    )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    idempotency_key = Column(String(128), nullable=True)
     workflow_id = Column(String(36), nullable=False)
     business_id = Column(String(36), nullable=False)
     workflow_name = Column(String(255), nullable=False)

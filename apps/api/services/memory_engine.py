@@ -2,7 +2,9 @@ import math
 import hashlib
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-from apps.api.models.memory import MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict
+from sqlalchemy import func, and_, or_
+from apps.api.services.inference_budget import inference_tenant
+from apps.api.models.memory import MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict, MemoryDocumentState
 from apps.api.models.entities import Product, Customer, Invoice
 from apps.api.services.ollama_gateway import ollama_gateway
 
@@ -26,79 +28,59 @@ class MemoryEngine:
             return 0.0
         return dot / (norm1 * norm2)
 
-    async def search_semantic_memory(
-        self,
-        db: Session,
-        business_id: str,
-        query: str,
-        top_k: int = 5
-    ) -> List[Dict[str, Any]]:
-        query_vector = await ollama_gateway.generate_embedding(query)
-        chunks = db.query(MemoryChunk).filter(MemoryChunk.business_id == business_id).all()
-        
-        scored_results = []
-        q_lower = query.lower()
-        
-        for c in chunks:
-            # Semantic score
-            sim = 0.0
-            if c.embedding:
-                sim = self._cosine_similarity(query_vector, c.embedding)
-            # Keyword bonus (hybrid ranking)
-            kw_match = 0.3 if any(word in c.content.lower() for word in q_lower.split() if len(word) > 3) else 0.0
-            total_score = min(sim + kw_match, 1.0)
-            
-            doc = db.query(MemoryDocument).filter(MemoryDocument.id == c.document_id).first()
-            source_title = doc.title if doc else "Business Document"
-            
-            scored_results.append({
-                "chunk_id": c.id,
-                "document_id": c.document_id,
-                "source_title": source_title,
-                "content": c.content,
-                "score": round(total_score, 4),
-                "metadata": c.metadata_tags or {}
-            })
-            
-        scored_results.sort(key=lambda x: x["score"], reverse=True)
-        return scored_results[:top_k]
+    async def search_semantic_memory(self,db:Session,business_id:str,query:str,top_k:int=5,filters=None):
+        """Fuse independently retrieved lexical and genuine-model candidates."""
+        if not business_id:raise ValueError("Business ID is required")
+        if not isinstance(query,str) or not 1<=len(query.strip())<=2048:raise ValueError("Invalid query length")
+        if type(top_k) is not int or not 1<=top_k<=50:raise ValueError("top_k must be between 1 and 50")
+        from apps.api.services.semantic_index import retrieve,active_state,state_join
+        from apps.api.services.memory_ranking import terms,filter_scope,fuse,feedback_scores
+        from apps.api.services.memory_sources import citation
+        semantic=await retrieve(db,business_id,query,min(200,max(50,top_k*4)),filters)
+        indexed=db.get_bind().dialect.name=="postgresql"
+        scope=db.query(MemoryChunk,MemoryDocument.title).join(MemoryDocument,
+            and_(MemoryChunk.document_id==MemoryDocument.id,MemoryChunk.business_id==MemoryDocument.business_id)
+        ).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id==business_id,active_state())
+        scope=filter_scope(scope,filters)
+        tokens=terms(query)
+        cap=200 if indexed else 1000
+        if indexed and tokens:
+            vector=func.to_tsvector("simple",MemoryChunk.content)
+            queries=[func.plainto_tsquery("simple",token) for token in sorted(tokens)[:32]]
+            rank=sum(func.ts_rank_cd(vector,q) for q in queries)
+            entries=scope.filter(or_(*(vector.op("@@")(q) for q in queries))).order_by(rank.desc(),MemoryChunk.id).limit(cap+1).all()
+            strategy="postgresql_indexed_fulltext"
+        elif indexed:
+            entries=[];strategy="postgresql_indexed_fulltext"
+        else:
+            # Development SQLite scans the bounded tenant corpus for lexical
+            # matches before applying the candidate limit; no fake vectors.
+            entries=scope.filter(or_(*(func.lower(MemoryChunk.content).contains(token,autoescape=True) for token in sorted(tokens)[:32]))).order_by(MemoryChunk.created_at.desc(),MemoryChunk.id.desc()).limit(cap+1).all() if tokens else []
+            strategy="sqlite_bounded_lexical_scan"
+        lexical=[]
+        for chunk,title in entries[:cap]:
+            overlap=len(tokens & terms(chunk.content))
+            if not overlap:continue
+            lexical.append({"chunk_id":chunk.id,"document_id":chunk.document_id,"source_title":title,
+              "content":chunk.content,"score":overlap/max(1,len(tokens)),"metadata":chunk.metadata_tags or {},
+              "search_strategy":strategy,"candidate_limit_applied":len(entries)>cap,"candidate_count":min(len(entries),cap)})
+        lexical.sort(key=lambda row:(-row["score"],row["chunk_id"]))
+        votes=feedback_scores(db,business_id,query,list({x["chunk_id"] for x in lexical+semantic}))
+        ranked=fuse(lexical,semantic,top_k,votes,query)
+        if not ranked:return []
+        # Load full source text only for final results, then revalidate
+        # active state and the exact quotation. No per-result query.
+        sources=db.query(MemoryChunk,MemoryDocument,MemoryDocumentState).join(MemoryDocument,
+            and_(MemoryChunk.document_id==MemoryDocument.id,MemoryChunk.business_id==MemoryDocument.business_id)
+        ).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id==business_id,active_state(),
+            MemoryChunk.id.in_([x["chunk_id"] for x in ranked])).all()
+        byid={c.id:(c,d,state) for c,d,state in sources}
+        return [{**x,"citation":citation(byid[x["chunk_id"]][1],byid[x["chunk_id"]][0],byid[x["chunk_id"]][2])}
+                for x in ranked if x["chunk_id"] in byid and byid[x["chunk_id"]][0].content==x["content"]]
 
-    def get_relationship_graph(
-        self,
-        db: Session,
-        business_id: str
-    ) -> Dict[str, Any]:
-        """Fetch all entity relationships as graph nodes and links for React Flow / Graph view."""
-        edges = db.query(EntityRelationship).filter(EntityRelationship.business_id == business_id).all()
-        
-        nodes_dict = {}
-        links = []
-        
-        for e in edges:
-            if e.source_id not in nodes_dict:
-                nodes_dict[e.source_id] = {
-                    "id": e.source_id,
-                    "label": e.source_label or e.source_id,
-                    "type": e.source_type
-                }
-            if e.target_id not in nodes_dict:
-                nodes_dict[e.target_id] = {
-                    "id": e.target_id,
-                    "label": e.target_label or e.target_id,
-                    "type": e.target_type
-                }
-            links.append({
-                "id": e.id,
-                "source": e.source_id,
-                "target": e.target_id,
-                "relationship": e.relationship,
-                "properties": e.properties or {}
-            })
-            
-        return {
-            "nodes": list(nodes_dict.values()),
-            "links": links
-        }
+    def get_relationship_graph(self,db:Session,business_id:str):
+        from apps.api.services.memory_graph import graph
+        return graph(db,business_id)
 
     def detect_conflicts(
         self,
@@ -126,49 +108,9 @@ class MemoryEngine:
             for c in conflicts
         ]
 
-    def add_document_with_chunks(
-        self,
-        db: Session,
-        business_id: str,
-        title: str,
-        raw_content: str,
-        file_type: str = "txt",
-        source_connector: str = "local_file"
-    ) -> MemoryDocument:
-        content_hash = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
-        
-        doc = MemoryDocument(
-            business_id=business_id,
-            title=title,
-            file_type=file_type,
-            source_connector=source_connector,
-            content_hash=content_hash,
-            raw_content=raw_content,
-            summary=raw_content[:200] + "..." if len(raw_content) > 200 else raw_content
-        )
-        db.add(doc)
-        db.commit()
-        db.refresh(doc)
-        
-        # Simple paragraph or sentence chunking
-        paragraphs = [p.strip() for p in raw_content.split("\n\n") if p.strip()]
-        if not paragraphs:
-            paragraphs = [raw_content]
-            
-        doc.chunk_count = len(paragraphs)
-        db.commit()
-        
-        for idx, para in enumerate(paragraphs):
-            chunk = MemoryChunk(
-                document_id=doc.id,
-                business_id=business_id,
-                chunk_index=idx,
-                content=para,
-                metadata_tags={"source": title, "index": idx}
-            )
-            db.add(chunk)
-            
-        db.commit()
-        return doc
+    def add_document_with_chunks(self,db:Session,business_id:str,title:str,raw_content:str,
+                                 file_type:str="txt",source_connector:str="local_file",supersedes_id=None,source_segments=None):
+        from apps.api.services.memory_sources import ingest
+        return ingest(db,business_id,title,raw_content,file_type,source_connector,supersedes_id,source_segments)
 
 memory_engine = MemoryEngine()

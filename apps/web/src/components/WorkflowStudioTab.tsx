@@ -1,3 +1,4 @@
+import {LoadState,ListPager,AlertDialog} from './ScreenSupport';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   ReactFlow,
@@ -23,13 +24,64 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { WorkflowDef } from '../types';
+import { WorkflowOperationsPanel } from './WorkflowOperationsPanel';
 
 export const WorkflowStudioTab: React.FC = () => {
+  const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
+  const [workflowPage,setWorkflowPage]=useState(0);
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowDef | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
+  const [schedule, setSchedule] = useState<any>(null);
+  const [scheduleTime, setScheduleTime] = useState('09:00');
+  const [scheduleDay, setScheduleDay] = useState('*');
+  const [advancedCron,setAdvancedCron]=useState('');
+  const [missedPolicy,setMissedPolicy]=useState('coalesce');
+  const [scheduleZone, setScheduleZone] = useState('UTC');
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleBusy,setScheduleBusy] = useState(false);
+  const [scheduleLoaded,setScheduleLoaded] = useState(false);
+  const [scheduleError,setScheduleError] = useState<string|null>(null);
+
+  useEffect(()=>{
+    const id=selectedWorkflow?.id;
+    let cancelled=false;
+    setScheduleLoaded(false);
+    setSchedule(null);
+    setScheduleError(null);
+    if (!id) return;
+    api.getSchedules().then(rows=>{
+      if(cancelled)return;
+      const row=rows.find(x=>x.workflow_id===id);
+      setSchedule(row||null);
+      const [minute,hour,,,day]=(row?.cron||'0 9 * * *').split(' ');
+      const simple=/^\d{1,2} \d{1,2} \* \* (\*|mon|tue|wed|thu|fri|sat|sun)$/.test(row?.cron||'0 9 * * *');
+      setAdvancedCron(simple?'':row.cron);
+      setMissedPolicy(row?.missed_policy||'coalesce');
+      setScheduleTime(simple?hour.padStart(2,'0')+':'+minute.padStart(2,'0'):'09:00');
+      setScheduleDay(day);
+      setScheduleZone(row?.timezone||'UTC');
+      setScheduleEnabled(Boolean(row?.enabled));
+      setScheduleLoaded(true);
+    }).catch(e=>{if(!cancelled)setScheduleError(e instanceof Error?e.message:'Schedule lookup failed');});
+    return ()=>{cancelled=true};
+  },[selectedWorkflow?.id,selectedWorkflow?.version]);
+
+  const saveSchedule=async()=>{
+    if(!selectedWorkflow||!scheduleLoaded||!scheduleTime||!scheduleZone.trim())return;
+    setScheduleBusy(true);
+    setScheduleError(null);
+    try {
+      const [hour,minute]=scheduleTime.split(':').map(Number);
+      const row=await api.saveSchedule(selectedWorkflow.id,advancedCron.trim()||`${minute} ${hour} * * ${scheduleDay}`,scheduleZone.trim(),scheduleEnabled,missedPolicy);
+      setSchedule(row);
+    } catch(e) {setScheduleError(e instanceof Error?e.message:'Schedule update failed');}
+    finally {setScheduleBusy(false);}
+  };
 
   // Natural Language Prompt Generator & Teach a Process
   const [promptText, setPromptText] = useState(
@@ -37,6 +89,7 @@ export const WorkflowStudioTab: React.FC = () => {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [runError,setRunError]=useState<string|null>(null);
   const [executionOutput, setExecutionOutput] = useState<any | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
 
@@ -50,15 +103,16 @@ export const WorkflowStudioTab: React.FC = () => {
   }, []);
 
   const loadWorkflows = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const data = await api.getWorkflows();
-      setWorkflows(data);
+      setWorkflows(data);setWorkflowPage(p=>Math.min(p,Math.max(0,Math.ceil(data.length/25)-1)));
       if (data.length > 0 && !selectedWorkflow) {
         selectWorkflow(data[0]);
       }
     } catch (e) {
-      console.error('Error loading workflows', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading workflows');
+    } finally {setScreenLoading(false)}
   };
 
   const loadApprovals = async () => {
@@ -111,7 +165,7 @@ export const WorkflowStudioTab: React.FC = () => {
   const handleGenerateWorkflow = async () => {
     setIsGenerating(true);
     try {
-      const generated = await api.generateWorkflowFromPrompt(promptText);
+      const generated = await inference.run("/workflows/generate", {prompt: promptText});
       const created = await api.createWorkflow(generated);
       await loadWorkflows();
       selectWorkflow(created);
@@ -125,7 +179,7 @@ export const WorkflowStudioTab: React.FC = () => {
   const handleTeachProcess = async () => {
     setIsGenerating(true);
     try {
-      const generated = await api.teachProcess(teachDesc);
+      const generated = await inference.run("/workflows/teach-process", {description: teachDesc});
       const created = await api.createWorkflow(generated);
       await loadWorkflows();
       selectWorkflow(created);
@@ -141,12 +195,13 @@ export const WorkflowStudioTab: React.FC = () => {
   const handleRunWorkflow = async (dryRun: boolean = false) => {
     if (!selectedWorkflow) return;
     setIsRunning(true);
+    setRunError(null);
     try {
       const res = await api.executeWorkflow(selectedWorkflow.id, dryRun);
       setExecutionOutput(res);
       await loadApprovals();
     } catch (e) {
-      console.error('Workflow run failed', e);
+      setRunError(e instanceof Error?e.message:'Workflow execution response unavailable');
     } finally {
       setIsRunning(false);
     }
@@ -154,12 +209,11 @@ export const WorkflowStudioTab: React.FC = () => {
 
   const handleApprovePending = async (requestId: string) => {
     try {
-      await api.resolveApproval(requestId, 'approve');
+      // The API has ALREADY resumed the existing run during approval.
+      // Starting a separate execution here would duplicate actions.
+      const resolution = await api.resolveApproval(requestId, 'approve');
+      if (resolution.run) setExecutionOutput(resolution.run);
       await loadApprovals();
-      if (selectedWorkflow) {
-        const res = await api.executeWorkflow(selectedWorkflow.id, false);
-        setExecutionOutput(res);
-      }
     } catch (e) {
       console.error('Approval resolution failed', e);
     }
@@ -167,6 +221,9 @@ export const WorkflowStudioTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!workflows.length?'No workflows recorded. Create one to get started.':undefined} retry={()=>void loadWorkflows()}/>
+      {inference.indicator}
+      <WorkflowOperationsPanel selected={selectedWorkflow} onUpdated={wf=>{setWorkflows(old=>old.map(x=>x.id===wf.id?wf:x));selectWorkflow(wf);}} />
       {/* Header bar */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -189,7 +246,7 @@ export const WorkflowStudioTab: React.FC = () => {
           </button>
           <button
             onClick={() => handleRunWorkflow(false)}
-            disabled={isRunning || !selectedWorkflow}
+            disabled={isRunning || !selectedWorkflow || selectedWorkflow.is_active===false}
             className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/20"
           >
             <Play className="w-3.5 h-3.5 fill-white" />
@@ -198,6 +255,40 @@ export const WorkflowStudioTab: React.FC = () => {
         </div>
       </div>
 
+      {selectedWorkflow && <section aria-label="Workflow schedule" className="p-4 rounded-2xl glass-panel space-y-3 text-xs">
+        <h2 className="text-sm font-bold text-white">Scheduled execution</h2>
+        <p className="text-slate-400">Opt-in only. Choose coalescing, skipping or bounded catch-up for missed slots. Pending approvals or uncertain runs pause execution. No external delivery.</p>
+        {scheduleError && <p role="alert" className="text-rose-300">{scheduleError}</p>}
+        <div className="flex flex-wrap gap-3 items-end">
+          <label className="space-y-1">Local run time
+            <input aria-label="Local run time" className="block bg-slate-900 border rounded p-2 text-white" type="time" value={scheduleTime} onChange={e=>setScheduleTime(e.target.value)} disabled={!scheduleLoaded||scheduleBusy}/>
+          </label>
+          <label className="space-y-1">Repeat
+            <select aria-label="Repeat schedule" className="block bg-slate-900 border rounded p-2 text-white" value={scheduleDay} onChange={e=>setScheduleDay(e.target.value)} disabled={!scheduleLoaded||scheduleBusy}>
+              {['*','mon','tue','wed','thu','fri','sat','sun'].map(day=><option key={day} value={day}>{day==='*'?'Every day':day.toUpperCase()}</option>)}
+            </select>
+          </label>
+          <label className="space-y-1">IANA timezone
+            <input aria-label="IANA timezone" className="block bg-slate-900 border rounded p-2 text-white" value={scheduleZone} onChange={e=>setScheduleZone(e.target.value)} disabled={!scheduleLoaded||scheduleBusy}/>
+          </label>
+          <label className="space-y-1">Advanced five-field cron (optional)
+            <input aria-label="Advanced cron" className="block bg-slate-900 border rounded p-2" placeholder="0 9 1 * *" value={advancedCron} onChange={e=>setAdvancedCron(e.target.value)}/>
+          </label>
+          <label className="space-y-1">Missed slots
+            <select aria-label="Missed slot policy" className="block bg-slate-900 border rounded p-2" value={missedPolicy} onChange={e=>setMissedPolicy(e.target.value)}>
+              <option value="coalesce">Coalesce</option><option value="skip">Skip</option><option value="catch_up">Catch up one per pass</option>
+            </select>
+          </label>
+          <label className="flex gap-2 items-center"><input type="checkbox" checked={scheduleEnabled} onChange={e=>setScheduleEnabled(e.target.checked)} disabled={!scheduleLoaded||scheduleBusy}/>Enable automatic execution</label>
+          <button className="px-3 py-2 rounded bg-indigo-600 disabled:opacity-50" onClick={saveSchedule} disabled={!scheduleLoaded||scheduleBusy}>Save schedule</button>
+        </div>
+        {schedule && <p role="status" className="text-slate-300">
+          {schedule.enabled?'Schedule enabled':'Schedule paused'}.
+          {schedule.enabled&&` Next due (UTC): ${new Date(schedule.next_due_at*1000).toISOString()}.`}
+          {schedule.last_status&&` Status: ${schedule.last_status}.`}
+        </p>}
+      </section>}
+
       {/* Natural Language Workflow Generator Bar */}
       <div className="p-4 rounded-2xl bg-indigo-950/20 border border-indigo-500/30 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
         <div className="flex items-center gap-2 text-indigo-400 text-xs font-bold whitespace-nowrap">
@@ -205,7 +296,7 @@ export const WorkflowStudioTab: React.FC = () => {
         </div>
         <input
           type="text"
-          value={promptText}
+          aria-label="Describe workflow automation" value={promptText}
           onChange={(e) => setPromptText(e.target.value)}
           placeholder="Describe an automation in plain English..."
           className="flex-1 px-3.5 py-2 bg-slate-900 text-white text-xs rounded-xl border border-slate-800 focus:outline-none focus:border-indigo-500"
@@ -234,8 +325,10 @@ export const WorkflowStudioTab: React.FC = () => {
               <div>
                 <div className="font-semibold text-white">{app.title}</div>
                 <div className="text-[11px] text-slate-400">{app.description}</div>
+                <details><summary>Review immutable approval payload</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(app.payload,null,2)}</pre></details>
               </div>
               <button
+                disabled={!app.payload?.payload_digest}
                 onClick={() => handleApprovePending(app.id)}
                 className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1"
               >
@@ -252,11 +345,12 @@ export const WorkflowStudioTab: React.FC = () => {
         <div className="space-y-3">
           <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Saved Workflows</h2>
           <div className="space-y-2">
-            {workflows.map((w) => (
-              <div
+            <ListPager page={workflowPage} total={workflows.length} size={25} onChange={setWorkflowPage}/>
+            {workflows.slice(workflowPage*25,(workflowPage+1)*25).map((w) => (
+              <button type="button" aria-pressed={selectedWorkflow?.id===w.id}
                 key={w.id}
                 onClick={() => selectWorkflow(w)}
-                className={`p-3.5 rounded-xl border cursor-pointer transition ${
+                className={`w-full text-left p-3.5 rounded-xl border cursor-pointer transition ${
                   selectedWorkflow?.id === w.id
                     ? 'bg-indigo-600/10 border-indigo-500/50 text-white'
                     : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
@@ -270,17 +364,19 @@ export const WorkflowStudioTab: React.FC = () => {
                     {w.nodes?.length || 0} nodes
                   </span>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
 
         {/* React Flow Canvas */}
         <div className="lg:col-span-3 space-y-4">
+          {selectedWorkflow&&<details className="glass-panel p-3 rounded-xl space-y-2"><summary className="font-semibold">Workflow text alternative</summary><section aria-label="Workflow structure"><h3 className="font-semibold">Steps and dependencies: {selectedWorkflow.name}</h3><p className="text-xs text-slate-300">Steps are listed in stored order; connections describe execution dependencies, not a guaranteed serial order.</p><ol className="list-decimal pl-5 space-y-1">{(selectedWorkflow.nodes||[]).map(n=><li key={n.id}><strong>{n.data?.label||n.id}</strong> ({n.type})</li>)}</ol><h4 className="font-semibold">Connections</h4>{selectedWorkflow.edges?.length?<ul className="list-disc pl-5">{selectedWorkflow.edges.map((edge,i)=><li key={edge.id||i}>{selectedWorkflow.nodes?.find(n=>n.id===edge.source)?.data?.label||edge.source} to {selectedWorkflow.nodes?.find(n=>n.id===edge.target)?.data?.label||edge.target}</li>)}</ul>:<p>No connections recorded.</p>}</section></details>}
           <div className="h-[480px] rounded-2xl border border-slate-800/80 bg-[#090d16] relative overflow-hidden">
             <ReactFlow
               nodes={nodes}
               edges={edges}
+              onlyRenderVisibleElements
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               fitView
@@ -295,6 +391,7 @@ export const WorkflowStudioTab: React.FC = () => {
             </div>
           </div>
 
+          {runError&&<p role="alert" className="text-sm text-red-300">Execution request failed: {runError}. Retry the same workflow to reconcile the pending request.</p>}
           {/* Execution Output Drawer */}
           {executionOutput && (
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
@@ -337,7 +434,7 @@ export const WorkflowStudioTab: React.FC = () => {
 
       {/* Teach a Process Modal */}
       {isTeachModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <AlertDialog label="Teach OneBoard a Repetitive Process" onClose={()=>{if(!isGenerating)setIsTeachModal(false)}}>
           <div className="p-6 rounded-2xl bg-slate-900 border border-slate-700 max-w-xl w-full space-y-4">
             <h3 className="text-lg font-bold text-white flex items-center gap-2">
               <BookOpen className="w-5 h-5 text-indigo-400" />
@@ -348,7 +445,7 @@ export const WorkflowStudioTab: React.FC = () => {
             </p>
             <textarea
               rows={4}
-              value={teachDesc}
+              aria-label="Describe manual process" value={teachDesc}
               onChange={(e) => setTeachDesc(e.target.value)}
               placeholder="e.g. When a new customer signs up for Enterprise, fetch their company domain, draft a customized welcome message with the API onboarding guide, and request my approval before sending..."
               className="w-full px-3.5 py-2.5 bg-slate-800 text-white text-xs rounded-xl border border-slate-700 focus:outline-none focus:border-indigo-500"
@@ -369,7 +466,7 @@ export const WorkflowStudioTab: React.FC = () => {
               </button>
             </div>
           </div>
-        </div>
+        </AlertDialog>
       )}
     </div>
   );

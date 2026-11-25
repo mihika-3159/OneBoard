@@ -1,47 +1,70 @@
-from fastapi import APIRouter, Depends, HTTPException
+from apps.api.services.inference_stream import stream_or_wait
+from fastapi import Request, APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field
+from typing import List, Dict, Any, Optional, Literal
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+from apps.api.services.inference_budget import inference_tenant
+from apps.api.core.config import settings
+from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.database import get_db
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
+from apps.api.models.business import User
 from apps.api.models.workflow import WorkflowDefinition, WorkflowRun, ApprovalRequest
 from apps.api.services.workflow_engine import workflow_engine
+from apps.api.services import workflow_versions, workflow_events
+from apps.api.models.operations import WorkflowRevision, WorkflowEvent
 from apps.api.services.natural_language_builder import natural_language_builder
-from apps.api.services.seed_data import DEMO_BUSINESS_ID
 
 router = APIRouter(prefix="/api/workflows", tags=["Workflows"])
 
 class WorkflowCreateRequest(BaseModel):
-    name: str
-    description: Optional[str] = None
-    category: str = "Operations"
+    name: str = Field(min_length=1,max_length=255)
+    description: Optional[str] = Field(default=None,max_length=8000)
+    category: str = Field(default="Operations",max_length=50)
     trigger_type: str = "manual"
     trigger_config: Dict[str, Any] = {}
     nodes: List[Dict[str, Any]]
     edges: List[Dict[str, Any]]
 
 class PromptGenerationRequest(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=1, max_length=8000)
 
 class TeachProcessRequest(BaseModel):
-    description: str
-    examples: Optional[str] = None
+    description: str = Field(min_length=1, max_length=8000)
+    examples: Optional[str] = Field(default=None, max_length=16000)
 
 class ApprovalActionRequest(BaseModel):
-    action: str # "approve", "reject"
+    action: Literal["approve", "reject"]
     notes: Optional[str] = None
 
 @router.get("")
-def list_workflows(db: Session = Depends(get_db)):
-    return db.query(WorkflowDefinition).filter(WorkflowDefinition.business_id == DEMO_BUSINESS_ID).all()
+def list_workflows(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    rows=db.query(WorkflowDefinition).filter(WorkflowDefinition.business_id == current_user.business_id).limit(200).all()
+    return [workflow_versions.serialize(wf,workflow_versions.current_version(db,current_user.business_id,wf.id)) for wf in rows]
 
 @router.post("")
-def create_workflow(req: WorkflowCreateRequest, db: Session = Depends(get_db)):
-    validation = workflow_engine.validate_workflow({"nodes": req.nodes, "edges": req.edges})
-    if not validation.get("is_valid"):
-        raise HTTPException(status_code=400, detail=validation.get("error"))
+def create_workflow(
+    req: WorkflowCreateRequest,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db)
+):
+    try:
+        workflow_versions.validate({**req.model_dump(),"is_active":True})
+    except ValueError as exc:
+        raise HTTPException(400,str(exc)) from exc
 
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        from apps.api.services.tenant_storage import check_resource
+        check_resource(db, current_user.business_id, "workflow")
     wf = WorkflowDefinition(
-        business_id=DEMO_BUSINESS_ID,
+        business_id=current_user.business_id,
         name=req.name,
         description=req.description,
         category=req.category,
@@ -52,60 +75,244 @@ def create_workflow(req: WorkflowCreateRequest, db: Session = Depends(get_db)):
         is_valid=True
     )
     db.add(wf)
+    db.flush()
+    workflow_versions.ensure_version(db,wf)
+    # Generated event labels are not authorization. Activation is explicit in edit.
     db.commit()
     db.refresh(wf)
-    return wf
+    return workflow_versions.serialize(wf,1)
+
+class ScheduleRequest(BaseModel):
+    cron: str = Field(min_length=9,max_length=40)
+    timezone: str = Field(min_length=1,max_length=64)
+    enabled: bool = True
+    missed_policy: Literal["coalesce","skip","catch_up"] = "coalesce"
+
+@router.put("/{workflow_id}/schedule")
+def configure_schedule(workflow_id: str, req: ScheduleRequest,
+                       current_user: User=Depends(require_founder_role),db: Session=Depends(get_db)):
+    from apps.api.services.workflow_schedule import configure
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workflow_generate")
+    try:
+        return configure(db,current_user.business_id,workflow_id,req.cron,req.timezone,req.enabled,missed_policy=req.missed_policy)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+@router.get("/schedules")
+def list_schedules(current_user: User=Depends(get_current_user),db: Session=Depends(get_db)):
+    from apps.api.models.operations import WorkflowSchedule
+    from apps.api.services.workflow_schedule import serialize
+    return [serialize(row) for row in db.query(WorkflowSchedule).filter_by(business_id=current_user.business_id).limit(200).all()]
 
 @router.post("/{workflow_id}/execute")
-def execute_workflow(workflow_id: str, dry_run: bool = False, db: Session = Depends(get_db)):
+def execute_workflow(
+    workflow_id: str,
+    dry_run: bool = False,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db)
+):
+    wf = db.query(WorkflowDefinition).filter(WorkflowDefinition.id == workflow_id).first()
+    if not wf:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    enforce_tenant_boundary(wf.business_id, current_user)
+    if settings.ONEBOARD_PRODUCTION_MODE and not dry_run and not idempotency_key:
+        raise HTTPException(
+            status_code=428,
+            detail="A stable Idempotency-Key is required for production workflow execution.",
+        )
+
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "workflow_execute")
     try:
         run = workflow_engine.execute_workflow(
             db=db,
-            business_id=DEMO_BUSINESS_ID,
+            business_id=current_user.business_id,
             workflow_id=workflow_id,
-            dry_run=dry_run
+            dry_run=dry_run,
+            idempotency_key=idempotency_key
         )
         return run
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except (PermissionError, ValueError) as pe:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN if isinstance(pe, PermissionError) else status.HTTP_400_BAD_REQUEST, detail=str(pe))
+    except Exception:
+        logger.exception("Unexpected workflow execution error")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Workflow execution failed; inspect server logs")
+
+@router.post("/runs/reconcile-interrupted")
+def reconcile_interrupted_runs(
+    older_than_seconds: int = 900,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db),
+):
+    """Quarantine stale, uncertain executions without automatic replay."""
+    try:
+        count = workflow_engine.reconcile_interrupted_runs(
+            db, current_user.business_id, older_than_seconds=older_than_seconds
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"paused_runs": count, "automatic_replay": False}
+
 
 @router.get("/runs")
-def list_runs(db: Session = Depends(get_db)):
-    return db.query(WorkflowRun).filter(WorkflowRun.business_id == DEMO_BUSINESS_ID).order_by(WorkflowRun.started_at.desc()).all()
+def list_runs(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return db.query(WorkflowRun).filter(
+        WorkflowRun.business_id == current_user.business_id
+    ).order_by(WorkflowRun.started_at.desc()).limit(200).all()
 
 @router.post("/generate")
-async def generate_from_prompt(req: PromptGenerationRequest):
-    generated = await natural_language_builder.generate_workflow_from_prompt(req.prompt)
-    return generated
+async def generate_from_prompt(
+    req: PromptGenerationRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "workflow_generate")
+    async def work():
+        with inference_tenant(current_user.business_id):
+            return await natural_language_builder.generate_workflow_from_prompt(req.prompt)
+    return await stream_or_wait(request, work)
 
 @router.post("/teach-process")
-async def teach_process(req: TeachProcessRequest):
-    return await natural_language_builder.teach_a_process(req.description, req.examples)
+async def teach_process(
+    req: TeachProcessRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "workflow_generate")
+    async def work():
+        with inference_tenant(current_user.business_id):
+            return await natural_language_builder.teach_a_process(req.description, req.examples)
+    return await stream_or_wait(request, work)
+
+@router.get("/outbox")
+def list_local_outbox(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from apps.api.models.operations import SideEffectOutbox
+    rows = db.query(SideEffectOutbox).filter(
+        SideEffectOutbox.business_id == current_user.business_id
+    ).order_by(SideEffectOutbox.created_at.desc()).limit(100).all()
+    return [{"id": row.id, "run_id": row.run_id, "step_id": row.step_id,
+             "kind": row.kind, "state": row.state, "delivered": False}
+            for row in rows]
+
 
 @router.get("/approvals")
-def get_pending_approvals(db: Session = Depends(get_db)):
+def get_pending_approvals(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     return db.query(ApprovalRequest).filter(
-        ApprovalRequest.business_id == DEMO_BUSINESS_ID,
+        ApprovalRequest.business_id == current_user.business_id,
         ApprovalRequest.status == "pending"
     ).all()
 
 @router.post("/approvals/{request_id}/action")
-def resolve_approval(request_id: str, req: ApprovalActionRequest, db: Session = Depends(get_db)):
+def resolve_approval(
+    request_id: str,
+    req: ApprovalActionRequest,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db)
+):
     approval = db.query(ApprovalRequest).filter(ApprovalRequest.id == request_id).first()
     if not approval:
-        raise HTTPException(status_code=404, detail="Approval request not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval request not found")
 
-    if req.action == "approve" and approval.workflow_run_id:
-        run = workflow_engine.approve_and_resume_run(db, approval.workflow_run_id, request_id)
-        return {"status": "approved", "run": run}
-    else:
-        approval.status = "rejected"
-        approval.reviewer_notes = req.notes
-        db.commit()
-        return {"status": "rejected", "request_id": request_id}
+    enforce_tenant_boundary(approval.business_id, current_user)
+    if approval.status != "pending":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval already resolved")
+
+    if req.action == "approve":
+        if not approval.workflow_run_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Approval is not associated with a workflow run"
+            )
+        try:
+            run = workflow_engine.approve_and_resume_run(
+                db=db,
+                run_id=approval.workflow_run_id,
+                request_id=request_id,
+                business_id=current_user.business_id
+            )
+            return {"status": "approved", "run": run}
+        except (PermissionError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc)
+            ) from exc
+
+    # Rejecting a workflow gate must terminate its run, not strand it in
+    # awaiting_approval. Claim the pending request and run in one transaction.
+    run = None
+    if approval.workflow_run_id:
+        run = db.query(WorkflowRun).filter(
+            WorkflowRun.id == approval.workflow_run_id,
+            WorkflowRun.business_id == current_user.business_id,
+        ).with_for_update().populate_existing().first()
+        if (
+            not run
+            or run.status != "awaiting_approval"
+            or run.current_step_id != (approval.payload or {}).get("step_id")
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Approval checkpoint is no longer pending"
+            )
+
+    now = datetime.utcnow()
+    claimed = db.query(ApprovalRequest).filter(
+        ApprovalRequest.id == request_id,
+        ApprovalRequest.business_id == current_user.business_id,
+        ApprovalRequest.status == "pending",
+    ).update(
+        {"status": "rejected", "reviewer_notes": req.notes, "reviewed_at": now},
+        synchronize_session=False,
+    )
+    if claimed != 1:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval already resolved")
+    if run:
+        run_claimed = db.query(WorkflowRun).filter(
+            WorkflowRun.id == run.id,
+            WorkflowRun.business_id == current_user.business_id,
+            WorkflowRun.status == "awaiting_approval",
+        ).update(
+            {
+                "status": "failed",
+                "error_message": "Founder rejected workflow approval",
+                "completed_at": now,
+                "verified_success": False,
+            },
+            synchronize_session=False,
+        )
+        if run_claimed != 1:
+            db.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Run already resolved")
+        results = dict(run.step_results or {})
+        results[run.current_step_id] = {
+            "status": "rejected", "request_id": request_id, "timestamp": now.isoformat()
+        }
+        db.query(WorkflowRun).filter(WorkflowRun.id == run.id).update(
+            {"step_results": results}, synchronize_session=False
+        )
+    db.commit()
+    return {"status": "rejected", "request_id": request_id}
+
 
 @router.get("/templates")
-def get_workflow_templates():
+def get_workflow_templates(current_user: User = Depends(get_current_user)):
     return [
         {"id": "t1", "name": "Weekly Financial Review & Burn Tracking", "category": "Finance", "description": "Compiles MRR, cash balance, and burn rate, identifying variances."},
         {"id": "t2", "name": "Invoice Overdue Follow-up Sequence", "category": "Finance", "description": "Identifies past-due invoices and drafts reminders with human approval."},
@@ -116,3 +323,88 @@ def get_workflow_templates():
         {"id": "t7", "name": "Pricing Policy Consistency Auditor", "category": "Operations", "description": "Audits quotes, sheets, and contracts for mismatched tier pricing."},
         {"id": "t8", "name": "Executive Council Weekly Agenda Builder", "category": "Executive", "description": "Aggregates key metrics and outstanding hazards for council deliberation."}
     ]
+
+
+class WorkflowEditRequest(WorkflowCreateRequest):
+    expected_version: int = Field(ge=1,le=100)
+    is_active: bool
+
+
+class WorkflowRollbackRequest(BaseModel):
+    expected_version: int = Field(ge=1,le=100)
+    target_version: int = Field(ge=1,le=100)
+
+
+class WebhookEventRequest(BaseModel):
+    event_id: str = Field(min_length=8,max_length=200)
+    payload: Dict[str,Any] = Field(default_factory=dict)
+
+
+@router.get("/{workflow_id}/versions")
+def versions(workflow_id:str,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    parent=db.query(WorkflowDefinition.id).filter_by(business_id=current_user.business_id,id=workflow_id).first()
+    if parent is None:raise HTTPException(404,"Workflow not found")
+    rows=db.query(WorkflowRevision).filter_by(business_id=current_user.business_id,workflow_id=workflow_id).order_by(WorkflowRevision.version.desc()).limit(100).all()
+    return [{"version":r.version,"definition":r.definition,"created_at":r.created_at} for r in rows]
+
+
+@router.put("/{workflow_id}/definition")
+def update_definition(workflow_id:str,req:WorkflowEditRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workflow_generate")
+    try:
+        wf=workflow_versions.edit(db,current_user.business_id,workflow_id,req.expected_version,req.model_dump(exclude={"expected_version"}))
+        return workflow_versions.serialize(wf,req.expected_version+1)
+    except ValueError as exc:
+        db.rollback();raise HTTPException(409,str(exc)) from exc
+
+
+@router.post("/{workflow_id}/rollback")
+def rollback_definition(workflow_id:str,req:WorkflowRollbackRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    try:
+        wf=workflow_versions.edit(db,current_user.business_id,workflow_id,req.expected_version,rollback_version=req.target_version)
+        return workflow_versions.serialize(wf,req.expected_version+1)
+    except ValueError as exc:
+        db.rollback();raise HTTPException(409,str(exc)) from exc
+
+
+@router.post("/{workflow_id}/webhook",status_code=202)
+def accept_webhook(workflow_id:str,req:WebhookEventRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    if not db.info.get("oneboard_api_key") or not current_user.is_active:
+        raise HTTPException(403,"Webhook requires authenticated write-capable API key")
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workflow_execute")
+    try:
+        return workflow_events.webhook(db,current_user.business_id,workflow_id,req.event_id,req.payload)
+    except ValueError as exc:
+        db.rollback();raise HTTPException(409,str(exc)) from exc
+
+
+@router.get("/events")
+def list_events(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    rows=db.query(WorkflowEvent).filter_by(business_id=current_user.business_id).order_by(WorkflowEvent.created_at.desc()).limit(200).all()
+    return [workflow_events.serialize(row) for row in rows]
+
+
+@router.post("/runs/{run_id}/cancel")
+def cancel_run(run_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    try:return workflow_engine.cancel_run(db,current_user.business_id,run_id)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+
+@router.post("/runs/{run_id}/recover")
+def recover_run(run_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workflow_execute")
+    try:return workflow_engine.recover_run(db,current_user.business_id,run_id)
+    except ValueError as exc:
+        db.rollback();raise HTTPException(409,str(exc)) from exc
+
+
+@router.post("/events/{event_id}/retry")
+def retry_event(event_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workflow_execute")
+    try:return workflow_events.retry_dead_letter(db,current_user.business_id,event_id)
+    except ValueError as exc:
+        db.rollback();raise HTTPException(409,str(exc)) from exc

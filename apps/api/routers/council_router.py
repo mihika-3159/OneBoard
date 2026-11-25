@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from apps.api.services.inference_stream import stream_or_wait
+from fastapi import Request, APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 from apps.api.core.database import get_db
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
+from apps.api.models.business import User
 from apps.api.models.agent_council import CouncilMeeting
 from apps.api.services.council_engine import council_engine, COUNCIL_ROLES
-from apps.api.services.seed_data import DEMO_BUSINESS_ID
 
 router = APIRouter(prefix="/api/council", tags=["AI Executive Council"])
 
@@ -25,30 +27,63 @@ def get_council_roles():
     ]
 
 @router.get("/meetings")
-def get_council_meetings(db: Session = Depends(get_db)):
-    return db.query(CouncilMeeting).filter(CouncilMeeting.business_id == DEMO_BUSINESS_ID).order_by(CouncilMeeting.created_at.desc()).all()
+def get_council_meetings(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return db.query(CouncilMeeting).filter(
+        CouncilMeeting.business_id == current_user.business_id
+    ).order_by(CouncilMeeting.created_at.desc()).all()
 
 @router.post("/deliberate")
-async def convene_council_meeting(req: DeliberationRequest, db: Session = Depends(get_db)):
-    meeting = await council_engine.conduct_deliberation(
-        db=db,
-        business_id=DEMO_BUSINESS_ID,
-        title=req.title,
-        meeting_type=req.meeting_type,
-        topic=req.topic,
-        selected_advisers=req.selected_advisers
-    )
-    return meeting
+async def convene_council_meeting(
+    req: DeliberationRequest,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db),
+    request: Request = None,
+):
+    from apps.api.core.config import settings
+    from apps.api.services.tenant_resource_budget import consume_tenant_budget
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "council_deliberate")
+    async def work():
+        meeting = await council_engine.conduct_deliberation(
+            db=db,
+            business_id=current_user.business_id,
+            title=req.title,
+            meeting_type=req.meeting_type,
+            topic=req.topic,
+            selected_advisers=req.selected_advisers
+        )
+        return meeting
+    return await stream_or_wait(request, work)
+
 
 @router.post("/meetings/{meeting_id}/approve")
-def approve_meeting(meeting_id: str, payload: ApprovalRequestPayload, db: Session = Depends(get_db)):
+def approve_meeting(
+    meeting_id: str,
+    payload: ApprovalRequestPayload,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db)
+):
+    meeting = db.query(CouncilMeeting).filter(CouncilMeeting.id == meeting_id).first()
+    if not meeting:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Meeting not found")
+
+    enforce_tenant_boundary(meeting.business_id, current_user)
+
     try:
         decision = council_engine.approve_meeting_decision(
             db=db,
-            business_id=DEMO_BUSINESS_ID,
+            business_id=current_user.business_id,
             meeting_id=meeting_id,
             decision_notes=payload.decision_notes
         )
         return {"status": "success", "decision": decision}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/meetings/reconcile-interrupted")
+def reconcile_interrupted_meetings(current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    return {"reconciled": council_engine.reconcile_interrupted(db, current_user.business_id)}

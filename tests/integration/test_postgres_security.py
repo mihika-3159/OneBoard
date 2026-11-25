@@ -1,0 +1,1962 @@
+"""Real PostgreSQL migration and concurrent auth tests (disposable CI database).
+
+Only runs when ONEBOARD_TEST_POSTGRES_URL is explicitly provided. Never target
+customer databases. CI provisions a fresh service container for this test job.
+"""
+import hashlib
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.orm import sessionmaker
+
+from apps.api.core.auth import check_login_throttle, record_failed_login
+from apps.api.core.config import settings
+from apps.api.core.database import Base
+from apps.api.models.business import LoginThrottleState
+import apps.api.models.goals_tasks
+import apps.api.models.entities
+import apps.api.models.decision_evidence
+import apps.api.models.agent_council
+import apps.api.models.memory
+import apps.api.models.workflow
+import apps.api.models.integrations
+import apps.api.models.operations
+
+URL = os.getenv("ONEBOARD_TEST_POSTGRES_URL")
+if os.getenv("ONEBOARD_REQUIRE_POSTGRES") == "1" and not URL:
+    raise RuntimeError("Required disposable PostgreSQL URL missing")
+pytestmark = pytest.mark.skipif(not URL, reason="Requires dedicated disposable PostgreSQL CI URL")
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def _engine():
+    assert URL and URL.startswith("postgresql+psycopg://"), "CI PostgreSQL URL required"
+    parsed = make_url(URL)
+    assert parsed.host in ("127.0.0.1", "localhost", "::1"), "Never run against remote PostgreSQL"
+    assert parsed.database == "oneboard_ci", "Only the disposable oneboard_ci database is permitted"
+    assert os.getenv("DATABASE_URL") == URL, "The Alembic and test database URLs must match"
+    return create_engine(URL, pool_pre_ping=True)
+
+
+def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
+    # Validate the target BEFORE spawning any migration process.
+    validation_engine = _engine()
+    validation_engine.dispose()
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+        ) for _ in range(2)
+    ]
+    for proc in processes:
+        try:
+            stdout, stderr = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            pytest.fail("PostgreSQL concurrent migration timed out")
+        assert proc.returncode == 0, (
+            f"Concurrent migration exited {proc.returncode}: {stdout[-1500:]} {stderr[-2000:]}"
+        )
+    engine = _engine()
+    try:
+        with engine.connect() as conn:
+            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            assert revision == "024_batch_m_storage"
+            inspector = inspect(conn)
+            tables = set(inspector.get_table_names())
+            expected = set(Base.metadata.tables)
+            assert not expected - tables, f"Missing schema tables: {expected - tables}"
+            for table_name, model in Base.metadata.tables.items():
+                actual = {c["name"] for c in inspector.get_columns(table_name)}
+                needed = {c.name for c in model.columns}
+                assert needed <= actual, f"Missing columns for {table_name}: {needed - actual}"
+    finally:
+        engine.dispose()
+
+
+def test_02_postgres_shared_throttle_serializes_simultaneous_failed_logins():
+    assert URL
+    engine = _engine()
+    key = "account:concurrency-fixture@example.invalid"
+    hashed_key = hashlib.sha256(key.encode()).hexdigest()
+    limit = settings.LOGIN_MAX_ATTEMPTS
+    workers = max(limit + 4, 10)
+    make_session = sessionmaker(bind=engine, autoflush=False)
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM login_throttle_states WHERE identifier_hash = :key"),
+            {"key": hashed_key}
+        )
+    gate = Barrier(workers)
+
+    def attempt(_):
+        session = make_session()
+        try:
+            gate.wait(timeout=20)
+            try:
+                check_login_throttle(key, session)
+                record_failed_login(key, session)
+                return "accepted"
+            except HTTPException as exc:
+                session.rollback()
+                assert exc.status_code == 429
+                assert int(exc.headers["Retry-After"]) >= 1
+                return "throttled"
+        finally:
+            session.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            outcomes = list(pool.map(attempt, range(workers)))
+        assert outcomes.count("accepted") == limit, outcomes
+        assert outcomes.count("throttled") == workers - limit, outcomes
+        with engine.connect() as conn:
+            state = conn.execute(
+                text("SELECT attempt_count FROM login_throttle_states WHERE identifier_hash = :key"),
+                {"key": hashed_key}
+            ).scalar_one()
+        assert state == limit
+    finally:
+        engine.dispose()
+
+
+def test_03_production_schema_guard_accepts_fully_migrated_postgres(monkeypatch):
+    # The process uses the same disposable DATABASE_URL as the CI service.
+    from apps.api.core.database import init_db
+    monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+    init_db()
+
+
+def test_04_postgres_schema_constraints_and_indexes_match_models():
+    """A stamped schema with missing unique constraints or indexes is not safe."""
+    engine = _engine()
+    try:
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            for table_name, model in Base.metadata.tables.items():
+                actual_indexes = inspector.get_indexes(table_name)
+                indexed_columns = {
+                    (tuple(index["column_names"]), bool(index.get("unique")))
+                    for index in actual_indexes
+                }
+                actual_unique = {
+                    tuple(sorted(item["column_names"]))
+                    for item in inspector.get_unique_constraints(table_name)
+                }
+                actual_unique.update(
+                    tuple(sorted(index["column_names"]))
+                    for index in actual_indexes
+                    if index.get("unique")
+                )
+                for index in model.indexes:
+                    expected = (tuple(column.name for column in index.columns), bool(index.unique))
+                    assert expected in indexed_columns, (
+                        f"Missing PostgreSQL index on {table_name}: {expected}; "
+                        f"model name {index.name}"
+                    )
+                for constraint in model.constraints:
+                    from sqlalchemy import UniqueConstraint
+                    if isinstance(constraint, UniqueConstraint):
+                        cols = tuple(sorted(column.name for column in constraint.columns))
+                        assert cols in actual_unique, (
+                            f"Missing PostgreSQL unique constraint on {table_name}: {cols}"
+                        )
+                reflected_fks = inspector.get_foreign_keys(table_name)
+                for constraint in model.foreign_key_constraints:
+                    local = tuple(col.parent.name for col in constraint.elements)
+                    target = constraint.elements[0].column.table.name
+                    remote = tuple(col.column.name for col in constraint.elements)
+                    ondelete = (constraint.ondelete or "").upper()
+                    assert any(
+                        tuple(fk.get("constrained_columns") or ()) == local
+                        and fk.get("referred_table") == target
+                        and tuple(fk.get("referred_columns") or ()) == remote
+                        and ((fk.get("options") or {}).get("ondelete") or "").upper() == ondelete
+                        for fk in reflected_fks
+                    ), f"Missing PostgreSQL FK: {table_name}{local}->{target}{remote} ON DELETE {ondelete}"
+    finally:
+        engine.dispose()
+
+
+def test_05_repeated_upgrade_preserves_auth_indexes_and_schema():
+    """Repeated deploys must not remove token lookups or other security indexes."""
+    engine = _engine()
+    try:
+        with engine.connect() as conn:
+            before = {
+                (tuple(item["column_names"]), bool(item.get("unique")))
+                for item in inspect(conn).get_indexes("user_sessions")
+            }
+            assert (("token_hash",), False) in before
+        env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.connect() as conn:
+            after = {
+                (tuple(item["column_names"]), bool(item.get("unique")))
+                for item in inspect(conn).get_indexes("user_sessions")
+            }
+            assert before == after
+    finally:
+        engine.dispose()
+
+
+def test_06_production_guard_rejects_stamped_schema_missing_session_index(monkeypatch):
+    """A matching Alembic revision must not mask a missing session lookup index."""
+    from sqlalchemy.engine.reflection import Inspector
+    from apps.api.core.database import init_db
+
+    _engine().dispose()  # Enforce disposable PostgreSQL target precondition.
+    original = Inspector.get_indexes
+
+    def hide_session_index(self, table_name, *args, **kwargs):
+        indexes = original(self, table_name, *args, **kwargs)
+        if table_name == "user_sessions":
+            return [
+                index for index in indexes
+                if index.get("column_names") != ["token_hash"]
+            ]
+        return indexes
+
+    monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+    with monkeypatch.context() as patch:
+        patch.setattr(Inspector, "get_indexes", hide_session_index)
+        with pytest.raises(RuntimeError, match="missing required indexes/unique constraints"):
+            init_db()
+    # Once the index is visible again, the same real migrated database is valid.
+    init_db()
+
+
+def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
+    """Rollback migration 005 and 004, then reapply without losing tenant auth data.
+
+    Runs only against the validated disposable localhost oneboard_ci database.
+    Rollback must remove only the constraints/indexes registered by migrations 005/004, never drop or
+    rewrite businesses, users, or revocable sessions.
+    """
+    from uuid import uuid4
+
+    engine = _engine()
+    tenant_id, user_id, session_id = (str(uuid4()) for _ in range(3))
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+
+    def alembic(*args):
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"Alembic {' '.join(args)} failed: {result.stdout[-1200:]} {result.stderr[-2000:]}"
+        )
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO businesses (id, name) VALUES (:id, 'Synthetic recovery tenant')"),
+                {"id": tenant_id},
+            )
+            conn.execute(
+                text("""INSERT INTO users (id, email, name, hashed_password, business_id, role, is_active)
+                        VALUES (:id, :email, 'Recovery founder', 'synthetic-only',
+                                :business, 'founder', true)"""),
+                {"id": user_id, "email": f"{user_id}@example.invalid", "business": tenant_id},
+            )
+            conn.execute(
+                text("""INSERT INTO user_sessions
+                        (id, user_id, business_id, expires_at, is_revoked)
+                        VALUES (:id, :user, :business, CURRENT_TIMESTAMP + INTERVAL '1 day', false)"""),
+                {"id": session_id, "user": user_id, "business": tenant_id},
+            )
+
+        alembic("downgrade", "003_app_schema")
+        with engine.connect() as conn:
+            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            assert revision == "003_app_schema"
+            assert conn.execute(text("SELECT count(*) FROM user_sessions WHERE id = :id"),
+                                {"id": session_id}).scalar_one() == 1
+        alembic("upgrade", "head")
+        with engine.connect() as conn:
+            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            assert revision == "024_batch_m_storage"
+            assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
+                                {"id": tenant_id}).scalar_one() == 1
+            assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
+                                {"id": user_id}).scalar_one() == 1
+            assert conn.execute(text("SELECT count(*) FROM user_sessions WHERE id = :id"),
+                                {"id": session_id}).scalar_one() == 1
+            indexes = inspect(conn).get_indexes("user_sessions")
+            assert any(idx["column_names"] == ["token_hash"] for idx in indexes)
+    finally:
+        # Synthetic cleanup, without touching other tenant fixtures.
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM user_sessions WHERE id = :id"), {"id": session_id})
+            conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id = :id"), {"id": tenant_id})
+        engine.dispose()
+
+
+def test_08_production_guard_rejects_missing_auth_foreign_key(monkeypatch):
+    """Even a stamped head with correct indexes cannot omit session ownership FKs."""
+    from sqlalchemy.engine.reflection import Inspector
+    from apps.api.core.database import init_db
+
+    _engine().dispose()
+    original = Inspector.get_foreign_keys
+
+    def hide_session_owner_fk(self, table_name, *args, **kwargs):
+        fks = original(self, table_name, *args, **kwargs)
+        if table_name == "user_sessions":
+            return [
+                fk for fk in fks
+                if fk.get("constrained_columns") != ["user_id"]
+            ]
+        return fks
+
+    monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+    with monkeypatch.context() as patch:
+        patch.setattr(Inspector, "get_foreign_keys", hide_session_owner_fk)
+        with pytest.raises(RuntimeError, match="missing required foreign-key constraints"):
+            init_db()
+    init_db()
+
+
+def test_09_postgres_rejects_orphan_auth_session():
+    """The physical database must reject orphan sessions, not merely the API."""
+    from uuid import uuid4
+    from sqlalchemy.exc import IntegrityError
+
+    engine = _engine()
+    try:
+        with pytest.raises(IntegrityError):
+            with engine.begin() as conn:
+                conn.execute(
+                    text("""INSERT INTO user_sessions
+                            (id, user_id, business_id, expires_at, is_revoked)
+                            VALUES (:id, :user, :business,
+                                    CURRENT_TIMESTAMP + INTERVAL '1 day', false)"""),
+                    {"id": str(uuid4()), "user": str(uuid4()),
+                     "business": str(uuid4())},
+                )
+    finally:
+        engine.dispose()
+
+
+def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
+    """Dirty legacy rows cannot be silently deleted or accepted during FK repair.
+
+    Roll back migrations 006 and 005 on disposable CI PostgreSQL, introduce an
+    orphaned session, require 005 to fail atomically, then remove synthetic
+    corruption and prove that a clean recovery upgrade succeeds.
+    """
+    from uuid import uuid4
+
+    engine = _engine()
+    session_id = str(uuid4())
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+
+    def run_migration(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    try:
+        result = run_migration("downgrade", "004_schema_indexes")
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "004_schema_indexes"
+            conn.execute(
+                text("""INSERT INTO user_sessions
+                        (id, user_id, business_id, expires_at, is_revoked)
+                        VALUES (:id, :missing, :business,
+                                CURRENT_TIMESTAMP + INTERVAL '1 day', false)"""),
+                {"id": session_id, "missing": str(uuid4()), "business": str(uuid4())},
+            )
+
+        result = run_migration("upgrade", "head")
+        assert result.returncode != 0, "An orphaned session must block FK migration"
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "004_schema_indexes"
+            assert conn.execute(
+                text("SELECT count(*) FROM user_sessions WHERE id = :id"),
+                {"id": session_id},
+            ).scalar_one() == 1, "Migration must not discard dirty legacy tenant records"
+            assert "_oneboard_005_created_fks" not in inspect(conn).get_table_names()
+    finally:
+        # Always remove *only* the synthetic orphan, and restore CI schema.
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM user_sessions WHERE id = :id"), {"id": session_id}
+            )
+        result = run_migration("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+        engine.dispose()
+
+    with _engine().connect() as conn:
+        assert conn.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == "024_batch_m_storage"
+
+
+def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypatch):
+    """Live auth and role checks must work against the actual PostgreSQL engine.
+
+    Synthetic two-tenant test records live only in the disposable oneboard_ci
+    service. Revoking membership denies existing credentials, and a second
+    membership never grants access to a non-active workspace.
+    """
+    from datetime import datetime, timedelta
+    from uuid import uuid4
+
+    from fastapi.security import HTTPAuthorizationCredentials
+    from starlette.requests import Request
+
+    from apps.api.core import auth
+    from apps.api.models.business import (
+        Business, BusinessMembership, User, UserSession,
+    )
+
+    engine = _engine()
+    db = sessionmaker(bind=engine, autoflush=False)()
+    suffix = uuid4().hex
+    first_id, second_id, user_id, jti = (str(uuid4()) for _ in range(4))
+
+    def request(api_key=None):
+        headers = [(b"x-api-key", api_key.encode())] if api_key else []
+        return Request({
+            "type": "http", "method": "GET", "path": "/api/auth/me",
+            "headers": headers, "scheme": "https", "query_string": b"",
+            "server": ("oneboard.test", 443),
+        })
+
+    try:
+        db.add_all([
+            Business(id=first_id, name=f"Postgres primary {suffix}"),
+            Business(id=second_id, name=f"Postgres secondary {suffix}"),
+        ])
+        db.flush()
+        raw_api_key = auth.generate_api_key()
+        user = User(
+            id=user_id, email=f"postgres-role-{suffix}@example.invalid",
+            name="Synthetic PostgreSQL founder",
+            hashed_password="no-real-login",
+            role="founder",
+            api_key=auth.hash_api_key(raw_api_key),
+            business_id=first_id,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()
+        primary = BusinessMembership(
+            user_id=user_id, business_id=first_id, role="founder",
+        )
+        secondary = BusinessMembership(
+            user_id=user_id, business_id=second_id, role="member",
+        )
+        db.add_all([
+            primary, secondary,
+            UserSession(
+                id=jti, user_id=user_id, business_id=first_id,
+                expires_at=datetime.utcnow() + timedelta(hours=1),
+                is_revoked=False,
+            ),
+        ])
+        db.commit()
+
+        token = auth.create_access_token(user_id, first_id, role="founder", jti=jti)
+        bearer = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+        assert auth.get_current_user(request(), bearer, db).id == user_id
+        assert auth.get_current_user(request(raw_api_key), None, db).id == user_id
+        assert auth.require_founder_role(current_user=user, db=db).id == user_id
+        with pytest.raises(HTTPException) as outside:
+            auth.enforce_tenant_boundary(second_id, user, db)
+        assert outside.value.status_code == 403
+
+        primary.role = "member"
+        db.commit()
+        assert auth.get_current_user(request(), bearer, db).id == user_id
+        with pytest.raises(HTTPException) as demoted:
+            auth.require_founder_role(current_user=user, db=db)
+        assert demoted.value.status_code == 403
+
+        db.delete(primary)
+        db.commit()
+        for req, credentials in (
+            (request(), bearer), (request(raw_api_key), None),
+        ):
+            with pytest.raises(HTTPException) as revoked:
+                auth.get_current_user(req, credentials, db)
+            assert revoked.value.status_code == 401
+    finally:
+        db.rollback()
+        # Remove only these synthetic records; never modify other fixtures.
+        db.query(UserSession).filter(UserSession.id == jti).delete()
+        db.query(BusinessMembership).filter(
+            BusinessMembership.user_id == user_id
+        ).delete()
+        db.query(User).filter(User.id == user_id).delete()
+        db.query(Business).filter(
+            Business.id.in_([first_id, second_id])
+        ).delete()
+        db.commit()
+        db.close()
+        engine.dispose()
+
+
+def test_12_postgres_shared_nat_registration_quota_across_workers(monkeypatch):
+    """Shared-source signup allowance is independent of the login guess limit.
+
+    A 10-signup budget (lowered from default 30 to keep CI lightweight)
+    is safely serialized across 14 simultaneous PostgreSQL workers. The
+    unrelated login account key and a different source stay usable.
+    """
+    monkeypatch.setattr(settings, "REGISTRATION_SOURCE_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(settings, "LOGIN_MAX_ATTEMPTS", 5)
+    engine = _engine()
+    signup_source = "registration-source:198.51.100.212"
+    login_source = "source-account:198.51.100.212:person@example.invalid"
+    keys = [hashlib.sha256(key.encode()).hexdigest() for key in
+            [signup_source, login_source]]
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM login_throttle_states WHERE identifier_hash IN (:a, :b)"),
+            {"a": keys[0], "b": keys[1]},
+        )
+
+    workers = 14
+    barrier = Barrier(workers)
+    make_session = sessionmaker(bind=engine, autoflush=False)
+
+    def attempt(_):
+        session = make_session()
+        try:
+            barrier.wait(timeout=20)
+            try:
+                check_login_throttle(signup_source, session)
+                record_failed_login(signup_source, session)
+                return "admitted"
+            except HTTPException as exc:
+                session.rollback()
+                assert exc.status_code == 429
+                return "throttled"
+        finally:
+            session.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(attempt, range(workers)))
+        assert results.count("admitted") == 10, results
+        assert results.count("throttled") == 4, results
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT attempt_count FROM login_throttle_states WHERE identifier_hash = :key"),
+                {"key": keys[0]},
+            ).scalar_one() == 10
+        db = make_session()
+        try:
+            # Source-wide registrations must not exhaust the login key for an
+            # unrelated account sharing the NAT.
+            check_login_throttle(login_source, db)
+            db.rollback()
+            check_login_throttle("registration-source:203.0.113.212", db)
+            db.rollback()
+        finally:
+            db.close()
+    finally:
+        with engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM login_throttle_states WHERE identifier_hash IN (:a, :b)"),
+                {"a": keys[0], "b": keys[1]},
+            )
+        engine.dispose()
+
+
+def test_13_postgres_shared_login_source_quota_blocks_email_rotation(monkeypatch):
+    """Distinct account names cannot bypass one source's shared Argon2 budget."""
+    monkeypatch.setattr(settings, "LOGIN_SOURCE_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(settings, "LOGIN_MAX_ATTEMPTS", 5)
+    engine = _engine()
+    source = "login-source:198.51.100.170"
+    key = hashlib.sha256(source.encode()).hexdigest()
+    with engine.begin() as conn:
+        conn.execute(text(
+            "DELETE FROM login_throttle_states WHERE identifier_hash=:key"
+        ), {"key": key})
+    barrier = Barrier(14)
+    make_session = sessionmaker(bind=engine, autoflush=False)
+
+    def attempt(i):
+        db = make_session()
+        try:
+            barrier.wait(timeout=20)
+            try:
+                # The source-wide budget is shared regardless of the
+                # different account email that follows in the login route.
+                check_login_throttle(source, db)
+                record_failed_login(source, db)
+                return "admitted"
+            except HTTPException as exc:
+                db.rollback()
+                assert exc.status_code == 429
+                return "limited"
+        finally:
+            db.close()
+
+    try:
+        with ThreadPoolExecutor(max_workers=14) as pool:
+            results = list(pool.map(attempt, range(14)))
+        assert results.count("admitted") == 10, results
+        assert results.count("limited") == 4, results
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT attempt_count FROM login_throttle_states WHERE identifier_hash=:key"),
+                {"key": key},
+            ).scalar_one() == 10
+        # A distinct source remains independently available.
+        db = make_session()
+        try:
+            check_login_throttle("login-source:203.0.113.170", db)
+            db.rollback()
+        finally:
+            db.close()
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "DELETE FROM login_throttle_states WHERE identifier_hash=:key"
+            ), {"key": key})
+        engine.dispose()
+
+
+def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch):
+    """Canonical legacy keys are migrated, not disclosed or discarded.
+
+    Downgrading while a hashed active key exists is deliberately refused:
+    plaintext secrets cannot be reconstructed for older application versions.
+    """
+    from uuid import uuid4
+    from apps.api.core import auth
+    from apps.api.models.business import BusinessMembership, User
+    from starlette.requests import Request
+
+    engine = _engine()
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+    business_id, user_id = str(uuid4()), str(uuid4())
+    old_raw = auth.generate_api_key()
+    old_digest = auth.hash_api_key(old_raw)
+
+    def migrate(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    try:
+        # A disposable, isolated CI schema without active hashed keys can
+        # safely return to 005 for a representative legacy upgrade.
+        result = migrate("downgrade", "005_auth_foreign_keys")
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.begin() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "005_auth_foreign_keys"
+            conn.execute(
+                text("INSERT INTO businesses (id,name) VALUES (:id,'Synthetic API migration')"),
+                {"id": business_id}
+            )
+            conn.execute(text(
+                """INSERT INTO users (id,email,name,hashed_password,business_id,
+                           role,is_active,api_key)
+                   VALUES (:id,:email,'Synthetic','none',:business,'founder',
+                           true,:api_key)"""
+            ), {
+                "id": user_id,
+                "email": f"key-migration-{user_id}@example.invalid",
+                "business": business_id,
+                "api_key": old_raw,
+            })
+            conn.execute(
+                text("UPDATE businesses SET owner_id=:user WHERE id=:id"),
+                {"user": user_id, "id": business_id},
+            )
+        result = migrate("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+
+        with engine.connect() as conn:
+            stored = conn.execute(
+                text("SELECT api_key FROM users WHERE id=:id"), {"id": user_id}
+            ).scalar_one()
+            assert stored == old_digest
+            assert stored != old_raw
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "024_batch_m_storage"
+
+        monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+        db = sessionmaker(bind=engine)()
+        try:
+            request = Request({
+                "type": "http", "method": "GET", "path": "/api/auth/me",
+                "headers": [(b"x-api-key", old_raw.encode())],
+                "scheme": "https", "server": ("api.example.test", 443),
+                "query_string": b"",
+            })
+            assert auth.get_current_user(request, None, db).id == user_id
+        finally:
+            db.close()
+
+        reversible = migrate("downgrade", "006_api_key_hashing")
+        assert reversible.returncode == 0, reversible.stderr[-2000:]
+        blocked = migrate("downgrade", "-1")
+        assert blocked.returncode != 0, "Credential downgrade must fail closed"
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "006_api_key_hashing"
+            assert conn.execute(
+                text("SELECT api_key FROM users WHERE id=:id"), {"id": user_id}
+            ).scalar_one() == old_digest
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": business_id})
+        result = migrate("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+        engine.dispose()
+
+
+def test_15_postgres_rejects_weak_legacy_api_key_without_data_loss():
+    """Weak demo API secrets block upgrade instead of gaining production trust."""
+    from uuid import uuid4
+
+    engine = _engine()
+    env = dict(os.environ, DATABASE_URL=URL, PYTHONPATH=str(ROOT))
+    business_id, user_id = str(uuid4()), str(uuid4())
+    weak_key = "obk_northstar_demo_local_key"
+
+    def migrate(*args):
+        return subprocess.run(
+            [sys.executable, "-m", "alembic", *args],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    try:
+        result = migrate("downgrade", "005_auth_foreign_keys")
+        assert result.returncode == 0, result.stderr[-2000:]
+        with engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO businesses (id,name) VALUES (:id,'Weak synthetic key tenant')"),
+                {"id": business_id},
+            )
+            conn.execute(text(
+                """INSERT INTO users (id,email,name,hashed_password,business_id,
+                           role,is_active,api_key)
+                   VALUES (:id,:email,'Synthetic','none',:business,'founder',
+                           true,:api_key)"""
+            ), {
+                "id": user_id,
+                "email": f"weak-key-{user_id}@example.invalid",
+                "business": business_id,
+                "api_key": weak_key,
+            })
+        result = migrate("upgrade", "head")
+        assert result.returncode != 0
+        assert "Noncanonical legacy plaintext API key" in result.stderr
+        with engine.connect() as conn:
+            assert conn.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "005_auth_foreign_keys"
+            assert conn.execute(
+                text("SELECT api_key FROM users WHERE id=:id"),
+                {"id": user_id},
+            ).scalar_one() == weak_key
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": business_id})
+        result = migrate("upgrade", "head")
+        assert result.returncode == 0, result.stderr[-2000:]
+        engine.dispose()
+
+
+def test_16_postgres_production_guard_rejects_stamped_plaintext_api_key(monkeypatch):
+    """Revision 006 stamp is insufficient when an admin reintroduces raw keys."""
+    from uuid import uuid4
+    from apps.api.core.database import init_db
+
+    engine = _engine()
+    business_id, user_id = str(uuid4()), str(uuid4())
+    try:
+        with engine.begin() as conn:
+            assert conn.execute(text(
+                "SELECT version_num FROM alembic_version"
+            )).scalar_one() == "024_batch_m_storage"
+            conn.execute(
+                text("INSERT INTO businesses (id,name) VALUES (:id,'Tampered synthetic tenant')"),
+                {"id": business_id},
+            )
+            conn.execute(text(
+                """INSERT INTO users (id,email,name,hashed_password,business_id,
+                           role,is_active,api_key)
+                   VALUES (:id,:email,'Synthetic','none',:business,'founder',
+                           true,:raw_key)"""
+            ), {
+                "id": user_id,
+                "email": f"raw-key-stamp-{user_id}@example.invalid",
+                "business": business_id,
+                "raw_key": "obk_" + "c" * 56,
+            })
+        monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
+        with pytest.raises(RuntimeError, match="non-hashed API credentials"):
+            init_db()
+        with engine.connect() as conn:
+            assert conn.execute(text(
+                "SELECT api_key FROM users WHERE id=:id"
+            ), {"id": user_id}).scalar_one() == "obk_" + "c" * 56
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
+            conn.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": business_id})
+        engine.dispose()
+    # Once the synthetic corruption is removed, startup is allowed.
+    init_db()
+
+
+def test_17_postgres_concurrent_idempotent_workflow_execution():
+    """Two worker sessions with the same tenant key persist one workflow run.
+
+    The durable unique constraint and pg_advisory_xact_lock prevent duplicate
+    action execution and approval creation under concurrent incoming requests.
+    All rows and keys are synthetic and restricted to disposable oneboard_ci.
+    """
+    from uuid import uuid4
+    from apps.api.models.workflow import (
+        WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog,
+    )
+    from apps.api.services.workflow_engine import workflow_engine
+
+    engine = _engine()
+    biz_id, workflow_id = str(uuid4()), str(uuid4())
+    key = "parallel_idempotent_001"
+    factory = sessionmaker(bind=engine, autoflush=False)
+    try:
+        with factory() as db:
+            db.execute(text(
+                "INSERT INTO businesses (id,name) VALUES (:id,'Concurrent workflow tenant')"
+            ), {"id": biz_id})
+            db.add(WorkflowDefinition(
+                id=workflow_id, business_id=biz_id, name="CI idempotency",
+                nodes=[{"id": "start", "type": "trigger", "data": {}}],
+                edges=[], is_valid=True,
+            ))
+            db.commit()
+
+        barrier = Barrier(2)
+
+        def run_workflow(_):
+            db = factory()
+            try:
+                barrier.wait(timeout=20)
+                result = workflow_engine.execute_workflow(
+                    db, biz_id, workflow_id, idempotency_key=key
+                )
+                return result.id
+            finally:
+                db.close()
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            run_ids = list(workers.map(run_workflow, range(2)))
+        assert run_ids[0] == run_ids[1], run_ids
+        with factory() as db:
+            runs = db.query(WorkflowRun).filter(
+                WorkflowRun.business_id == biz_id
+            ).all()
+            assert len(runs) == 1
+            assert runs[0].status == "completed"
+            assert runs[0].idempotency_key == key
+            assert len(runs[0].step_results) == 1
+            assert db.query(AuditLog).filter(
+                AuditLog.business_id == biz_id,
+                AuditLog.action == "execute_workflow"
+            ).count() == 1
+            assert db.query(ApprovalRequest).filter(
+                ApprovalRequest.business_id == biz_id
+            ).count() == 0
+    finally:
+        with factory() as db:
+            db.query(AuditLog).filter(AuditLog.business_id == biz_id).delete()
+            db.query(ApprovalRequest).filter(
+                ApprovalRequest.business_id == biz_id
+            ).delete()
+            db.query(WorkflowRun).filter(WorkflowRun.business_id == biz_id).delete()
+            db.query(WorkflowDefinition).filter(
+                WorkflowDefinition.business_id == biz_id
+            ).delete()
+            db.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": biz_id})
+            db.commit()
+        engine.dispose()
+
+
+def test_18_postgres_concurrent_approval_claim_prevents_duplicate_resume():
+    """Only one PostgreSQL worker may resume a high-risk approval checkpoint."""
+    from uuid import uuid4
+    from apps.api.models.workflow import (
+        WorkflowDefinition, WorkflowRun, ApprovalRequest, AuditLog,
+    )
+    from apps.api.services.workflow_engine import workflow_engine
+
+    engine = _engine()
+    biz_id, workflow_id = str(uuid4()), str(uuid4())
+    factory = sessionmaker(bind=engine, autoflush=False)
+    try:
+        with factory() as db:
+            db.execute(text(
+                "INSERT INTO businesses (id,name) VALUES (:id,'Approval concurrency tenant')"
+            ), {"id": biz_id})
+            wf = WorkflowDefinition(
+                id=workflow_id, business_id=biz_id, name="CI guarded workflow",
+                nodes=[
+                    {"id": "before", "type": "trigger", "data": {}},
+                    {"id": "gate", "type": "approval", "data": {}},
+                    {"id": "after", "type": "trigger", "data": {}},
+                ],
+                edges=[
+                    {"source": "before", "target": "gate"},
+                    {"source": "gate", "target": "after"},
+                ],
+                is_valid=True,
+            )
+            db.add(wf)
+            db.commit()
+            run = workflow_engine.execute_workflow(
+                db, biz_id, workflow_id, idempotency_key="concurrent_approve_001"
+            )
+            assert run.status == "awaiting_approval"
+            run_id = run.id
+            request_id = db.query(ApprovalRequest).filter(
+                ApprovalRequest.workflow_run_id == run_id
+            ).one().id
+
+        barrier = Barrier(2)
+
+        def attempt(_):
+            db = factory()
+            try:
+                barrier.wait(timeout=20)
+                try:
+                    result = workflow_engine.approve_and_resume_run(
+                        db, run_id, request_id, business_id=biz_id
+                    )
+                    return result.status
+                except ValueError:
+                    db.rollback()
+                    return "duplicate_rejected"
+            finally:
+                db.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(attempt, range(2)))
+        assert statuses.count("completed") == 1, statuses
+        assert statuses.count("duplicate_rejected") == 1, statuses
+        with factory() as db:
+            run = db.query(WorkflowRun).filter(WorkflowRun.id == run_id).one()
+            assert run.status == "completed"
+            assert run.step_results["after"]["status"] == "success"
+            assert db.query(AuditLog).filter(
+                AuditLog.business_id == biz_id,
+                AuditLog.action == "resume_workflow",
+            ).count() == 1
+            assert db.query(ApprovalRequest).filter(
+                ApprovalRequest.id == request_id
+            ).one().status == "approved"
+    finally:
+        with factory() as db:
+            db.query(AuditLog).filter(AuditLog.business_id == biz_id).delete()
+            db.query(ApprovalRequest).filter(
+                ApprovalRequest.business_id == biz_id
+            ).delete()
+            db.query(WorkflowRun).filter(WorkflowRun.business_id == biz_id).delete()
+            db.query(WorkflowDefinition).filter(
+                WorkflowDefinition.business_id == biz_id
+            ).delete()
+            db.execute(text("DELETE FROM businesses WHERE id=:id"), {"id": biz_id})
+            db.commit()
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_19_postgres_indexed_memory_finds_old_relevant_chunk(monkeypatch):
+    """GIN full-text retrieval must reach old data beyond recent 1,000 chunks."""
+    from uuid import uuid4
+    from unittest.mock import AsyncMock
+    from apps.api.models.memory import MemoryDocument, MemoryChunk
+    from apps.api.services.memory_engine import memory_engine
+    import apps.api.services.memory_engine as memory_module
+
+    engine = _engine()
+    tenant = str(uuid4())
+    factory = sessionmaker(bind=engine, autoflush=False)
+    try:
+        with factory() as db:
+            doc = MemoryDocument(
+                business_id=tenant, title="Old synthetic archive",
+                content_hash="d" * 64, file_type="txt",
+            )
+            db.add(doc)
+            db.flush()
+            doc_id = doc.id
+            db.add(MemoryChunk(
+                business_id=tenant, document_id=doc_id,
+                chunk_index=0, content="uniquehistoricalneedle synthetic legacy key",
+            ))
+            db.commit()
+        # Later arrivals are intentionally newer than the matching result.
+        with factory() as db:
+            db.add_all([
+                MemoryChunk(
+                    business_id=tenant, document_id=doc_id,
+                    chunk_index=i + 1, content=f"Unrelated routine note {i}",
+                )
+                for i in range(1010)
+            ])
+            db.commit()
+            monkeypatch.setattr(
+                memory_module.ollama_gateway, "generate_embedding",
+                AsyncMock(return_value=[0.1, 0.2]),
+            )
+            rows = await memory_engine.search_semantic_memory(
+                db, tenant, "uniquehistoricalneedle", top_k=5
+            )
+            assert rows and "uniquehistoricalneedle" in rows[0]["content"]
+            assert rows[0]["search_strategy"] == "postgresql_indexed_fulltext"
+            assert rows[0]["candidate_limit_applied"] is False
+            index_names = {x["name"] for x in inspect(engine).get_indexes("memory_chunks")}
+            assert "ix_memory_chunks_fts_simple" in index_names
+    finally:
+        with factory() as db:
+            db.query(MemoryChunk).filter(MemoryChunk.business_id == tenant).delete()
+            db.query(MemoryDocument).filter(MemoryDocument.business_id == tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_20_postgres_concurrent_customer_import_is_idempotent():
+    """Concurrent workers share a durable key and cannot duplicate rows."""
+    from uuid import uuid4
+    from apps.api.models.entities import Customer
+    from apps.api.models.operations import LocalCustomerImport
+    from apps.api.services.customer_csv_import import import_customer_csv
+
+    engine = _engine()
+    factory = sessionmaker(bind=engine, autoflush=False)
+    tenant = str(uuid4())
+    text_data = "name,mrr,status\nSynthetic A,12.25,active\nSynthetic B,10,churned\n"
+    barrier = Barrier(2)
+
+    def apply(_):
+        with factory() as db:
+            barrier.wait(timeout=20)
+            return import_customer_csv(
+                db, tenant, text_data, "concurrent_import_0001",
+                source_name="Synthetic CSV", dry_run=False,
+            )["status"]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            statuses = list(pool.map(apply, range(2)))
+        assert sorted(statuses) == ["already_imported", "imported"]
+        with factory() as db:
+            assert db.query(Customer).filter_by(business_id=tenant).count() == 2
+            assert db.query(LocalCustomerImport).filter_by(business_id=tenant).count() == 1
+    finally:
+        with factory() as db:
+            db.query(LocalCustomerImport).filter_by(business_id=tenant).delete()
+            db.query(Customer).filter_by(business_id=tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_21_concurrent_tenant_resource_budget_is_cross_worker_and_isolated(monkeypatch):
+    """12 overlapping workers: 4 accepted, 8 HTTP 429; other tenant unaffected."""
+    from uuid import uuid4
+    from apps.api.services import tenant_resource_budget as budgets
+    from apps.api.models.operations import TenantResourceWindow
+
+    engine = _engine()
+    factory = sessionmaker(bind=engine, autoflush=False)
+    tenant_a, tenant_b = str(uuid4()), str(uuid4())
+    policy = "ai_command"
+    monkeypatch.setitem(budgets.POLICIES, policy, (4, 60))
+    barrier = Barrier(12)
+
+    def attempt(_):
+        with factory() as db:
+            barrier.wait(timeout=30)
+            try:
+                budgets.consume_tenant_budget(db, tenant_a, policy, now=2000000)
+                return "accepted"
+            except HTTPException as exc:
+                assert exc.status_code == 429
+                assert int(exc.headers["Retry-After"]) > 0
+                return "limited"
+
+    try:
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            answers = list(pool.map(attempt, range(12)))
+        assert answers.count("accepted") == 4
+        assert answers.count("limited") == 8
+        with factory() as db:
+            one = db.query(TenantResourceWindow).filter(
+                TenantResourceWindow.business_id == tenant_a,
+                TenantResourceWindow.resource == policy,
+            ).one()
+            assert one.attempt_count == 4
+            other = budgets.consume_tenant_budget(db, tenant_b, policy, now=2000000)
+            assert other["remaining"] == 3
+    finally:
+        with factory() as db:
+            db.query(TenantResourceWindow).filter(
+                TenantResourceWindow.business_id.in_([tenant_a, tenant_b])
+            ).delete(synchronize_session=False)
+            db.commit()
+        engine.dispose()
+
+
+def test_22_cluster_inference_slots_reject_third_and_release_on_error():
+    from apps.api.services.cluster_capacity import inference_slot
+    engine = _engine()
+    try:
+        with inference_slot(engine) as first, inference_slot(engine) as second:
+            assert first and second
+            with inference_slot(engine) as third:
+                assert not third
+        with pytest.raises(RuntimeError):
+            with inference_slot(engine) as acquired:
+                assert acquired
+                raise RuntimeError("synthetic failure")
+        with inference_slot(engine) as first, inference_slot(engine) as second:
+            assert first and second
+    finally:
+        engine.dispose()
+
+
+def test_23_postgres_lease_claim_is_exclusive_and_recovers():
+    from uuid import uuid4
+    from apps.api.services.durable_jobs import claim_job, finish_job
+    from apps.api.models.operations import ScheduledJobLease
+    engine = _engine()
+    factory = sessionmaker(bind=engine)
+    job = str(uuid4())
+    barrier = Barrier(4)
+    def attempt(_):
+        with factory() as db:
+            barrier.wait(timeout=10)
+            return claim_job(db, job, lease_seconds=10, now=100)
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            claims = list(pool.map(attempt, range(4)))
+        tokens = [token for token in claims if token]
+        assert len(tokens) == 1
+        with factory() as db:
+            recovered = claim_job(db, job, now=110)
+            assert recovered and recovered != tokens[0]
+            assert not finish_job(db, job, tokens[0], True, now=111)
+            assert finish_job(db, job, recovered, True, now=112)
+    finally:
+        with factory() as db:
+            db.query(ScheduledJobLease).filter_by(job_key=job).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_24_postgres_rejects_cross_tenant_document_reference():
+    from uuid import uuid4
+    from sqlalchemy.exc import IntegrityError
+    from apps.api.models.memory import MemoryDocument, MemoryChunk
+    engine = _engine()
+    factory = sessionmaker(bind=engine)
+    tenant, other, doc = (str(uuid4()) for _ in range(3))
+    try:
+        with factory() as db:
+            db.add(MemoryDocument(id=doc, business_id=tenant, title="Synthetic",
+                                  content_hash="a"*64))
+            db.commit()
+            db.add(MemoryChunk(document_id=doc, business_id=other, content="synthetic"))
+            with pytest.raises(IntegrityError):
+                db.commit()
+            db.rollback()
+    finally:
+        with factory() as db:
+            db.query(MemoryDocument).filter_by(id=doc).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_25_postgres_rls_scoped_reads_and_writes_with_non_superuser(monkeypatch):
+    from uuid import uuid4
+    from sqlalchemy.exc import DBAPIError
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.memory import MemoryDocument
+    engine = _engine()
+    factory = sessionmaker(bind=engine)
+    role = "oneboard_rls_ci_" + uuid4().hex[:12]
+    a, b = str(uuid4()), str(uuid4())
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            conn.execute(text(f"GRANT SELECT, INSERT, UPDATE ON memory_documents TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            import base64,secrets
+            from apps.api.core.config import settings
+            key=secrets.token_bytes(32)
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            if old is None:
+                conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES (true,:key)"),{"key":key})
+            else: key=bytes(old)
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
+        with factory() as db:
+            db.add_all([MemoryDocument(business_id=t, title="Synthetic",
+                                       content_hash="a"*64) for t in (a,b)])
+            db.commit()
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            assert db.query(MemoryDocument).count()==0  # unscoped runtime fails closed
+            db.execute(text("SELECT set_config('oneboard.tenant',:tenant,true)"),{"tenant":b})
+            assert db.query(MemoryDocument).count()==0
+            scope_tenant_session(db, a)
+            assert [row.business_id for row in db.query(MemoryDocument).all()] == [a]
+            db.execute(text("SELECT set_config('oneboard.tenant',:tenant,true)"),{"tenant":b})
+            assert db.query(MemoryDocument).count()==0
+            scope_tenant_session(db,a)
+            db.add(MemoryDocument(business_id=b, title="Rejected", content_hash="b"*64))
+            with pytest.raises(DBAPIError):
+                db.flush()
+            db.rollback()
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            # SQLAlchemy transaction hook restores scope after rollback.
+            assert [row.business_id for row in db.query(MemoryDocument).all()] == [a]
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM memory_documents WHERE business_id IN (:a,:b)"), {"a":a,"b":b})
+            conn.execute(text(f"DROP OWNED BY {role}"))
+            conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_26_postgres_indexed_semantic_retrieves_old_synonym_and_isolates_tenants(monkeypatch):
+    from uuid import uuid4
+    from unittest.mock import AsyncMock
+    from apps.api.models.memory import MemoryDocument,MemoryChunk
+    from apps.api.models.operations import SemanticVector
+    from apps.api.services import semantic_index
+    from apps.api.services.memory_engine import memory_engine
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    a,b=str(uuid4()),str(uuid4())
+    try:
+        with factory() as db:
+            old=memory_engine.add_document_with_chunks(db,a,"Old","quarterly revenue")
+            memory_engine.add_document_with_chunks(db,b,"Private","private revenue")
+            old_id=old.id
+            monkeypatch.setattr(semantic_index.ollama_gateway,"genuine_embedding",AsyncMock(return_value=[1.,0.1,0.2]))
+            assert (await semantic_index.index_pending(db,a))["indexed"]==1
+            assert (await semantic_index.index_pending(db,b))["indexed"]==1
+            db.add_all([MemoryChunk(business_id=a,document_id=old_id,content=f"new note {i}",chunk_index=i+1) for i in range(1100)])
+            db.commit()
+            result=await memory_engine.search_semantic_memory(db,a,"turnover",5)
+            assert len(result)==1 and result[0]["document_id"]==old_id
+            assert result[0]["search_strategy"]=="exact_cosine_small_corpus"
+            assert {x["name"] for x in inspect(engine).get_indexes("semantic_vectors")} >= {f"ix_semantic_band_{i}" for i in range(4)}
+    finally:
+        with factory() as db:
+            db.query(SemanticVector).filter(SemanticVector.business_id.in_([a,b])).delete(synchronize_session=False)
+            db.query(MemoryChunk).filter(MemoryChunk.business_id.in_([a,b])).delete(synchronize_session=False)
+            db.query(MemoryDocument).filter(MemoryDocument.business_id.in_([a,b])).delete(synchronize_session=False)
+            db.commit()
+        engine.dispose()
+
+
+def test_27_postgres_workspace_deletion_preserves_other_tenant():
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from apps.api.models.business import Business,User
+    from apps.api.models.memory import MemoryDocument
+    from apps.api.services.data_lifecycle import delete_workspace
+    from apps.api.services.memory_engine import memory_engine
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    a,b=str(uuid4()),str(uuid4())
+    owners={a:str(uuid4()),b:str(uuid4())}
+    try:
+        with factory() as db:
+            for tenant in (a,b):
+                db.add(Business(id=tenant,name="synthetic",owner_id=owners[tenant]))
+            db.flush()
+            for tenant in (a,b):
+                db.add(User(id=owners[tenant],business_id=tenant,email=tenant+"@example.test",name="synthetic",hashed_password="synthetic"))
+            db.commit()
+            for tenant in (a,b):
+                memory_engine.add_document_with_chunks(db,tenant,"synthetic","text")
+            receipt=delete_workspace(db,SimpleNamespace(id=owners[a],business_id=a),"DELETE "+a)
+            assert not receipt["backup_copies_deleted"]
+            assert db.get(Business,a) is None
+            assert db.query(MemoryDocument).filter_by(business_id=b).count()==1
+    finally:
+        with factory() as db:
+            for tenant in (a,b):
+                if db.get(Business,tenant):
+                    delete_workspace(db,SimpleNamespace(id=owners[tenant],business_id=tenant),"DELETE "+tenant)
+        engine.dispose()
+
+
+def test_28_abrupt_process_death_releases_inference_slot_and_rolls_back_write():
+    """Kill a real gateway client while loopback inference HTTP is in flight."""
+    import time
+    from threading import Event,Thread
+    from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+    from uuid import uuid4
+    from apps.api.services.cluster_capacity import inference_slot
+    from apps.api.models.workflow import AuditLog
+    engine=_engine()
+    marker=str(uuid4())
+    entered,release=Event(),Event()
+    class HoldingInference(BaseHTTPRequestHandler):
+        def log_message(self,*args): pass
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            if self.path!="/api/chat":
+                self.send_error(404)
+                return
+            entered.set()
+            release.wait(35)
+            # Synthetic transport, not a genuine model computation.
+            try:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"done":true,"message":{"content":"synthetic"}}')
+            except OSError:
+                pass
+    server=ThreadingHTTPServer(("127.0.0.1",0),HoldingInference)
+    server.daemon_threads=True
+    server_thread=Thread(target=server.serve_forever,daemon=True)
+    server_thread.start()
+    child_code="""
+import os,asyncio
+from sqlalchemy import create_engine,text
+from apps.api.services.ollama_gateway import OllamaGateway
+e=create_engine(os.environ['DATABASE_URL'])
+with e.begin() as c:
+    c.execute(text('INSERT INTO audit_logs (id,business_id,actor,action) VALUES (:id,:tenant,:actor,:action)'),{'id':os.environ['CRASH_MARKER'],'tenant':'synthetic-crash','actor':'ci','action':'uncommitted'})
+    asyncio.run(OllamaGateway().chat_complete([{'role':'user','content':'synthetic in-flight request'}]))
+"""
+    child=subprocess.Popen([sys.executable,"-c",child_code],cwd=ROOT,
+        env=dict(os.environ,CRASH_MARKER=marker,OLLAMA_BASE_URL=f"http://127.0.0.1:{server.server_port}",NO_PROXY="127.0.0.1,localhost"),
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        assert entered.wait(20),"Gateway failed to enter real loopback inference HTTP"
+        with inference_slot(engine) as second:
+            assert second
+            with inference_slot(engine) as third:
+                assert not third
+            child.kill()
+            child.wait(timeout=10)
+            deadline=time.monotonic()+10
+            while True:
+                with inference_slot(engine) as recovered:
+                    if recovered:
+                        break
+                assert time.monotonic()<deadline
+                time.sleep(.1)
+        with sessionmaker(bind=engine)() as db:
+            assert db.get(AuditLog,marker) is None
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        release.set()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
+        engine.dispose()
+
+
+def test_29_concurrent_delete_waits_for_writer_and_second_delete_is_denied():
+    from uuid import uuid4
+    from threading import Event
+    from types import SimpleNamespace
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business,User
+    from apps.api.models.memory import MemoryDocument
+    from apps.api.services.data_lifecycle import delete_workspace
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    a,b=str(uuid4()),str(uuid4())
+    uid=str(uuid4())
+    writer_ready,release_writer,delete_started=Event(),Event(),Event()
+    with factory() as db:
+        db.add_all([Business(id=a,name="A",owner_id=uid),Business(id=b,name="B")])
+        db.flush()
+        db.add(User(id=uid,business_id=a,email=uid+"@example.test",name="CI",hashed_password="synthetic"))
+        db.commit()
+    def writer():
+        with factory() as db:
+            db.info["oneboard_request"]=True
+            scope_tenant_session(db,a)
+            db.add(MemoryDocument(business_id=a,title="concurrent",content_hash="a"*64))
+            db.flush()
+            writer_ready.set()
+            assert release_writer.wait(10)
+            db.commit()
+    def deleter():
+        with factory() as db:
+            db.info.update(oneboard_request=True,oneboard_exclusive_lifecycle=True)
+            delete_started.set()
+            try:
+                scope_tenant_session(db,a)
+                delete_workspace(db,SimpleNamespace(id=uid,business_id=a),"DELETE "+a)
+                return "deleted"
+            except HTTPException as exc:
+                return exc.status_code
+    try:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            w=pool.submit(writer)
+            assert writer_ready.wait(10)
+            d1=pool.submit(deleter)
+            d2=pool.submit(deleter)
+            assert delete_started.wait(10)
+            assert not d1.done() and not d2.done()
+            release_writer.set()
+            w.result(timeout=15)
+            results=[d1.result(timeout=15),d2.result(timeout=15)]
+            assert results.count("deleted")==1 and results.count(401)==1
+        with factory() as db:
+            assert db.get(Business,a) is None and db.get(Business,b) is not None
+            assert db.query(MemoryDocument).filter_by(business_id=a).count()==0
+    finally:
+        release_writer.set()
+        with factory() as db:
+            if db.get(Business,a):
+                delete_workspace(db,SimpleNamespace(id=uid,business_id=a),"DELETE "+a)
+            db.query(Business).filter_by(id=b).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_30_revoked_session_cannot_begin_next_scoped_transaction():
+    from uuid import uuid4
+    from datetime import datetime,timedelta
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business,User,UserSession
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    tenant,uid,sid=str(uuid4()),str(uuid4()),str(uuid4())
+    try:
+        with factory() as db:
+            db.add(Business(id=tenant,name="Synthetic",owner_id=uid))
+            db.flush()
+            db.add(User(id=uid,business_id=tenant,email=uid+"@example.test",name="CI",hashed_password="synthetic"))
+            db.flush()
+            db.add(UserSession(id=sid,business_id=tenant,user_id=uid,expires_at=datetime.utcnow()+timedelta(hours=1),is_revoked=False))
+            db.commit()
+        with factory() as request:
+            request.info.update(oneboard_request=True,oneboard_auth=(uid,sid,None))
+            scope_tenant_session(request,tenant)
+            request.commit()
+            with factory() as other:
+                other.get(UserSession,sid).is_revoked=True
+                other.commit()
+            with pytest.raises(HTTPException,match="Session revoked"):
+                request.execute(text("SELECT 1"))
+            request.rollback()
+    finally:
+        with factory() as db:
+            db.query(Business).filter_by(id=tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_31_repeatable_read_export_excludes_concurrent_inserts(monkeypatch):
+    import json
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from apps.api.models.business import Business,User
+    from apps.api.models.entities import Customer
+    from apps.api.services import data_lifecycle as lifecycle
+    engine=_engine()
+    factory=sessionmaker(bind=engine)
+    tenant,uid=str(uuid4()),str(uuid4())
+    try:
+        with factory() as db:
+            db.add(Business(id=tenant,name="Synthetic",owner_id=uid))
+            db.flush()
+            db.add(User(id=uid,business_id=tenant,email=uid+"@example.test",name="CI",hashed_password="synthetic"))
+            db.commit()
+        original=lifecycle.export_tables
+        def after_snapshot():
+            with factory() as writer:
+                writer.add(Customer(business_id=tenant,name="concurrent after snapshot",mrr=0,status="active"))
+                writer.commit()
+            return original()
+        monkeypatch.setattr(lifecycle,"export_tables",after_snapshot)
+        with factory() as db:
+            exported=json.loads(lifecycle.export_snapshot(db,SimpleNamespace(id=uid,business_id=tenant)))
+            assert exported["snapshot_consistent"] and exported["tables"]["customers"]==[]
+            assert db.query(Customer).filter_by(business_id=tenant).count()==1
+    finally:
+        with factory() as db:
+            db.query(Customer).filter_by(business_id=tenant).delete()
+            db.query(Business).filter_by(id=tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_32_agent_plan_and_claim_are_fenced_across_postgres_workers():
+    from uuid import uuid4
+    from sqlalchemy.orm import Session
+    from apps.api.models.business import Business
+    from apps.api.models.workflow import CustomAgent
+    from apps.api.services import agent_runtime
+    engine = _engine()
+    try:
+        with Session(engine) as db:
+            tenant=Business(name="Batch H concurrency "+str(uuid4()))
+            db.add(tenant);db.commit()
+            agent=CustomAgent(business_id=tenant.id,name="Reader",role_title="Reader",
+                              system_prompt="Review records",allowed_tools=["read_crm"],max_steps=2)
+            db.add(agent);db.commit()
+            tenant_id,agent_id=tenant.id,agent.id
+        key="batch-h-"+str(uuid4())
+        gate=Barrier(2)
+        def plan(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return agent_runtime.plan_run(db,tenant_id,agent_id,"Review",
+                    [{"agent_id":agent_id,"tool":"read_crm"}],key).id
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ids=list(pool.map(plan,range(2)))
+        assert ids[0]==ids[1]
+        gate=Barrier(2)
+        def claim(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return agent_runtime.claim(db,tenant_id,ids[0])[1]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            owners=list(pool.map(claim,range(2)))
+        assert sum(owner is not None for owner in owners)==1
+        with Session(engine) as db:
+            owner=next(owner for owner in owners if owner)
+            done=agent_runtime.checkpoint(db,tenant_id,ids[0],owner,0,result={"fixture":True})
+            assert done.status=="completed" and len(done.tool_results)==1
+            assert agent_runtime.claim(db,tenant_id,ids[0])[1] is None
+    finally:
+        engine.dispose()
+
+
+def test_33_webhook_dedup_and_dispatch_serialize_across_postgres_workers():
+    from uuid import uuid4
+    from sqlalchemy.orm import Session
+    from apps.api.models.business import Business
+    from apps.api.models.workflow import WorkflowDefinition,WorkflowRun
+    from apps.api.models.operations import WorkflowEvent
+    from apps.api.services import workflow_events as events,workflow_versions as versions
+    engine=_engine()
+    try:
+        with Session(engine) as db:
+            tenant=Business(name="Batch I event concurrency "+str(uuid4()))
+            db.add(tenant);db.commit()
+            wf=WorkflowDefinition(business_id=tenant.id,name="Webhook",trigger_type="webhook",
+                                  nodes=[{"id":"start","type":"trigger","data":{}}],edges=[],is_active=True,is_valid=True)
+            db.add(wf);db.flush();versions.ensure_version(db,wf);events.activate(db,wf);db.commit()
+            tenant_id,wid=tenant.id,wf.id
+        gate=Barrier(2)
+        def enqueue(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return events.webhook(db,tenant_id,wid,"fixture-event-1",{"value":1})["id"]
+        with ThreadPoolExecutor(max_workers=2) as pool:ids=list(pool.map(enqueue,range(2)))
+        assert ids[0]==ids[1]
+        gate=Barrier(2)
+        def drain(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return events.drain(db,tenant_id)
+        with ThreadPoolExecutor(max_workers=2) as pool:list(pool.map(drain,range(2)))
+        with Session(engine) as db:
+            event=db.query(WorkflowEvent).filter_by(business_id=tenant_id).one()
+            assert event.status=="dispatched"
+            assert db.query(WorkflowRun).filter_by(business_id=tenant_id).count()==1
+    finally:engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_34_postgres_indexes_and_retrieves_full_20000_chunk_quota(monkeypatch):
+    """Capacity/storage/query-path stress using deterministic fixture vectors.
+    Genuine-model quality is evaluated separately in mandatory Ollama CI.
+    """
+    from uuid import uuid4
+    from types import SimpleNamespace
+    from apps.api.models.memory import MemoryDocument,MemoryChunk,MemoryDocumentState,MemoryRelevanceFeedback
+    from apps.api.models.operations import SemanticVector
+    from apps.api.services import semantic_index as idx
+    from apps.api.services.memory_engine import memory_engine
+    from apps.api.services.data_lifecycle import delete_documents
+    from sqlalchemy.orm import Session
+    import time
+    tenant,foreign=str(uuid4()),str(uuid4())
+    engine=_engine()
+    def vector(body):
+        if "historicalneedle" in body:return [1.0]+[0.01]*15
+        return [-1.0]+[0.01]*15
+    async def batch(texts,model):return [vector(t) for t in texts]
+    async def single(query,model):return vector(query)
+    gateway=SimpleNamespace(get_model_for_task=lambda task:"synthetic-scale-test",genuine_embeddings=batch,genuine_embedding=single)
+    monkeypatch.setattr(idx,"ollama_gateway",gateway)
+    try:
+        with Session(engine) as db:
+            ids=[]
+            for i in range(200):
+                did=str(uuid4());ids.append(did)
+                db.add(MemoryDocument(id=did,business_id=tenant,title=f"Archive {i:03d}",
+                                      content_hash="a"*64,chunk_count=100,file_type="txt"))
+            db.flush()
+            for offset in range(0,20000,1000):
+                db.bulk_insert_mappings(MemoryChunk,[{"id":str(uuid4()),"business_id":tenant,"document_id":ids[i//100],
+                    "chunk_index":i%100,"content":f"historicalneedle confidential ledger {i}" if i==0 else f"routine operations note {i}","metadata_tags":{}}
+                    for i in range(offset,offset+1000)])
+            db.commit()
+            start=time.perf_counter();done=0
+            for _ in range(313):
+                result=await idx.index_pending(db,tenant,limit=64,gateway=gateway)
+                assert result["indexed"]==result["attempted"]>0
+                done+=result["indexed"]
+            assert done==20000
+            assert db.query(SemanticVector).filter_by(business_id=tenant).count()==20000
+            assert db.query(MemoryDocumentState).filter_by(business_id=tenant,status="ready").count()==200
+            assert (await idx.index_pending(db,tenant,gateway=gateway))["attempted"]==0
+            result=await memory_engine.search_semantic_memory(db,tenant,"historicalneedle",5)
+            assert result[0]["document_id"]==ids[0] and "historicalneedle" in result[0]["content"]
+            assert "semantic" in result[0]["channels"] and "lexical" in result[0]["channels"]
+            assert not await memory_engine.search_semantic_memory(db,foreign,"historicalneedle",5)
+            print("20k fixture indexed in",round(time.perf_counter()-start,2),"seconds")
+    finally:
+        with Session(engine) as db:
+            ids=[row[0] for row in db.query(MemoryDocument.id).filter_by(business_id=tenant)]
+            delete_documents(db,tenant,ids);db.commit()
+        engine.dispose()
+
+
+def test_35_batch_k_concurrent_payments_do_not_overcollect():
+    from uuid import uuid4
+    from datetime import datetime
+    from sqlalchemy.orm import Session
+    from apps.api.models.business import Business
+    from apps.api.models.entities import Invoice
+    from apps.api.models.operations import JournalEntry
+    from apps.api.services import finance_ledger as ledger
+    engine=_engine();tenant=str(uuid4());iid=str(uuid4())
+    def submit(ref,kind,amount):
+        with Session(engine) as db:
+            try:
+                return ledger.post(db,tenant,"fixture",reference=ref,kind=kind,amount=amount,currency="USD",fx_rate="1",fx_source="same_currency",
+                    booked_on="2020-01-01",evidence_text="synthetic",invoice_id=iid).id
+            except ValueError:
+                db.rollback();return None
+    try:
+        with Session(engine) as db:
+            db.add(Business(id=tenant,name="Batch K concurrency",currency="USD"))
+            db.add(Invoice(id=iid,business_id=tenant,invoice_number=iid,customer_name="Synthetic",status="overdue",amount="100.00",due_date=datetime(2020,1,1)))
+            db.commit()
+        assert submit("issue-fixture","invoice_issue","100")
+        gate=Barrier(2)
+        def payment(i):
+            gate.wait(timeout=10)
+            return submit("payment-"+str(i),"payment","60")
+        with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(payment,range(2)))
+        assert sum(x is not None for x in results)==1
+        with Session(engine) as db:
+            assert ledger.invoice_balance(db,tenant,db.get(Invoice,iid))==40
+            assert db.query(JournalEntry).filter_by(business_id=tenant,kind="payment").count()==1
+    finally:
+        with Session(engine) as db:
+            db.query(JournalEntry).filter_by(business_id=tenant).delete()
+            db.query(Invoice).filter_by(business_id=tenant).delete()
+            db.query(Business).filter_by(id=tenant).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_36_batch_k_rls_journal_and_closed_periods(monkeypatch):
+    from uuid import uuid4
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business
+    from apps.api.models.operations import JournalEntry,AccountingClose
+    from apps.api.services import finance_ledger as ledger
+    import base64,secrets
+    engine=_engine();a,b=str(uuid4()),str(uuid4());role="oneboard_finance_ci_"+uuid4().hex[:12]
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            conn.execute(text(f"GRANT SELECT, INSERT, UPDATE ON journal_entries,accounting_closes TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            key=bytes(old) if old is not None else secrets.token_bytes(32)
+            if old is None:conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES(true,:key)"),{"key":key})
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
+        with Session(engine) as db:
+            for tenant in (a,b):
+                db.add(Business(id=tenant,name="Synthetic",currency="USD"))
+            db.commit()
+            for tenant in (a,b):
+                ledger.post(db,tenant,"fixture",reference="opening-fixture",kind="opening_cash",amount="100",currency="USD",
+                    fx_rate="1",fx_source="same_currency",booked_on="2020-01-01",evidence_text="Synthetic balance")
+                ledger.close_period(db,tenant,"fixture","2020-01","CLOSE 2020-01")
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            assert db.query(JournalEntry).count()==db.query(AccountingClose).count()==0
+            scope_tenant_session(db,a)
+            assert {x.business_id for x in db.query(JournalEntry).all()}=={a}
+            assert {x.business_id for x in db.query(AccountingClose).all()}=={a}
+            db.add(AccountingClose(business_id=b,period="2020-02",snapshot={},snapshot_hash="a"*64,actor_id="fixture"))
+            with pytest.raises(DBAPIError):db.flush()
+            db.rollback()
+    finally:
+        with engine.begin() as conn:
+            for table in ("accounting_closes","journal_entries"):
+                conn.execute(text(f"DELETE FROM {table} WHERE business_id IN (:a,:b)"),{"a":a,"b":b})
+            conn.execute(text("DELETE FROM businesses WHERE id IN (:a,:b)"),{"a":a,"b":b})
+            conn.execute(text(f"DROP OWNED BY {role}"))
+            conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()
+
+def test_37_batch_l_provider_enqueue_concurrency_and_rls(monkeypatch):
+    from uuid import uuid4
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business
+    from apps.api.models.operations import ProviderConnection,ProviderSyncJob
+    from apps.api.services.integrations import provider_runtime as rt
+    import base64,secrets
+    engine=_engine();a,b=str(uuid4()),str(uuid4());role="oneboard_provider_ci_"+uuid4().hex[:12]
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            conn.execute(text(f"GRANT SELECT, INSERT, UPDATE ON provider_connections,provider_sync_jobs TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            key=bytes(old) if old is not None else secrets.token_bytes(32)
+            if old is None:conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES(true,:key)"),{"key":key})
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
+        with Session(engine) as db:
+            for tenant in (a,b):
+                db.add(Business(id=tenant,name="Synthetic",currency="USD"))
+                db.add(ProviderConnection(business_id=tenant,provider="github",state="connected",scopes=["repository.read"],generation=1))
+            db.commit()
+            foreign_id=db.query(ProviderConnection).filter_by(business_id=b).one().id
+            rt.enqueue(db,b,"github","fixture-foreign")
+        gate=Barrier(2)
+        def enqueue(i):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return rt.enqueue(db,a,"github","fixture-same-key").id
+        with ThreadPoolExecutor(max_workers=2) as pool:ids=list(pool.map(enqueue,range(2)))
+        assert ids[0]==ids[1]
+        with Session(engine) as db:
+            assert db.query(ProviderSyncJob).filter_by(business_id=a).count()==1
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            assert db.query(ProviderConnection).count()==db.query(ProviderSyncJob).count()==0
+            scope_tenant_session(db,a)
+            assert {x.business_id for x in db.query(ProviderConnection).all()}=={a}
+            assert {x.business_id for x in db.query(ProviderSyncJob).all()}=={a}
+            db.add(ProviderSyncJob(business_id=b,connection_id=foreign_id,generation=1,request_key="foreign-write"))
+            with pytest.raises(DBAPIError):db.flush()
+            db.rollback()
+    finally:
+        with engine.begin() as conn:
+            for table in ("provider_sync_jobs","provider_connections","businesses"):
+                col="id" if table=="businesses" else "business_id"
+                conn.execute(text(f"DELETE FROM {table} WHERE {col} IN (:a,:b)"),{"a":a,"b":b})
+            conn.execute(text(f"DROP OWNED BY {role}"))
+            conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()
+
+
+def test_38_batch_m_populated_upgrade_and_indexed_keyset():
+    """Exercise 023 -> 024 against a genuinely populated older schema."""
+    from uuid import uuid4
+    from time import perf_counter
+    from sqlalchemy import inspect
+    from sqlalchemy.engine import make_url
+    validation=_engine();validation.dispose()
+    base=make_url(URL);name="oneboard_migration_"+uuid4().hex[:12]
+    admin=create_engine(base.set(database="postgres"),isolation_level="AUTOCOMMIT")
+    dburl=base.set(database=name)
+    engine=None;created=False
+    def migrate(target):
+        p=subprocess.run([sys.executable,"-m","alembic","upgrade",target],cwd=ROOT,
+            env={**os.environ,"DATABASE_URL":dburl.render_as_string(hide_password=False),"PYTHONPATH":str(ROOT)},
+            text=True,capture_output=True,timeout=120)
+        assert p.returncode==0,p.stderr[-3000:]
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f"CREATE DATABASE {name}"));created=True
+        migrate("023_batch_l_providers")
+        engine=create_engine(dburl,pool_pre_ping=True)
+        with engine.begin() as conn:
+            # Revision 003 bootstraps current ORM metadata on a fresh database.
+            # Remove later-only artifacts to reproduce a real 023 installation.
+            for table in ("portable_archive_pages","portable_archives","database_performance_samples"):
+                conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+            for col in ("completed_sync_days","resolved_conflict_days","completed_draft_days","performance_sample_days"):
+                conn.execute(text(f"ALTER TABLE data_retention_policies DROP COLUMN IF EXISTS {col}"))
+            for table in ("side_effect_outbox","provider_sync_jobs","provider_record_conflicts"):
+                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN IF EXISTS retention_redacted_at"))
+            conn.execute(text("INSERT INTO businesses(id,name,currency) VALUES ('tenant-a','Fixture A','USD'),('tenant-b','Fixture B','USD')"))
+            conn.execute(text("""INSERT INTO tasks(id,business_id,title,description,status)
+                SELECT 'task-'||lpad(i::text,8,'0'),CASE WHEN i%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic task',repeat('x',100),'todo' FROM generate_series(1,30000) i"""))
+            conn.execute(text("""INSERT INTO customers(id,business_id,name,mrr,status)
+                SELECT 'cust-'||lpad(i::text,8,'0'),CASE WHEN i%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic customer',i*1001,'active' FROM generate_series(1,10000) i"""))
+            conn.execute(text("""INSERT INTO memory_documents(id,business_id,title,content_hash,chunk_count)
+                SELECT 'doc-'||lpad(i::text,4,'0'),CASE WHEN i%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic document',repeat('a',64),100 FROM generate_series(1,100) i"""))
+            conn.execute(text("""INSERT INTO memory_chunks(id,document_id,business_id,content,chunk_index)
+                SELECT 'chunk-'||lpad(i::text,8,'0'),'doc-'||lpad(((i-1)/100+1)::text,4,'0'),
+                CASE WHEN ((i-1)/100+1)%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic chunk',((i-1)%100) FROM generate_series(1,10000) i"""))
+            def manifest(conn):
+                return {
+                    table:conn.execute(text(f"SELECT count(*),md5(string_agg(row_to_json(t)::text,',' ORDER BY id)) FROM {table} t")).one()
+                    for table in ("tasks","customers","memory_documents","memory_chunks")}
+            before=manifest(conn)
+        started=perf_counter();migrate("head");elapsed=perf_counter()-started
+        with engine.begin() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()=="024_batch_m_storage"
+            assert manifest(conn)==before
+            assert sum(x[0] for x in before.values())==50100
+            assert {"portable_archives","portable_archive_pages","database_performance_samples"}<=set(inspect(conn).get_table_names())
+            assert any(i["column_names"]==["business_id","id"] for i in inspect(conn).get_indexes("tasks"))
+            conn.execute(text("ANALYZE tasks"))
+            plan=conn.execute(text("""EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON)
+                SELECT id,title FROM tasks WHERE business_id='tenant-a' AND id>'task-00020000'
+                ORDER BY id LIMIT 100""")).scalar_one()[0]
+            serialized=str(plan)
+            assert "Index Scan" in serialized or "Index Only Scan" in serialized
+            assert plan["Plan"]["Actual Rows"]==100
+            assert conn.execute(text("SELECT mrr FROM customers WHERE id='cust-00000002'")).scalar_one()==2002
+            print("Batch M populated migration rows",sum(x[0] for x in before.values()),"seconds",round(elapsed,3),"keyset execution ms",plan["Execution Time"])
+    finally:
+        if engine:engine.dispose()
+        with admin.connect() as conn:
+            if created:conn.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
+        admin.dispose()
+
+
+def test_39_batch_m_restricted_portable_restore_and_complete_deletion(monkeypatch):
+    from uuid import uuid4
+    from types import SimpleNamespace
+    import base64,secrets
+    from sqlalchemy.orm import Session
+    from sqlalchemy.exc import DBAPIError
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business,User
+    from apps.api.models.goals_tasks import Task
+    from apps.api.models.integrations import IntegrationAccount,SyncHistory
+    from apps.api.models.operations import PortableArchive,PortableArchivePage
+    from apps.api.services import portable_archive as archive,data_lifecycle as lifecycle
+    from apps.api.services import tenant_storage as quota
+    engine=_engine();tenant,other,actor,other_actor=[str(uuid4()) for _ in range(4)]
+    ia,ib,sa,sb=[str(uuid4()) for _ in range(4)]
+    role="oneboard_archive_ci_"+uuid4().hex[:12];restricted=None
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'disposable-fixture-only'"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            for name in Base.metadata.tables:
+                if name=="users":
+                    cols=",".join(c.name for c in Base.metadata.tables[name].c if c.name not in ("hashed_password","api_key"))
+                    conn.execute(text(f"GRANT SELECT ({cols}),INSERT,UPDATE,DELETE ON TABLE public.users TO {role}"))
+                else:conn.execute(text(f"GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.{name} TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            key=bytes(old) if old is not None else secrets.token_bytes(32)
+            if old is None:conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES(true,:key)"),{"key":key})
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
+            monkeypatch.setattr(settings,"PORTABLE_ARCHIVE_SIGNING_KEY",base64.b64encode(b"q"*32).decode())
+        with Session(engine) as db:
+            db.add_all([Business(id=tenant,name="A",owner_id=actor),Business(id=other,name="B",owner_id=other_actor)]);db.flush()
+            db.add_all([User(id=actor,business_id=tenant,email=actor+"@example.test",name="A",hashed_password="fixture"),
+                User(id=other_actor,business_id=other,email=other_actor+"@example.test",name="B",hashed_password="fixture")])
+            db.add_all([IntegrationAccount(id=ia,business_id=tenant,name="A",connector_type="github"),
+                IntegrationAccount(id=ib,business_id=other,name="B",connector_type="github")]);db.flush()
+            db.add_all([SyncHistory(id=sa,integration_id=ia),SyncHistory(id=sb,integration_id=ib)]);db.commit()
+        restricted=create_engine(make_url(URL).set(username=role,password="disposable-fixture-only"),pool_pre_ping=True)
+        user=SimpleNamespace(business_id=tenant,id=actor)
+        monkeypatch.setitem(quota.ROW_LIMITS,"tasks",1)
+        gate=Barrier(2)
+        def submit(i):
+            with Session(restricted) as db:
+                scope_tenant_session(db,tenant);db.info["oneboard_enforce_quota"]=True
+                gate.wait(timeout=10);db.add(Task(business_id=tenant,title=f"Task {i}"))
+                try:db.commit();return True
+                except HTTPException as exc:
+                    db.rollback();assert exc.status_code==429;return False
+        with ThreadPoolExecutor(max_workers=2) as pool:assert sum(pool.map(submit,range(2)))==1
+        with Session(restricted) as db:
+            scope_tenant_session(db,tenant)
+            exp=archive.capture(db,user)
+            imp=archive.begin_import(db,user,exp["manifest"])["id"]
+            for d in exp["manifest"]["pages"]:
+                content,_=archive.download(db,tenant,exp["id"],d["number"])
+                archive.upload(db,tenant,imp,d["number"],content)
+            assert db.query(Task).filter_by(business_id=tenant).delete()==1;db.commit()
+            assert archive.restore(db,user,imp,"RESTORE "+tenant)["inserted"]==1
+            assert db.query(PortableArchivePage).count()>0
+        with Session(restricted) as db:
+            scope_tenant_session(db,other)
+            assert db.query(PortableArchive).count()==0
+            assert db.query(PortableArchivePage).count()==0
+            with pytest.raises(ValueError):archive.download(db,other,exp["id"],0)
+            db.rollback()
+        with Session(restricted) as db:
+            scope_tenant_session(db,tenant)
+            result=lifecycle.delete_workspace(db,user,"DELETE "+tenant)
+            assert result["verified_remaining_rows"]==0
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM sync_history WHERE id=:s"),{"s":sa}).scalar_one()==0
+            assert conn.execute(text("SELECT count(*) FROM sync_history WHERE id=:s"),{"s":sb}).scalar_one()==1
+            for name in ("portable_archive_pages","portable_archives","tasks","users","integration_accounts"):
+                assert conn.execute(text(f"SELECT count(*) FROM {name} WHERE business_id=:t"),{"t":tenant}).scalar_one()==0
+            assert conn.execute(text("SELECT count(*) FROM businesses WHERE id=:t"),{"t":other}).scalar_one()==1
+    finally:
+        if restricted:restricted.dispose()
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM sync_history WHERE id IN (:a,:b)"),{"a":sa,"b":sb})
+            for name in ("portable_archive_pages","portable_archives","tasks","integration_accounts","users","businesses"):
+                col="id" if name=="businesses" else "business_id"
+                conn.execute(text(f"DELETE FROM {name} WHERE {col} IN (:a,:b)"),{"a":tenant,"b":other})
+            conn.execute(text(f"DROP OWNED BY {role}"));conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()

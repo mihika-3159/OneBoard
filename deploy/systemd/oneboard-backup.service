@@ -1,0 +1,19 @@
+[Unit]
+Description=OneBoard encrypted backup verification and scheduling
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=oneboard-backup
+Group=oneboard-backup
+WorkingDirectory=/opt/oneboard
+EnvironmentFile=/etc/oneboard/backup.env
+ExecStart=/opt/oneboard/.venv/bin/python -m scripts.operations.backup_manager --directory /var/lib/oneboard-backups --recipient ${ONEBOARD_AGE_RECIPIENT}
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/oneboard-backups
+TimeoutStartSec=1800

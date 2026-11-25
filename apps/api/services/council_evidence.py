@@ -1,0 +1,170 @@
+"""Bounded tenant evidence inventory and extractive council synthesis.
+
+A citation proves that the quoted text exists in a supplied tenant record,
+not that the source is true or that an inferred recommendation is correct.
+"""
+import hashlib
+import json
+from math import isfinite
+from apps.api.models.entities import Customer, Invoice, Expense, Product
+from apps.api.models.decision_evidence import Evidence
+from apps.api.models.memory import MemoryChunk, MemoryConflict, MemoryDocument, MemoryDocumentState
+from apps.api.services.semantic_index import active_state,state_join
+
+
+def evidence_inventory(db, tenant):
+    records = {}
+    # Evidence snippets and stored chunks are user-maintained records, not
+    # independently verified external facts. Never pass credentials or files.
+    for row in db.query(Evidence).filter_by(business_id=tenant).order_by(Evidence.id).limit(12):
+        records["evidence:" + row.id] = {"text": row.snippet[:450], "source": "tenant_evidence"}
+    chunks = (db.query(MemoryChunk).join(MemoryDocument, (MemoryChunk.document_id == MemoryDocument.id)
+              & (MemoryDocument.business_id == tenant))
+              .outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id == tenant,active_state()).order_by(MemoryChunk.id).limit(12))
+    for row in chunks:
+        records["chunk:" + row.id] = {"text": row.content[:450], "source": "tenant_document"}
+    conflicts = db.query(MemoryConflict).filter_by(business_id=tenant, status="unresolved").order_by(MemoryConflict.id).limit(12)
+    for row in conflicts:
+        records["conflict:" + row.id] = {"text": (row.source_a_value + " versus " + row.source_b_value)[:450],
+                                       "source": "unresolved_conflict"}
+    for kind, model, attributes in RECORD_TYPES:
+        for row in db.query(model).filter_by(business_id=tenant).order_by(model.id).limit(8):
+            records[kind + ":" + row.id] = record_snapshot(kind, row, attributes)
+    return records
+
+
+RECORD_TYPES = (
+    ("invoice", Invoice, ("invoice_number", "amount", "status")),
+    ("expense", Expense, ("category", "amount", "billing_period")),
+    ("product", Product, ("name", "price", "billing_interval")),
+    ("customer", Customer, ("tier", "mrr", "status")),
+)
+
+
+def record_snapshot(kind, row, attributes):
+    return {"text": json.dumps({name: getattr(row, name) for name in attributes},
+            sort_keys=True, ensure_ascii=True, default=str)[:450], "source": "tenant_" + kind}
+
+
+def current_record(db, tenant, ref):
+    if not isinstance(ref, str) or ":" not in ref:
+        return None
+    kind, ident = ref.split(":", 1)
+    if kind == "evidence":
+        row = db.query(Evidence).filter_by(business_id=tenant, id=ident).first()
+        return {"text": row.snippet[:450], "source": "tenant_evidence"} if row else None
+    if kind == "chunk":
+        row = db.query(MemoryChunk).join(MemoryDocument,
+            (MemoryChunk.document_id == MemoryDocument.id) & (MemoryDocument.business_id == tenant)
+            ).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id == tenant, MemoryChunk.id == ident,active_state()).first()
+        return {"text": row.content[:450], "source": "tenant_document"} if row else None
+    if kind == "conflict":
+        row = db.query(MemoryConflict).filter_by(business_id=tenant,id=ident,status="unresolved").first()
+        return {"text": (row.source_a_value+" versus "+row.source_b_value)[:450],
+                "source": "unresolved_conflict"} if row else None
+    for prefix, model, attributes in RECORD_TYPES:
+        if prefix == kind:
+            row = db.query(model).filter_by(business_id=tenant,id=ident).first()
+            return record_snapshot(kind,row,attributes) if row else None
+    return None
+
+
+def references_current(db, tenant, citations):
+    for citation in citations:
+        row = current_record(db, tenant, citation.get("id"))
+        if (not row or not exact_quote(row["text"], citation.get("quote"))
+                or hashlib.sha256(row["text"].encode()).hexdigest() != citation.get("snapshot_sha256")):
+            return False
+    return True
+
+
+def exact_quote(text, quote):
+    return isinstance(quote, str) and 8 <= len(quote) <= 450 and quote in text
+
+
+def validate_citations(citations, inventory):
+    if not isinstance(citations, list) or len(citations) > 8:
+        return None
+    result = []
+    for entry in citations:
+        if not isinstance(entry, dict):
+            return None
+        ref, quote = entry.get("id"), entry.get("quote")
+        if not isinstance(ref, str) or ref not in inventory or not exact_quote(inventory[ref]["text"], quote):
+            return None
+        if ref in {item["id"] for item in result}:
+            return None
+        result.append({"id": ref, "quote": quote, "source": inventory[ref]["source"],
+                       "snapshot_sha256": hashlib.sha256(inventory[ref]["text"].encode()).hexdigest()})
+    return result
+
+
+def parse_object(value):
+    try:
+        obj = json.loads(value)
+        return obj if isinstance(obj, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def adviser_record(result, inventory):
+    if result.get("simulated") or result.get("output_limit_reached"):
+        return None
+    obj = parse_object(result.get("content"))
+    if not obj or not isinstance(obj.get("position"), str) or not 1 <= len(obj["position"]) <= 1000:
+        return None
+    refs = validate_citations(obj.get("citations"), inventory)
+    if refs is None:
+        return None
+    forecast = obj.get("forecast")
+    proposal = None
+    if refs and isinstance(forecast, dict):
+        metric = forecast.get("metric")
+        values = [forecast.get(k) for k in ("point", "lower", "upper", "confidence")]
+        days = forecast.get("days")
+        if (isinstance(metric, str) and 1 <= len(metric.strip()) <= 100
+                and all(type(v) in (int, float) and abs(v) <= 1e15 and isfinite(v) for v in values)
+                and values[1] <= values[0] <= values[2] and 0 < values[3] < 1
+                and type(days) is int and 1 <= days <= 365):
+            proposal = {k: forecast[k] for k in ("metric", "point", "lower", "upper", "confidence", "days")}
+    return {"position": obj["position"], "citations": refs, "forecast_proposal": proposal,
+            "evidence_status": "reference_verified_not_claim_verified" if refs else "unsupported"}
+
+
+def synthesis_record(result, transcript, inventory):
+    """Accept only extractive links to actual adviser arguments and records.
+
+    Free-form generated recommendations never enter executable tasks.
+    The synthesis selects exact quotes and a conservative decision category.
+    """
+    usable = {entry["argument_id"]: entry for entry in transcript
+              if entry.get("stage") == "independent_analysis" and entry.get("evidence_status") == "reference_verified_not_claim_verified"}
+    default = {"status": "review_required", "arguments": [], "citations": [],
+               "disposition": "collect_evidence", "uncertainty": "high"}
+    if result.get("simulated") or result.get("output_limit_reached"):
+        return default
+    obj = parse_object(result.get("content"))
+    if not obj or not isinstance(obj.get("arguments"), list) or not 1 <= len(obj["arguments"]) <= 9:
+        return default
+    refs = validate_citations(obj.get("citations"), inventory)
+    if not refs:
+        return default
+    arguments = []
+    for link in obj["arguments"]:
+        if not isinstance(link, dict):
+            return default
+        key, quote = link.get("id"), link.get("quote")
+        if not isinstance(key, str) or key not in usable or not exact_quote(usable[key]["content"], quote):
+            return default
+        if key in {item["id"] for item in arguments}:
+            return default
+        arguments.append({"id": key, "adviser": usable[key]["adviser"], "quote": quote})
+    permitted = {c["id"] for a in arguments for c in usable[a["id"]]["citations"]}
+    cited = {c["id"] for c in refs}
+    if not cited <= permitted or any(not (cited & {c["id"] for c in usable[a["id"]]["citations"]}) for a in arguments):
+        return default
+    conflict = any(row["source"] == "unresolved_conflict" for row in inventory.values())
+    return {"status": "linked_review", "arguments": arguments, "citations": refs,
+            "disposition": "resolve_conflict" if conflict else "founder_review",
+            "uncertainty": "high" if conflict or len(arguments) < 2 else "unquantified",
+            "claim_verification": False}

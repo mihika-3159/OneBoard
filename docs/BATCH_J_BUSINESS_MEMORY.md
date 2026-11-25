@@ -1,0 +1,10 @@
+# Batch J — business memory (55–66)
+
+- Native local embedding batches of 16, up to 64 chunks per manual worker pass; round-robin scheduled workers select up to four tenants, two concurrently.
+- Persistent document state, bounded retries, leases and fenced commits. Reindex is founder-only; model identity includes a configured digest. Old-model vectors are excluded while new-model backfill runs. Lexical search remains available.
+- Exact cosine for small corpora within one million vector coordinates; indexed multi-probe angular LSH for larger collections. Weighted reciprocal-rank fusion combines lexical and genuine semantic signals. Scores are ranking signals, not verified facts.
+- Source citations identify immutable document version, exact extracted-text offsets, SHA-256 and parser-owned page/sheet location. Replacing a source excludes old chunks from current search and agent/council evidence; old citations remain inspectable as historical records.
+- Bounded local extraction supports TXT, Markdown, JSON, CSV, XLSX and PDF; PDF/XLSX use isolated subprocesses. Unix workers enforce CPU/address-space limits; Windows uses subprocess timeouts. Unsupported formats fail closed; scanned PDFs require externally extracted text. Spreadsheet formulas are preserved as text, not executed.
+- Deduplication is tenant scoped; search supports document, file type and connector filters. Graph edges use typed IDs or unique names, with ambiguity surfaced; feedback is query/user/tenant scoped and adjusts repeat-query ranking, not model weights.
+- Mandatory acceptance: real all-minilm embeddings on 2,048 synthetic business records and 32 labelled queries, full 20,000-chunk PostgreSQL quota stress with deterministic vectors, parser and source lifecycle regression tests, and browser workflow. Real-model benchmark thresholds are unchanged. Synthetic tests do not certify production hardware or customer-data relevance.
+- Schema migration 021 is applied by the existing migration workflow. No paid services or credentials are required for this batch.

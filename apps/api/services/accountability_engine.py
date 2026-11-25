@@ -1,14 +1,14 @@
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
+from math import isfinite
 from apps.api.models.decision_evidence import Decision
 from apps.api.models.agent_council import AdviserScorecard
 
 class AccountabilityEngine:
     """
-    Flagship Accountability & Outcome Verification Engine.
-    Enforces the closed operational loop:
-    Prediction -> Recorded Assumptions -> Observed Outcome -> Error Analysis -> Immutable Audit.
+    Prediction tracking records user observations, never authenticates
+    observations or calls them independently verified.
     """
 
     def record_prediction(
@@ -45,83 +45,93 @@ class AccountabilityEngine:
         actual_value: float,
         outcome_notes: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Calculates error, identifies failed assumptions, and updates the empirical adviser scorecard.
-        """
-        decision = db.query(Decision).filter(Decision.id == decision_id).first()
+        """Record a founder-reported observation, without certifying provenance."""
+        if not isinstance(metric_name, str) or not metric_name.strip():
+            raise ValueError("A predicted metric must be selected")
+        if isinstance(actual_value, bool) or not isfinite(float(actual_value)):
+            raise ValueError("Actual outcome must be a finite number")
+        if outcome_notes is not None and len(outcome_notes) > 4000:
+            raise ValueError("Outcome notes exceed 4000 characters")
+        decision = db.query(Decision).filter(Decision.id == decision_id).with_for_update().first()
         if not decision:
-            raise ValueError(f"Decision {decision_id} not found")
+            raise ValueError("Decision not found")
 
-        expected_list = decision.expected_outcomes or []
-        target_prediction = None
-        for exp in expected_list:
-            if exp.get("metric") == metric_name:
-                target_prediction = exp
-                break
-
-        predicted_val = target_prediction.get("predicted_value", 0.0) if target_prediction else 0.0
+        matches = [entry for entry in (decision.expected_outcomes or [])
+                   if entry.get("metric") == metric_name]
+        if len(matches) != 1:
+            raise ValueError("Outcome requires exactly one matching recorded prediction")
+        if matches[0].get("source") in ("founder_recorded_prospective_forecast","model_adviser_prospective_forecast"):
+            due = datetime.fromisoformat(matches[0]["due_at"])
+            if datetime.utcnow() < due:
+                raise ValueError("Prospective forecast observation is not due yet")
+            if any(entry.get("metric")==metric_name for entry in decision.actual_outcomes or []):
+                raise ValueError("Prospective forecast already has a recorded observation")
+        predicted_val = matches[0].get("predicted_value")
+        if (type(predicted_val) not in (float, int)
+                or not isfinite(float(predicted_val))):
+            raise ValueError("Prediction is missing a valid numerical target")
+        predicted_val = float(predicted_val)
+        actual_value = float(actual_value)
         absolute_error = abs(actual_value - predicted_val)
-        pct_error = (absolute_error / predicted_val * 100.0) if predicted_val > 0 else 0.0
+        pct_error = (absolute_error / abs(predicted_val) * 100.0) if predicted_val else None
 
-        actuals = decision.actual_outcomes or []
+        actuals = list(decision.actual_outcomes or [])
+        if len(actuals) >= 100:
+            raise ValueError("Decision outcome history limit reached")
         actuals.append({
             "metric": metric_name,
             "predicted_value": predicted_val,
             "actual_value": actual_value,
             "absolute_error": round(absolute_error, 2),
-            "percentage_error": round(pct_error, 1),
-            "verified_at": datetime.utcnow().isoformat(),
-            "notes": outcome_notes or "Empirically measured outcome."
+            "percentage_error": round(pct_error, 1) if pct_error is not None else None,
+            "recorded_at": datetime.utcnow().isoformat(),
+            "source": "founder_reported_unverified",
+            "independently_verified": False,
+            "notes": outcome_notes or "",
         })
         decision.actual_outcomes = actuals
-        decision.outcome_verified = True
+        # An operator-entered value or free-text note cannot prove settlement
+        # or real-world outcome. Do not increment empirical adviser scorecards.
+        decision.outcome_verified = False
         decision.outcome_notes = outcome_notes
-
-        # Update Adviser Scorecards
-        advisers = decision.advisers_consulted or []
-        for adv_name in advisers:
-            scorecard = db.query(AdviserScorecard).filter(
-                AdviserScorecard.business_id == decision.business_id,
-                AdviserScorecard.adviser_name == adv_name
-            ).first()
-            if scorecard:
-                scorecard.predictions_tracked += 1
-                # Recalculate moving average error
-                old_avg = scorecard.average_prediction_error_pct
-                scorecard.average_prediction_error_pct = round((old_avg + pct_error) / 2.0, 1)
-                scorecard.last_evaluated_at = datetime.utcnow()
-
         db.commit()
         db.refresh(decision)
-
         return {
             "decision_id": decision.id,
             "metric": metric_name,
             "predicted": predicted_val,
             "actual": actual_value,
             "absolute_error": round(absolute_error, 2),
-            "percentage_error": round(pct_error, 1),
-            "advisers_evaluated": advisers
+            "percentage_error": round(pct_error, 1) if pct_error is not None else None,
+            "status": "recorded_unverified",
+            "independently_verified": False,
+            "advisers_evaluated": [],
         }
 
     def get_scorecards(self, db: Session, business_id: str) -> List[Dict[str, Any]]:
-        scorecards = db.query(AdviserScorecard).filter(AdviserScorecard.business_id == business_id).all()
+        """Expose only provable counts, never fabricate empirical percentages."""
+        scorecards = db.query(AdviserScorecard).filter(
+            AdviserScorecard.business_id == business_id
+        ).all()
         return [
             {
-                "id": s.id,
-                "adviser_name": s.adviser_name,
-                "department": s.department,
-                "total_recommendations": s.total_recommendations,
-                "approved_recommendations": s.approved_recommendations,
-                "overridden_recommendations": s.overridden_recommendations,
-                "predictions_tracked": s.predictions_tracked,
-                "average_prediction_error_pct": s.average_prediction_error_pct,
-                "evidence_completeness_score": round(s.evidence_completeness_score * 100, 1),
-                "action_completion_rate": round(s.action_completion_rate * 100, 1),
-                "verified_outcome_rate": round(s.verified_outcome_rate * 100, 1),
-                "last_evaluated": s.last_evaluated_at.isoformat() if s.last_evaluated_at else None
+                "id": row.id,
+                "adviser_name": row.adviser_name,
+                "department": row.department,
+                "total_recommendations": row.total_recommendations or 0,
+                "approved_recommendations": row.approved_recommendations or 0,
+                "overridden_recommendations": row.overridden_recommendations or 0,
+                "predictions_tracked": row.predictions_tracked or 0,
+                # Historical seed/default values have no independent backing.
+                # Keep nullable until verifiable evidence-backed scorecards exist.
+                "average_prediction_error_pct": None,
+                "evidence_completeness_score": None,
+                "action_completion_rate": None,
+                "verified_outcome_rate": None,
+                "last_evaluated": None,
+                "verification_status": "not_independently_verified",
             }
-            for s in scorecards
+            for row in scorecards
         ]
 
 accountability_engine = AccountabilityEngine()

@@ -1,0 +1,24 @@
+# Linux host-network deployment: app stays on loopback, PostgreSQL and Ollama
+# are separately provisioned. Existing trusted HTTPS proxy stays on the host.
+services:
+  oneboard:
+    image: ${ONEBOARD_IMAGE:?Use an immutable image digest or locally verified image ID}
+    network_mode: host
+    env_file:
+      - ${ONEBOARD_RUNTIME_ENV:?Specify a private runtime environment file}
+    environment:
+      ONEBOARD_PRODUCTION_MODE: "true"
+      ONEBOARD_DEMO_MODE: "false"
+      SERVE_WEB_BUILD: "true"
+      OPERATOR_DISK_MIN_FREE_MIB: "16"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      - /var/lib/oneboard:size=128m,uid=10001,gid=10001,mode=0700
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 180s
+    mem_limit: 2g
+    pids_limit: 256

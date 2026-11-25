@@ -1,206 +1,126 @@
 # OneBoard: AI Operating System for a Company of One
 
-> **"Run a company of one with the capabilities of a team."**
+> Run a company of one with the capabilities of a team.
 
-[![Built for Dubai AI Agents Championship](https://img.shields.io/badge/Competition-Dubai%20AI%20Agents%20Championship-orange.svg)](#)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB.svg?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg?logo=fastapi)](https://fastapi.tiangolo.com)
-[![React 18 + Vite](https://img.shields.io/badge/Frontend-React%2018%20+%20Vite-61DAFB.svg?logo=react)](https://vitejs.dev)
-[![Local Inference](https://img.shields.io/badge/Inference-Ollama%20Local%20+%20Cloud-black.svg)](https://ollama.com)
+[![Dubai AI Agents Championship](https://img.shields.io/badge/Project-Dubai%20AI%20Agents%20Championship-orange.svg)](#)
+[![Python 3.11](https://img.shields.io/badge/Backend-Python%203.11%20%2B%20FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
+[![React + Vite](https://img.shields.io/badge/Frontend-React%20%2B%20Vite-61DAFB.svg)](https://vite.dev/)
+[![Inference](https://img.shields.io/badge/Inference-Server--side%20Ollama-black.svg)](https://ollama.com/)
 
----
+> **Release status, 25 November 2026: local-first engineering prototype, not a production-certified SaaS.** Do not deploy publicly or handle real customer data without completing the security, hosting eligibility, backup, privacy and external-operations gates documented in [TEST_REPORT.md](TEST_REPORT.md), [critical readiness controls](docs/CRITICAL_READINESS_CONTROLS.md) and [P1 acceptance limits](docs/P1_ENGINEERING_ACCEPTANCE.md). The current implementation uses authenticated, tenant-scoped application records, sandbox adapters and local/server-side Ollama when available. Offline responses are marked as deterministic fallbacks, **not** real AI inference. Provider routing and synchronization infrastructure are implemented. Cloud-model failover on an eligible external host and externally certified availability are not implemented or verified end to end; authorized live third-party synchronization remains unverified. See [Batch P release gates](docs/BATCH_P_RELEASE_ENGINEERING.md) for the acceptance policy. PostgreSQL job leases and scoped runtime roles are implemented and require operator provisioning.
 
-## Executive Summary
+## What OneBoard currently does
 
-Solopreneurs, boutique agency owners, and technical consultants operate at a structural disadvantage: they are forced to juggle strategy, cash flow, marketing, client delivery, operations, and compliance simultaneously. Conventional tools offer either generic chat windows (which hallucinate business math and forget context) or static automation tools (which lack contextual judgment).
+OneBoard gives a solo founder one place to view their own business records, deliberate with role-based AI advisers, build accountable workflows and review why an action or recommendation was produced.
 
-**OneBoard** bridges this gap. It is an **autonomous, auditable AI Operating System** that equips a solo founder with an executive board of specialized AI advisers, a deterministic financial engine, an automated workflow execution runtime with Human-in-the-Loop approval gates, and a verifiable accountability ledger.
+### 1. Nine-role executive council
 
----
+Nine defined adviser roles include Chief of Staff, Strategy, Finance, Operations, Marketing, Technology, Customer Success, Risk and Compliance, and Research. The council assembles tenant-scoped records, requests independent positions from an available Ollama model, compares specialist positions and shows founder decisions. When inference is offline, its output is explicitly labeled deterministic fallback. Council opinions, forecasts and conclusions are **not independently verified expert advice**.
 
-## Core Pillars & Architectural Innovations
+### 2. Human-approved workflow execution
 
-### 1. Multi-Agent Autonomous Boardroom (Council Deliberation)
-- **7 Autonomous Domain Advisers**:
-  - **Chief of Staff / Strategy**: Executive synthesis, cross-department orchestration, priority setting.
-  - **CFO / Finance**: Runway calculations, cash flow preservation, unit economics, pricing models.
-  - **CMO / Marketing**: Customer acquisition, outbound funnels, positioning, copy review.
-  - **COO / Operations**: Delivery bottlenecks, capacity planning, process automation.
-  - **CPO / Product**: Roadmaps, user feedback loop, feature prioritization.
-  - **General Counsel / Compliance**: Contract risks, regulatory posture, liability exposure.
-  - **CTO / Technology**: Architecture resilience, technical debt, security safeguards.
-- **Structured Deliberation Protocol**:
-  1. *Context Assembly*: Ingests live financial numbers, active goals, and verified evidence.
-  2. *Independent Analysis*: Each adviser evaluates the proposal through their domain lens.
-  3. *Adversarial Challenge Round*: Advisers cross-examine peer recommendations (e.g., CFO challenges CMO's CAC projections).
-  4. *Executive Synthesis*: Highlights points of consensus, explicit trade-offs, and residual risks.
-  5. *Founder Sovereign Decision*: Final authority remains strictly with the founder (Approve, Modify, Reject).
+Workflow definitions are validated as directed acyclic graphs and executed in topological order. Approval checkpoints stop execution until the founder makes a decision. Rejected, stale or mismatched approvals cannot authorize downstream execution; dry-runs do not dispatch tools. Production requests require tenant-scoped idempotency keys, and interrupted executions can be quarantined without automatic replay of uncertain effects. The tool registry supports controlled reads, calculations and sandbox drafting. **Real external email delivery, bank transfers, contract commitments and other third-party side effects are not implemented.**
 
-### 2. Evidence-Based Accountability & Outcome Ledger
-- **No Hallucinated Decisions**: Every council recommendation links to cryptographic hashes of underlying documents, invoices, or database records.
-- **Empirical Variance Tracking**: Quantifiable forecasts (e.g., "Predicting 50 signups in 30 days") are tracked against verified real-world outcomes.
-- **Dynamic Adviser Calibration**: Advisers accumulate predictive track records; inaccuracy adjusts adviser confidence weightings over time.
+### 3. Deterministic, source-labeled financial snapshots
 
-### 3. Deterministic Financial Core
-- **Zero Hallucinated Arithmetic**: Financial calculations (MRR, burn rate, runway in months, CAC/LTV, active paying clients, gross margins) are executed via pure deterministic Python functions, not LLM token generation.
-- **Live Runway Warnings**: Triggers automatic contingency plans if cash runway drops below critical thresholds.
+The financial engine calculates recorded active-customer MRR, normalized recurring expenses, net burn, estimated runway and overdue invoice amounts with explicit boundary handling. Unknown reporting periods, negative and nonfinite figures trigger a data-quality warning rather than a reassuring health result. The dashboard shows source-record IDs, currency, timestamps and the statement that balances are **user-recorded, not independently reconciled**. This is not a bank connection, an audited ledger, or GAAP/IFRS reporting. Verified CAC/LTV and gross-margin accounting are not advertised.
 
-### 4. Visual Workflow Studio & Execution Runtime
-- **Directed Acyclic Graph (DAG) Engine**: Visual node-based workflow builder with automated cycle detection and topological sorting.
-- **Human-in-the-Loop (HITL) Gates**: Sensitive actions (e.g., invoices over $500, bulk client emails, outbound contract commitments) require explicit founder sign-off before proceeding.
-- **Deterministic Tool Calling**: Secure tool registry strictly isolated from system shell or destructive commands.
+### 4. Tenant-owned business memory and integration sandbox
 
-### 5. Multi-Model Inference Gateway (Ollama Local + Cloud Fallback)
-- **Local Privacy-First Processing**: Built for complete offline/air-gapped local execution via Ollama (`qwen2.5`, `llama3.2`, `phi3.5`, `deepseek-r1`).
-- **Zero-Token Offline Simulation Engine**: When offline or if Ollama is disconnected, OneBoard's deterministic heuristic engine ensures all workflows, boardroom sessions, and analyses run seamlessly without disruption.
-- **Task-Based Dynamic Routing**: Automatically assigns lighter models to fast classification and larger models to complex strategic synthesis.
+Business Memory ingests bounded local documents (TXT, Markdown, JSON, CSV, XLSX and PDF), stores tenant-owned chunks and supports bounded retrieval. PostgreSQL uses indexed lexical retrieval and genuine model embeddings with multiprobe angular LSH and bounded cosine reranking. Local fallback remains bounded; indexed candidate truncation is labeled. This **does not guarantee exhaustive recall** or cryptographic verification of source truth. The app uses SQLAlchemy-backed records rather than a deployed ChromaDB vector service.
 
----
+The Integration screen distinguishes synthetic fixture refresh from live provider sync. The fixed Northstar CRM, finance and GitHub examples are only available in an explicitly enabled demo workspace, never to regular businesses or in production. Live provider OAuth and synchronization are unavailable. Sandbox emails are not externally delivered.
 
-## System Architecture
+### 5. Server-side AI with honest failure states
+
+The API can call an operator-run Ollama daemon. The selected workspace profile must have its exact model installed before the UI claims inference is ready. PostgreSQL shares two concurrent inference HTTP admission slots across API workers; SQLite uses process-local slots; overloaded, offline, missing-model, timeout, malformed and incomplete responses fall back to a clearly labeled deterministic notice. **No browser model download is required by the normal architecture.** Actual free, eligible, reliable server hosting has not been approved or deployed.
+
+## Architecture
 
 ```mermaid
-graph TD
-    User([Founder / Operator]) -->|Browser UI / Glassmorphism| WebApp[React 18 + Vite SPA]
-    WebApp -->|REST + SSE Streaming| API[FastAPI Gateway]
-    
-    subgraph Core Backend
-        API --> Council[Agent Council Engine]
-        API --> Workflow[Workflow Execution Runtime]
-        API --> Financials[Deterministic Financial Engine]
-        API --> Accountability[Outcome & Evidence Ledger]
-        API --> ModelGateway[Multi-Model Inference Gateway]
-    end
-
-    subgraph Storage & Context
-        API --> DB[(SQLite / PostgreSQL via SQLAlchemy)]
-        API --> Vector[(ChromaDB Vector Vault)]
-    end
-
-    subgraph Model Providers
-        ModelGateway -->|Zero-cost / Air-gapped| LocalOllama[Local Ollama Daemon]
-        ModelGateway -->|Optional API Keys| CloudLLM[Google Gemini / Claude / OpenAI]
-        ModelGateway -->|Disconnected Fallback| OfflineSim[Deterministic Heuristic Fallback]
-    end
+flowchart TD
+    Founder[Founder in browser] --> Web[React + Vite]
+    Web -->|Authenticated REST| API[FastAPI]
+    API --> Tenant[(SQLAlchemy tenant records)]
+    API --> Workflow[Deterministic workflow and approval engine]
+    API --> Finance[Deterministic financial snapshots]
+    API --> Memory[Bounded document memory search]
+    API --> Council[Role-based council]
+    Council --> Gateway[Server-side Ollama gateway]
+    Gateway -->|Model installed and ready| Ollama[Operator-run Ollama server]
+    Gateway -->|Unavailable or overloaded| Fallback[Labeled deterministic fallback]
+    API --> Sandbox[Local demonstration adapters only]
 ```
 
----
+SQLite is for development and disposable local demos. Production multi-tenant mode requires a migrated PostgreSQL database and strict TLS, Host, trusted-proxy and cookie configuration. These guards are **not proof of a real deployment**.
 
-## Turnkey Demo Data: "NorthStar Studio"
+## Quickstart for local development only
 
-OneBoard ships with a turnkey, realistic creative & software agency pre-seeded into the database:
-- **Business Profile**: NorthStar Studio (Solo Founder: Alex Mercer)
-- **Cash Balance**: $132,840.00
-- **Monthly Recurring Revenue (MRR)**: $18,500.00
-- **Burn Rate**: $7,200.00/month (18.4 months runway)
-- **Active Paying Clients**: 28 accounts
-- **Pre-populated Artifacts**:
-  - Live executive council meetings with complete deliberation transcripts and challenge rounds.
-  - 10+ verified evidence records (Stripe exports, client contracts, pipeline metrics).
-  - Production workflows (e.g., "Lead Qualification & Onboarding Pipeline" with approval gates).
-
----
-
-## Quickstart & Local Setup
-
-### Prerequisites
-- **Python 3.11+**
-- **Node.js 18+** & `npm`
-- *(Optional)* [Ollama](https://ollama.com) installed and running locally
-
-### 1. Clone & Set Up Backend
+Prerequisites: Python 3.11+, Node.js 22.12+, npm, and optionally a local Ollama daemon. A local start does not use a hosted provider or require any paid service.
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/oneboard.git
-cd oneboard
-
-# Create and activate virtual environment
+git clone https://github.com/mihika-3159/OneBoard.git
+cd OneBoard
 python -m venv .venv
-# On Windows:
-.venv\Scripts\activate
-# On Linux/macOS:
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r apps/api/requirements.txt
+# Linux/macOS: source .venv/bin/activate
+# Windows PowerShell: .venv\\Scripts\\Activate.ps1
+python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements.lock
 ```
 
-### 2. Configure Environment
+Create a root `.env` for disposable **development** data:
 
-Create a `.env` file in `apps/api/`:
 ```env
-APP_NAME=OneBoard
-ENVIRONMENT=development
+AUTH_SECRET_KEY=replace-with-a-long-random-development-only-value
+ONEBOARD_DEMO_MODE=false
+ONEBOARD_PRODUCTION_MODE=false
 DATABASE_URL=sqlite:///./data/oneboard.db
-OLLAMA_BASE_URL=http://localhost:11434
-# Optional cloud provider keys (fallback only):
-# GEMINI_API_KEY=your_key_here
-# OPENAI_API_KEY=your_key_here
-# ANTHROPIC_API_KEY=your_key_here
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-### 3. Initialize Database & Seed Demo Data
+Start the API and frontend in separate terminals:
 
 ```bash
-python scripts/seed_database.py
+python -m uvicorn apps.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 4. Start the Application
-
-**Option A — Automated One-Click Script (Windows)**:
-```powershell
-.\scripts\run_all.ps1
-```
-
-**Option B — Manual Start**:
 ```bash
-# Terminal 1: Backend API
-cd apps/api
-uvicorn main:app --reload --port 8000
-
-# Terminal 2: Frontend Web App
 cd apps/web
-npm install
+npm ci
 npm run dev
 ```
 
-The frontend will be live at `http://localhost:5173` and the backend Swagger documentation at `http://localhost:8000/docs`.
+The local frontend runs at `http://localhost:5173` and the local API docs at `http://127.0.0.1:8000/docs`. Register a fresh synthetic workspace to test tenant isolation. Set `ONEBOARD_DEMO_MODE=true` only for an intentionally isolated demonstration with synthetic Northstar Studio data. **Do not seed or reset a real account**. Windows startup scripts have not yet received a separate clean-machine acceptance run.
 
----
+## Verification
 
-## Test Suite & Verification
+The repository runs GitHub Actions checks on draft PRs, including Python unit/adversarial/HTTP tests, frontend TypeScript build, PostgreSQL migration and concurrent security tests, a disposable database backup/restore drill, Chromium browser E2E and a small **real** Ollama CPU inference job. The separate browser inference experiment is not the recommended/default product architecture.
 
-OneBoard includes comprehensive unit, integration, and adversarial tests:
+Local checks:
 
 ```bash
-# Run all unit tests
-pytest tests/unit -v
-
-# Run multi-agent integration tests
-pytest tests/integration -v
-
-# Run adversarial prompt injection & traversal security tests
-pytest tests/adversarial -v
-
-# Run full Ollama integration test suite
-pytest tests/test_ollama_integration.py -v
+python -m compileall -q apps/api tests alembic
+python -m pytest -v
+cd apps/web && npm ci && npm run build
 ```
 
----
+Browser tests: from `apps/web` run `npx playwright test` after installing Chromium, with the repository's disposable local API configuration. The PostgreSQL restore script explicitly refuses non-disposable databases. See [TEST_REPORT.md](TEST_REPORT.md) for exact verified commits, CI logs, skipped tests and unresolved cases.
 
-## Security & Privacy Commitment
+## Security, privacy and deployment limits
 
-1. **Local-First Air-Gapping**: Sensitive business financials and customer PII stay entirely on your local workstation when using local Ollama models.
-2. **Deterministic Sandboxing**: Workflows execute in memory with strictly typed tool adapters. No dynamic `eval()`, shell execution, or unauthorized file-system modifications.
-3. **Audit Trail**: Every adviser suggestion, challenge, founder override, and action execution is permanently written to an immutable audit ledger.
+- Business access and memberships are scoped by tenant; production requires strong authentication configuration, HTTPS Host validation, secure cookies, explicit trusted proxy IPs and PostgreSQL.
+- Audits are database records, **not cryptographically immutable** or independently attested.
+- Alerts can be reconstructed from persisted invoices and commitments after a restart; the APScheduler interval job and sandbox email outbox remain **process-local and are not a distributed durable queue**.
+- An operator-approved deployment must separately prove TLS termination, offsite encrypted backups and restore retention, private networking, provider eligibility, usable server-side inference, monitoring and load behavior. No claim of 24/7 uptime is made.
 
----
+## Project
 
-## Competition Submission Details
+Developed for the Dubai AI Agents Championship. Technical questions and reproducible issues can be raised in this repository. The project remains on a draft engineering pull request while production acceptance checks are incomplete.
 
-- **Event**: Dubai AI Agents Championship
-- **Category**: AI Agents for Business Operations & Solo Founders
-- **Creator**: Mihika Singh
-- **Contact**: [GitHub Issues / Discussion](https://github.com/your-username/oneboard)
+
+## Restricted runtime and scheduled workflows
+
+Use the hash-locked Python installation on supported Python 3.11 environments.
+See [Batch E operator notes](docs/BATCH_E_ENGINEERING.md) for separate migration
+and runtime database roles, daily/weekly IANA timezone schedules, retention
+and bounded consistent export. Local CI evidence is not deployment approval.

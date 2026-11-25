@@ -1,0 +1,45 @@
+name: OneBoard reproducible container smoke
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Lock base digests and build from locked package sets
+        run: |
+          sh deploy/lock-bases.sh container-bases.lock
+          sh deploy/build-image.sh container-bases.lock oneboard-ci:local
+          docker image inspect oneboard-ci:local --format '{{.Id}}' > container-image-id.txt
+      - name: Start nonroot read-only container and verify API and static bundle
+        run: |
+          docker run -d --name oneboard-container-ci --network host --read-only --tmpfs /tmp:rw,size=128m --tmpfs /var/lib/oneboard:rw,uid=10001,gid=10001,mode=0700,size=8m --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 256 -e OPERATOR_DISK_MIN_FREE_MIB=2 -e DATABASE_URL=sqlite:////tmp/disposable.sqlite -e AUTH_SECRET_KEY=ci-container-synthetic-only-not-production-0123456789 oneboard-ci:local
+          trap 'docker logs oneboard-container-ci --tail 30; docker rm -f oneboard-container-ci' EXIT
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/ready; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1:8000/ready
+          curl -fsS http://127.0.0.1:8000/ | grep -q '<div id="root"'
+          test "$(docker exec oneboard-container-ci id -u)" = 10001
+          # Real ENOSPC in a tiny isolated tmpfs, not the database filesystem.
+          docker exec oneboard-container-ci python -c 'import errno; p=open("/var/lib/oneboard/fill","wb"); exec("try:\n while True: p.write(b\"x\"*1048576);p.flush()\nexcept OSError as e:\n assert e.errno==errno.ENOSPC")'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/ready)" = 503
+          docker exec oneboard-container-ci rm /var/lib/oneboard/fill
+          curl -fsS http://127.0.0.1:8000/ready
+          docker stop --time 60 oneboard-container-ci
+          code=$(docker inspect oneboard-container-ci --format '{{.State.ExitCode}}')
+          test "$code" = 0 || test "$code" = 143
+          docker logs oneboard-container-ci 2>&1 | grep -q 'Application shutdown complete'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-build-identities
+          path: |
+            container-bases.lock
+            container-image-id.txt

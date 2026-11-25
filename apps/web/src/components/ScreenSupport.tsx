@@ -1,0 +1,17 @@
+import React,{useEffect,useRef} from 'react';
+export const screenHelp:Record<string,string>={overview:'Review recorded metrics and outstanding work; missing data is not estimated.',command:'Ask about your workspace and verify AI evidence.',boardroom:'Review adviser arguments and interrupted meetings.',workflows:'Revise workflows, review approvals and inspect run history before retrying.',agents:'Configure permitted tools and monitor read-only execution checkpoints.',accountability:'Compare recorded outcomes with forecasts.',memory:'Import documents and verify cited sources.',operations:'Review customers, commitments and leads.',finance:'Record evidence and reconcile journal entries; supplied statements are not independently verified.',integrations:'Inspect provider scopes, sync history and uncertain deliveries.',settings:'Manage security, models, retention, archives and deletion.'};
+export function ScreenState({kind,message,retry,dismiss,retryLabel='Retry view'}:{retryLabel?:string;kind:'loading'|'error'|'empty';message:string;retry?:()=>void;dismiss?:()=>void}){return <section className="glass-panel rounded-xl p-4 mb-3 space-y-2 text-sm" aria-busy={kind==='loading'}><p role={kind==='error'?'alert':'status'}>{message}</p><div className="flex flex-wrap gap-2">{retry&&<button className="btn-primary px-3 py-2" onClick={retry}>{retryLabel}</button>}{dismiss&&<button className="btn-ghost px-3 py-2" onClick={dismiss}>Dismiss</button>}</div></section>}
+export class ScreenBoundary extends React.Component<React.PropsWithChildren,{failed:boolean;revision:number}>{state={failed:false,revision:0};static getDerivedStateFromError(){return {failed:true}}render(){return this.state.failed?<ScreenState kind="error" message="This view could not be rendered. Other views remain available." retry={()=>this.setState(s=>({failed:false,revision:s.revision+1}))}/>:<React.Fragment key={this.state.revision}>{this.props.children}</React.Fragment>}}
+export function AlertDialog({children,onClose,label="Tenant proactive alerts"}:React.PropsWithChildren<{onClose:()=>void;label?:string}>){const ref=useRef<HTMLDialogElement>(null);useEffect(()=>{const dialog=ref.current;const previous=document.activeElement as HTMLElement|null;dialog?.showModal();return()=>{dialog?.close();if(previous?.isConnected)previous.focus()}},[]);return <dialog ref={ref} aria-label={label} className="oneboard-dialog" onCancel={e=>{e.preventDefault();onClose()}}>{children}</dialog>}
+
+export function ListPager({page,total,size,onChange}:{page:number;total:number;size:number;onChange:(p:number)=>void}){
+ const last=Math.max(0,Math.ceil(total/size)-1);
+ if(!total)return null;
+ return <div className="flex flex-wrap items-center gap-2 text-xs" role="group" aria-label="List pagination"><button className="btn-ghost px-2 py-1" disabled={page===0} onClick={()=>onChange(Math.max(0,page-1))}>Previous page</button><span role="status">{Math.min(page*size+1,total)}–{Math.min((page+1)*size,total)} of {total}</span><button className="btn-ghost px-2 py-1" disabled={page>=last} onClick={()=>onChange(Math.min(last,page+1))}>Next page</button></div>
+}
+export function LoadState({loading,error,empty,retry}:{loading:boolean;error:string;empty?:string;retry:()=>void}){
+ if(loading)return <ScreenState kind="loading" message="Loading recorded data…"/>;
+ if(error)return <ScreenState kind="error" message={error} retry={retry}/>;
+ if(empty)return <ScreenState kind="empty" message={empty}/>;
+ return null;
+}

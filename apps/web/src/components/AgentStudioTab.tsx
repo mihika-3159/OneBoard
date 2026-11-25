@@ -1,3 +1,4 @@
+import {LoadState} from './ScreenSupport';
 import React, { useState, useEffect } from 'react';
 import {
   Bot,
@@ -13,9 +14,13 @@ import {
   Send,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { CustomAgent } from '../types';
+import { AgentRuntimePanel } from './AgentRuntimePanel';
 
 export const AgentStudioTab: React.FC = () => {
+  const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
   const [agents, setAgents] = useState<CustomAgent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<CustomAgent | null>(null);
 
@@ -33,10 +38,13 @@ export const AgentStudioTab: React.FC = () => {
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b');
-  const [allowedTools, setAllowedTools] = useState<string[]>(['read_crm', 'check_telemetry']);
+  const [allowedTools, setAllowedTools] = useState<string[]>(['read_crm']);
+  const [runtimeSteps, setRuntimeSteps] = useState(4);
+  const [memoryScopes, setMemoryScopes] = useState('');
   const [requiresApproval, setRequiresApproval] = useState<string[]>(['send_email']);
 
   // Sandbox Tester State
+  const [cacheSandbox, setCacheSandbox] = useState(false);
   const [testInput, setTestInput] = useState('We have 3 new customer signups today. One has not configured their API key yet.');
   const [testOutput, setTestOutput] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
@@ -47,6 +55,7 @@ export const AgentStudioTab: React.FC = () => {
   }, []);
 
   const loadAgents = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const data = await api.getAgents();
       setAgents(data);
@@ -54,20 +63,20 @@ export const AgentStudioTab: React.FC = () => {
         setSelectedAgent(data[0]);
       }
     } catch (e) {
-      console.error('Error loading custom agents', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading custom agents');
+    } finally {setScreenLoading(false)}
   };
 
   const handleGenerateNL = async () => {
     setIsSubmitting(true);
     try {
-      const config = await api.generateAgentConfig(nlPrompt);
+      const config = await inference.run("/agents/generate", {prompt: nlPrompt});
       setName(config.name || 'New Custom Agent');
       setRoleTitle(config.role_title || 'Autonomous Specialist');
       setDepartment(config.department || 'Operations');
       setDescription(config.description || '');
       setSystemPrompt(config.system_prompt || '');
-      setAllowedTools(config.allowed_tools || ['read_crm']);
+      setAllowedTools((config.allowed_tools || []).filter((tool: string)=>['read_crm','calculate_metrics','read_memory'].includes(tool)));
       setRequiresApproval(config.requires_approval_for || ['send_email']);
       setCreateMode('visual');
     } catch (e) {
@@ -88,8 +97,9 @@ export const AgentStudioTab: React.FC = () => {
         system_prompt: systemPrompt,
         selected_model: selectedModel,
         allowed_tools: allowedTools,
+        allowed_memory_collections: memoryScopes.split(',').map(value=>value.trim()).filter(Boolean),
         requires_approval_for: requiresApproval,
-        max_steps: 4,
+        max_steps: runtimeSteps,
       });
       await loadAgents();
       setSelectedAgent(newAgent);
@@ -105,8 +115,8 @@ export const AgentStudioTab: React.FC = () => {
     if (!selectedAgent) return;
     setIsTesting(true);
     try {
-      const res = await api.testAgent(selectedAgent.id, testInput);
-      setTestOutput(res.output);
+      const res = await inference.run(`/agents/${selectedAgent.id}/test`, {test_input: testInput, cache_text: cacheSandbox});
+      setTestOutput((res.cache_hit ? "[Cached deterministic result] " : "") + res.output);
     } catch (e) {
       console.error('Testing failed', e);
     } finally {
@@ -116,6 +126,10 @@ export const AgentStudioTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!agents.length?'No custom agents recorded. Create one to get started.':undefined} retry={()=>void loadAgents()}/>
+      {inference.indicator}
+      <AgentRuntimePanel agents={agents} selectedAgent={selectedAgent} />
+      <label className="flex gap-2 text-sm text-slate-400"><input type="checkbox" checked={cacheSandbox} onChange={e => setCacheSandbox(e.target.checked)} /> Reuse identical pinned deterministic sandbox responses for 30 seconds</label>
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -141,6 +155,16 @@ export const AgentStudioTab: React.FC = () => {
       </div>
 
       {/* Creation Modal / Drawer */}
+      {isCreating && <div className="rounded-xl border border-slate-700 p-3 space-y-2">
+        <p className="text-sm text-slate-300">Explicit read-only runtime tool grants</p>
+        {['read_crm','calculate_metrics','read_memory'].map(tool=><label className="flex gap-2 text-sm" key={tool}>
+          <input type="checkbox" checked={allowedTools.includes(tool)} onChange={e=>setAllowedTools(old=>e.target.checked?[...old,tool]:old.filter(t=>t!==tool))}/>{tool}
+        </label>)}
+        <label className="block text-sm">Maximum runtime steps<input type="number" min={1} max={12} value={runtimeSteps} onChange={e=>setRuntimeSteps(Math.max(1,Math.min(12,Number(e.target.value)||1)))} className="block bg-slate-900 border rounded p-2"/></label>
+        </div>}
+      {isCreating && <label className="block text-sm text-slate-300">Permitted memory document IDs (comma-separated; blank grants none)
+        <input className="block w-full bg-slate-900 border rounded p-2" value={memoryScopes} onChange={e=>setMemoryScopes(e.target.value)}/>
+      </label>}
       {isCreating && (
         <div className="p-6 rounded-2xl bg-slate-900 border border-indigo-500/30 space-y-4">
           <div className="flex items-center justify-between">
@@ -173,7 +197,7 @@ export const AgentStudioTab: React.FC = () => {
               </p>
               <textarea
                 rows={3}
-                value={nlPrompt}
+                aria-label="Describe custom agent" value={nlPrompt}
                 onChange={(e) => setNlPrompt(e.target.value)}
                 className="w-full px-3.5 py-2.5 bg-slate-800 text-white text-xs rounded-xl border border-slate-700 focus:outline-none focus:border-indigo-500"
               />
@@ -195,6 +219,7 @@ export const AgentStudioTab: React.FC = () => {
                   <label className="font-semibold text-slate-300">Agent Name</label>
                   <input
                     type="text"
+                    aria-label="Agent name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none"
@@ -202,7 +227,7 @@ export const AgentStudioTab: React.FC = () => {
                 </div>
                 <div>
                   <label className="font-semibold text-slate-300">Department</label>
-                  <select
+                  <select aria-label="Department"
                     value={department}
                     onChange={(e) => setDepartment(e.target.value)}
                     className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none"
@@ -220,6 +245,7 @@ export const AgentStudioTab: React.FC = () => {
                 <label className="font-semibold text-slate-300">System Instruction Prompt</label>
                 <textarea
                   rows={3}
+                  aria-label="System instruction prompt"
                   value={systemPrompt}
                   onChange={(e) => setSystemPrompt(e.target.value)}
                   className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none font-mono"
@@ -229,7 +255,7 @@ export const AgentStudioTab: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="font-semibold text-slate-300">Assigned Ollama Model</label>
-                  <select
+                  <select aria-label="Assigned Ollama Model"
                     value={selectedModel}
                     onChange={(e) => setSelectedModel(e.target.value)}
                     className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none font-mono"
@@ -241,7 +267,7 @@ export const AgentStudioTab: React.FC = () => {
                 </div>
                 <div>
                   <label className="font-semibold text-slate-300">Approval Requirement Boundary</label>
-                  <input
+                  <input aria-label="Approval Requirement Boundary"
                     type="text"
                     value={requiresApproval.join(', ')}
                     onChange={(e) => setRequiresApproval(e.target.value.split(',').map((s) => s.trim()))}
@@ -273,7 +299,7 @@ export const AgentStudioTab: React.FC = () => {
           <div className="space-y-2">
             {agents.map((a) => (
               <div
-                key={a.id}
+                role="button" tabIndex={0} aria-pressed={selectedAgent?.id===a.id} onKeyDown={e=>{if(e.target===e.currentTarget&&(e.key==='Enter'||e.key===' ')){e.preventDefault();setSelectedAgent(a)}}} key={a.id}
                 onClick={() => setSelectedAgent(a)}
                 className={`p-3.5 rounded-xl border cursor-pointer transition ${
                   selectedAgent?.id === a.id
@@ -290,7 +316,7 @@ export const AgentStudioTab: React.FC = () => {
                 <div className="text-[11px] text-slate-400 mt-1">{a.role_title} • {a.department}</div>
                 <div className="text-[10px] text-slate-500 mt-2 font-mono flex items-center justify-between">
                   <span>Model: {a.selected_model}</span>
-                  <span>Tools: {a.allowed_tools?.length || 2}</span>
+                  <span>Tools: {a.allowed_tools?.length ?? 0}</span>
                 </div>
               </div>
             ))}
@@ -326,7 +352,7 @@ export const AgentStudioTab: React.FC = () => {
                 <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 space-y-1.5 text-[11px]">
                   <div className="flex justify-between">
                     <span className="text-slate-400">Permitted Tools:</span>
-                    <span className="text-indigo-300 font-mono">{selectedAgent.allowed_tools?.join(', ') || 'read_crm'}</span>
+                    <span className="text-indigo-300 font-mono">{selectedAgent.allowed_tools?.join(', ') || 'None'}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-400">Approval Required For:</span>
@@ -361,6 +387,7 @@ export const AgentStudioTab: React.FC = () => {
               <label className="text-xs font-semibold text-slate-300 block mb-1">Test Simulation Input:</label>
               <textarea
                 rows={3}
+                aria-label="Test simulation input"
                 value={testInput}
                 onChange={(e) => setTestInput(e.target.value)}
                 className="w-full p-2.5 bg-slate-900 text-white text-xs rounded-xl border border-slate-800 focus:outline-none focus:border-indigo-500"

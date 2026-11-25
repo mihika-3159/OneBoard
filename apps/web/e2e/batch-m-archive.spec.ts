@@ -1,0 +1,47 @@
+import {test,expect} from '@playwright/test';
+import {randomUUID} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+test('owner downloads and resumes a signed portable archive and restores it without overwriting',async({page},testInfo)=>{
+ await page.goto('/');
+ await page.getByRole('button',{name:/Register/}).click();
+ await page.getByPlaceholder('e.g. Alex Founder').fill('Batch M Founder');
+ await page.getByPlaceholder('e.g. Apex SaaS Labs').fill('Batch M Workspace');
+ await page.getByPlaceholder('founder@example.com').fill(randomUUID()+'@example.test');
+ await page.locator('input[type=password]').fill('TestPassword123!');
+ await page.getByRole('button',{name:'Create Workspace & Sign In'}).click();
+ await expect(page.getByText('Batch M Founder')).toBeVisible();
+ await page.getByRole('complementary').locator('nav button').filter({has:page.locator('span').getByText('Settings',{exact:true})}).click();
+ const panel=page.getByRole('region',{name:'Portable workspace archives'});
+ await expect(panel.getByRole('heading',{name:'Portable workspace archives'})).toBeVisible();
+ await panel.getByRole('button',{name:'Create portable export'}).click();
+ await expect(panel.getByText('Consistent portable export captured')).toBeVisible({timeout:15000});
+ const downloadManifest=page.waitForEvent('download');
+ await panel.getByRole('button',{name:'Download signed manifest'}).click();
+ const manifestFile=testInfo.outputPath('oneboard-portable-manifest.json');
+ await (await downloadManifest).saveAs(manifestFile);
+ const manifest=JSON.parse(readFileSync(manifestFile,'utf8'));
+ expect(manifest.consistent_snapshot).toBe(true);
+ expect(manifest.pages.length).toBeGreaterThan(0);
+ const files:string[]=[];
+ for(const d of manifest.pages){
+   await panel.getByLabel('Export page number').fill(String(d.number));
+   const downloadPage=page.waitForEvent('download');
+   await panel.getByRole('button',{name:'Download page',exact:true}).click();
+   const download=await downloadPage;
+   const path=testInfo.outputPath('page-'+String(d.number).padStart(4,'0')+'.json');
+   await download.saveAs(path);files.push(path);
+   await expect(panel.getByText('Archive page downloaded')).toBeVisible();
+ }
+ await panel.getByLabel('Import signed manifest').setInputFiles(manifestFile);
+ await panel.getByRole('button',{name:'Start portable import'}).click();
+ await expect(panel.getByText('Signed manifest accepted; upload numbered pages')).toBeVisible();
+ await panel.getByLabel('Import page files').setInputFiles(files);
+ await panel.getByRole('button',{name:'Upload selected pages'}).click();
+ await expect(panel.getByText('Pages uploaded; existing pages retained')).toBeVisible();
+ await panel.getByLabel('Restore confirmation').fill('RESTORE '+manifest.tenant);
+ await panel.getByLabel('Restore password').fill('TestPassword123!');
+ await panel.getByRole('button',{name:'Restore missing records'}).click();
+ await expect(panel.getByText(/Restoration applied: 0 inserted,/)).toBeVisible({timeout:15000});
+ await panel.getByRole('button',{name:'Database diagnostics',exact:true}).click();
+ await expect(panel.getByText('Database diagnostics loaded')).toBeVisible();
+});

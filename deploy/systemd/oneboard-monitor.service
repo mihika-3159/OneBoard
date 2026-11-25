@@ -1,0 +1,18 @@
+[Unit]
+Description=OneBoard independent operator health and backup monitor
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=oneboard-monitor
+Group=oneboard-monitor
+WorkingDirectory=/opt/oneboard
+EnvironmentFile=/etc/oneboard/monitor.env
+ExecStart=/opt/oneboard/.venv/bin/python -m scripts.operations.operator_monitor --origin ${ONEBOARD_PUBLIC_ORIGIN} --directory /var/lib/oneboard-monitor
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/oneboard-monitor
+TimeoutStartSec=30

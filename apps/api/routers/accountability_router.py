@@ -1,30 +1,59 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from apps.api.core.config import settings
+from apps.api.services.seed_data import DEMO_BUSINESS_ID
 from typing import Optional
 from apps.api.core.database import get_db
+from apps.api.core.auth import get_current_user, enforce_tenant_boundary, require_founder_role
+from apps.api.models.business import User
 from apps.api.models.decision_evidence import Decision
 from apps.api.services.accountability_engine import accountability_engine
-from apps.api.services.seed_data import DEMO_BUSINESS_ID
 
 router = APIRouter(prefix="/api/accountability", tags=["Accountability & Outcomes"])
 
 class OutcomeVerificationRequest(BaseModel):
-    decision_id: str
-    metric_name: str
-    actual_value: float
-    notes: Optional[str] = None
+    decision_id: str = Field(min_length=1, max_length=36)
+    metric_name: str = Field(min_length=1, max_length=255)
+    actual_value: float = Field(allow_inf_nan=False)
+    notes: Optional[str] = Field(default=None, max_length=4000)
 
 @router.get("/decisions")
-def get_accountability_decisions(db: Session = Depends(get_db)):
-    return db.query(Decision).filter(Decision.business_id == DEMO_BUSINESS_ID).order_by(Decision.created_at.desc()).all()
+def get_accountability_decisions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    records = db.query(Decision).filter(
+        Decision.business_id == current_user.business_id
+    ).order_by(Decision.created_at.desc()).limit(100).all()
+    # Legacy demo records and self-reported entries are not authenticated
+    # evidence. Do not propagate historical 'verified' labels to the UI.
+    is_demo = bool(settings.ONEBOARD_DEMO_MODE and current_user.business_id == DEMO_BUSINESS_ID)
+    return [{
+        **{column.name: getattr(item, column.name) for column in Decision.__table__.columns},
+        "outcome_verified": False,
+        "outcome_data_quality": "fictional_demo" if is_demo else "founder_reported_unverified",
+    } for item in records]
 
 @router.get("/scorecards")
-def get_adviser_scorecards(db: Session = Depends(get_db)):
-    return accountability_engine.get_scorecards(db, DEMO_BUSINESS_ID)
+def get_adviser_scorecards(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return accountability_engine.get_scorecards(db, current_user.business_id)
 
 @router.post("/verify-outcome")
-def verify_outcome(req: OutcomeVerificationRequest, db: Session = Depends(get_db)):
+def verify_outcome(
+    req: OutcomeVerificationRequest,
+    current_user: User = Depends(require_founder_role),
+    db: Session = Depends(get_db)
+):
+    decision = db.query(Decision).filter(Decision.id == req.decision_id).first()
+    if not decision:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Decision record not found")
+
+    enforce_tenant_boundary(decision.business_id, current_user)
+
     try:
         res = accountability_engine.record_actual_outcome(
             db=db,
@@ -34,5 +63,39 @@ def verify_outcome(req: OutcomeVerificationRequest, db: Session = Depends(get_db
             outcome_notes=req.notes
         )
         return res
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ForecastRequest(BaseModel):
+    adviser: str = Field(min_length=1,max_length=100)
+    metric: str = Field(min_length=1,max_length=255)
+    point: float = Field(allow_inf_nan=False)
+    lower: float = Field(allow_inf_nan=False)
+    upper: float = Field(allow_inf_nan=False)
+    confidence: float = Field(gt=0,lt=1,allow_inf_nan=False)
+    days: int = Field(ge=1,le=365,strict=True)
+
+
+@router.post("/decisions/{decision_id}/forecast")
+def register_forecast(decision_id: str, req: ForecastRequest, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    from apps.api.services.adviser_calibration import register_forecast
+    try:
+        return register_forecast(db,current_user.business_id,decision_id,req.adviser,req.metric,req.point,req.lower,req.upper,req.confidence,req.days)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+
+
+@router.get("/calibration")
+def adviser_calibration(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from apps.api.services.adviser_calibration import historical_calibration
+    return {"scope":"latest 500 decisions and 2000 tasks", "rows":historical_calibration(db,current_user.business_id)}
+
+
+@router.post("/meetings/{meeting_id}/forecast/{argument_id}")
+def register_model_forecast(meeting_id: str, argument_id: str, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    from apps.api.services.adviser_calibration import register_model_forecast
+    try:
+        return register_model_forecast(db,current_user.business_id,meeting_id,argument_id)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc

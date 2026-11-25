@@ -1,7 +1,9 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean, Float
+from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean, Float, Integer, ForeignKey
 from datetime import datetime
+from sqlalchemy.orm import deferred
 import uuid
 from apps.api.core.database import Base
+from apps.api.core.money import ExactMoney
 
 class Business(Base):
     __tablename__ = "businesses"
@@ -14,6 +16,9 @@ class Business(Base):
     timezone = Column(String(50), default="UTC")
     business_model = Column(String(100), default="Subscription / SaaS")
     
+    # Ownership
+    owner_id = Column(String(36), nullable=True)
+    
     # JSON structured attributes
     products_summary = Column(JSON, default=list)
     target_customers = Column(JSON, default=list)
@@ -22,9 +27,86 @@ class Business(Base):
     founder_preferences = Column(JSON, default=dict)
     
     # Financial health baseline cache
-    monthly_burn_rate = Column(Float, default=0.0)
-    current_cash_balance = Column(Float, default=0.0)
+    monthly_burn_rate = Column(ExactMoney(), default=0.0)
+    current_cash_balance = Column(ExactMoney(), default=0.0)
     runway_months = Column(Float, default=0.0)
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(255), unique=True, index=True, nullable=False)
+    name = Column(String(255), nullable=False)
+    hashed_password = deferred(Column(String(255), nullable=False))
+    role = Column(String(50), default="founder")  # "founder", "member", "admin"
+    business_id = Column(String(36), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    is_active = Column(Boolean, default=True)
+    api_key = deferred(Column(String(100), unique=True, index=True, nullable=True))
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BusinessMembership(Base):
+    __tablename__ = "business_memberships"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    business_id = Column(String(36), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
+    role = Column(String(50), default="founder")  # "owner", "founder", "member"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))  # jti / session ID
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    business_id = Column(String(36), nullable=False)
+    token_hash = Column(String(64), nullable=True, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    is_revoked = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LoginThrottleState(Base):
+    """Shared failed-login counters keyed only by a SHA-256 identifier digest."""
+    __tablename__ = "login_throttle_states"
+
+    identifier_hash = Column(String(64), primary_key=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    window_started_at = Column(Float, nullable=False)
+
+
+class AccountSecurity(Base):
+    __tablename__ = "account_security"
+    user_id = Column(String(36), primary_key=True)
+    business_id = Column(String(36), nullable=False, index=True)
+    mfa_ciphertext = Column(Text, nullable=True)
+    pending_mfa_ciphertext = Column(Text, nullable=True)
+    pending_mfa_expires = Column(DateTime, nullable=True)
+    last_totp_counter = Column(Integer, nullable=True)
+    recovery_hashes = Column(JSON, default=list, nullable=False)
+    email_verified_at = Column(DateTime, nullable=True)
+    email_challenge_hash = Column(String(64), nullable=True)
+    email_challenge_ciphertext = Column(Text, nullable=True)
+    email_challenge_expires = Column(DateTime, nullable=True)
+    api_key_expires_at = Column(DateTime, nullable=True)
+    api_key_scopes = Column(JSON, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SecurityEvent(Base):
+    __tablename__ = "security_events"
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    business_id = Column(String(36), nullable=False, index=True)
+    user_id = Column(String(36), nullable=False)
+    event = Column(String(64), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    previous_hash = Column(String(64), nullable=False)
+    event_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False)

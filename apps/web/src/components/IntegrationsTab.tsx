@@ -13,16 +13,22 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { ProviderLifecyclePanel } from './ProviderLifecyclePanel';
 
 export const IntegrationsTab: React.FC = () => {
   const [integrations, setIntegrations] = useState<any[]>([]);
   const [outbox, setOutbox] = useState<any[]>([]);
   const [isSyncing, setIsSyncing] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading,setLoading]=useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvPreview, setCsvPreview] = useState<any | null>(null);
+  const [csvBusy, setCsvBusy] = useState(false);
+  const [csvKey, setCsvKey] = useState<string>(crypto.randomUUID().replace(/-/g, '_'));
 
   // Chat Import State
-  const [chatText, setChatText] = useState(
-    "Founder: We decided to keep the Growth tier at $59/mo and require 30% upfront on annual commitments.\nAction item: Audit Acme's proposal document before Friday."
-  );
+  const [chatText, setChatText] = useState('');
   const [extractedFacts, setExtractedFacts] = useState<any | null>(null);
 
   useEffect(() => {
@@ -30,22 +36,30 @@ export const IntegrationsTab: React.FC = () => {
   }, []);
 
   const loadData = async () => {
+    setLoading(true);
     try {
       const [ints, ob] = await Promise.all([api.getIntegrations(), api.getEmailOutbox()]);
-      setIntegrations(ints);
-      setOutbox(ob);
+      // The API returns an envelope { is_simulated, channel, outbox }, not an array.
+      setIntegrations(Array.isArray(ints) ? ints : []);
+      setOutbox(Array.isArray(ob?.outbox) ? ob.outbox : []);
+      setError(null);
     } catch (e) {
-      console.error('Error loading integrations', e);
-    }
+      setError(e instanceof Error ? e.message : 'Integrations are unavailable. Please retry.');
+      setIntegrations([]);
+      setOutbox([]);
+    } finally {setLoading(false)}
   };
 
   const handleSync = async (id: string) => {
     setIsSyncing(id);
     try {
-      await api.syncIntegration(id);
+      const result = await api.syncIntegration(id);
       await loadData();
+      if (result.is_simulated) {
+        setNotice('Sandbox refresh only. No external provider was contacted and no live records were synced.');
+      }
     } catch (e) {
-      console.error('Sync failed', e);
+      setError(e instanceof Error ? e.message : 'Sandbox sync failed. Please retry.');
     } finally {
       setIsSyncing(null);
     }
@@ -55,8 +69,36 @@ export const IntegrationsTab: React.FC = () => {
     try {
       const res = await api.importChat(chatText);
       setExtractedFacts(res);
+      setError(null);
     } catch (e) {
-      console.error('Chat import failed', e);
+      setError(e instanceof Error ? e.message : 'Chat import failed. Please retry.');
+    }
+  };
+
+  const handleCustomerCSV = async (dryRun: boolean) => {
+    if (!csvFile || (!dryRun && !csvPreview)) return;
+    setCsvBusy(true);
+    try {
+      if (csvFile.size > 1024 * 1024) {
+        throw new Error('CSV exceeds the 1 MiB limit');
+      }
+      const result = await api.importLocalCustomers(
+        await csvFile.text(), csvKey, csvFile.name, dryRun
+      );
+      if (dryRun) {
+        setCsvPreview(result);
+        setNotice(`Validated ${result.rows_validated} customer rows. Nothing has been imported yet.`);
+      } else {
+        setNotice(`${result.rows_imported} user-supplied customers ${result.status}. Not independently CRM-verified.`);
+        setCsvPreview(null);
+        setCsvFile(null);
+        setCsvKey(crypto.randomUUID().replace(/-/g, '_'));
+      }
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'CSV validation or import failed');
+    } finally {
+      setCsvBusy(false);
     }
   };
 
@@ -69,9 +111,9 @@ export const IntegrationsTab: React.FC = () => {
             <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               Integrations Framework
             </span>
-            <span className="text-xs text-slate-400">Zero Paid Spend • Local Adapters & Official OAuth Schemas</span>
+            <span className="text-xs text-slate-400">Local sandbox adapters and optional configured external adapters</span>
           </div>
-          <h1 className="text-xl font-bold text-white">Connected Tools & Connectors</h1>
+          <h1 className="text-xl font-bold text-white">Integration Sandbox & Connector Readiness</h1>
         </div>
 
         <div className="flex items-center gap-2 text-xs text-slate-400 font-mono bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-800">
@@ -79,6 +121,48 @@ export const IntegrationsTab: React.FC = () => {
         </div>
       </div>
 
+      {loading&&<p role="status" aria-live="polite">Loading integrations and outbox…</p>}
+      {!loading&&!error&&!integrations.length&&<p role="status">No sandbox connector records.</p>}
+      {error && (
+        <div role="alert" className="p-3 border border-rose-500/40 rounded-xl text-rose-300 text-sm flex justify-between items-center">
+          <span>{error}</span>
+          <button onClick={() => { void loadData(); }} className="underline">Retry</button>
+        </div>
+      )}
+      {notice && <div role="status" className="p-3 border border-amber-500/30 rounded-xl text-amber-200 text-xs">{notice}</div>}
+      <section className="p-5 rounded-2xl glass-panel space-y-3" aria-label="Import customer CSV">
+        <h2 className="text-sm font-bold text-white">Import user-supplied customer CSV</h2>
+        <p className="text-xs text-slate-400">
+          Actual tenant-owned import, not a CRM connection. Required columns: name,mrr.
+          Optional: company,email,status. Maximum 250 rows or 1 MiB. Validate first,
+          then explicitly confirm the write. No external provider is contacted.
+        </p>
+        <input
+          type="file" accept=".csv,text/csv" aria-label="Customer CSV file"
+          className="text-xs text-slate-300"
+          onChange={event => {
+            setCsvFile(event.target.files?.[0] || null);
+            setCsvPreview(null);
+            setCsvKey(crypto.randomUUID().replace(/-/g, '_'));
+          }}
+        />
+        <div className="flex gap-2">
+          <button
+            disabled={!csvFile || csvBusy}
+            onClick={() => void handleCustomerCSV(true)}
+            className="rounded-lg bg-indigo-600 px-3 py-2 text-xs text-white disabled:opacity-50"
+          >Validate CSV</button>
+          <button
+            disabled={!csvPreview || csvBusy}
+            onClick={() => void handleCustomerCSV(false)}
+            className="rounded-lg bg-slate-700 px-3 py-2 text-xs text-white disabled:opacity-50"
+          >Confirm Import</button>
+        </div>
+        {csvPreview && <p role="status" className="text-xs text-emerald-300">
+          {csvPreview.rows_validated} rows validated. No records written yet.
+        </p>}
+      </section>
+      <ProviderLifecyclePanel />
       {/* Connectors Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
         {integrations.map((conn) => (
@@ -98,19 +182,19 @@ export const IntegrationsTab: React.FC = () => {
                 </span>
               </div>
               <p className="text-slate-400 text-[11px]">
-                {conn.is_mock ? 'Local zero-spend adapter' : 'Official OAuth schema connector'}
+                {conn.is_mock ? 'Sandbox only: no live provider connection' : 'Use the external provider panel to inspect live authorization'}
               </p>
             </div>
 
             <div className="pt-2 border-t border-slate-800 flex items-center justify-between">
               <span className="text-[10px] text-slate-500 font-mono">
-                {conn.last_sync ? `Synced: ${new Date(conn.last_sync).toLocaleTimeString()}` : 'Never'}
+                {conn.last_sync ? `Sandbox refresh: ${new Date(conn.last_sync).toLocaleTimeString()}` : 'No provider sync'}
               </span>
               <button
                 onClick={() => handleSync(conn.id)}
-                disabled={isSyncing === conn.id}
+                disabled={isSyncing === conn.id || !conn.is_mock}
                 className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition"
-                title="Trigger synchronization"
+                title={conn.is_mock ? 'Refresh synthetic sandbox only' : 'Use the external provider panel to inspect synchronization'}
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing === conn.id ? 'animate-spin' : ''}`} />
               </button>
@@ -126,15 +210,15 @@ export const IntegrationsTab: React.FC = () => {
           <div className="flex items-center justify-between border-b border-slate-800 pb-3">
             <span className="font-bold text-white flex items-center gap-2">
               <Mail className="w-4 h-4 text-indigo-400" />
-              Demo Email Outbox (Dispatched Action Audits)
+              Sandbox Email Outbox (No External Delivery)
             </span>
-            <span className="text-slate-400 font-mono text-[11px]">{outbox.length} emails recorded</span>
+            <span className="text-slate-400 font-mono text-[11px]">{outbox.length} simulated messages recorded</span>
           </div>
 
           <div className="space-y-2.5 max-h-[220px] overflow-y-auto">
             {outbox.length === 0 ? (
               <div className="text-slate-500 text-center py-6">
-                No outgoing emails sent yet. Run the Overdue Invoices workflow to trigger authorized reminders.
+                No sandbox messages recorded. This adapter does not deliver emails.
               </div>
             ) : (
               outbox.map((mail, idx) => (
@@ -159,19 +243,19 @@ export const IntegrationsTab: React.FC = () => {
               Import ChatGPT / Claude Exported Discussions
             </span>
             <p className="text-slate-400 mt-0.5 text-[11px]">
-              Extracts decisions, commitments, and tasks without connecting private API keys.
+              Extracts keyword-matched candidate sentences only. These are not verified facts or imported records.
             </p>
           </div>
 
           <textarea
             rows={3}
-            value={chatText}
+            aria-label="Conversation text to import" value={chatText}
             onChange={(e) => setChatText(e.target.value)}
             className="w-full p-2.5 bg-slate-900 text-white rounded-xl border border-slate-800 focus:outline-none focus:border-indigo-500 font-mono text-[11px]"
           />
 
           <div className="flex justify-between items-center">
-            <span className="text-[10px] text-slate-500">Requires founder confirmation before indexing into memory</span>
+            <span className="text-[10px] text-slate-500">This action only parses text; it does not index records</span>
             <button
               onClick={handleImportChat}
               className="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-xl transition"

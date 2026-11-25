@@ -1,0 +1,279 @@
+"""Independent integer arithmetic and lifecycle regressions for Batch K."""
+from datetime import date,datetime,timedelta
+from decimal import Decimal
+from random import Random
+from sqlalchemy import create_engine,text
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import StatementError
+import pytest
+from apps.api.core.database import Base
+from apps.api.models.business import Business
+from apps.api.models.entities import Invoice,Customer,Expense
+from apps.api.models.operations import JournalEntry,AccountingClose,BankStatementLine,FinanceForecast
+from apps.api.services import finance_ledger as ledger,bank_reconciliation as bank,finance_forecasting as forecast,unit_economics as economics
+from apps.api.services.financial_metrics import calculate_business_financials
+
+@pytest.fixture
+def db():
+    import apps.api.models.goals_tasks,apps.api.models.agent_council,apps.api.models.memory
+    import apps.api.models.workflow,apps.api.models.decision_evidence,apps.api.models.integrations
+    engine=create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all([Business(id="a",name="A",currency="AED",current_cash_balance="123.45"),Business(id="b",name="B",currency="USD")])
+        db.commit()
+        yield db
+    engine.dispose()
+
+def invoice(db,amount="100.00",tenant="a",ident="inv"):
+    row=Invoice(id=ident,business_id=tenant,invoice_number=ident,customer_name="Fixture",amount=amount,status="overdue",due_date=datetime(2020,1,1))
+    db.add(row);db.commit();return row
+
+def post(db,kind,amount,reference,invoice_id=None,currency="AED",rate="1",source="same_currency",date="2020-01-01",related=None,tenant="a"):
+    return ledger.post(db,tenant,"actor",reference=reference,kind=kind,amount=amount,currency=currency,fx_rate=rate,
+      fx_source=source,booked_on=date,evidence_text="Recorded source "+reference,invoice_id=invoice_id,related_entry_id=related)
+
+def test_exact_money_is_integer_in_sqlite_and_decimal_in_orm(db):
+    inv=invoice(db,"0.10")
+    db.add_all([Customer(business_id="a",name="one",mrr="0.10"),Customer(business_id="a",name="two",mrr="0.20"),
+               Expense(business_id="a",category="Hosting",vendor="Fixture",amount="0.30")])
+    db.commit()
+    assert db.execute(text("SELECT amount,typeof(amount) FROM invoices WHERE id='inv'")).one()==(100,"integer")
+    assert db.get(Invoice,"inv").amount==Decimal("0.10")
+    summary=calculate_business_financials(db,"a")
+    assert Decimal(summary["exact_amounts"]["mrr"])==Decimal("0.30")
+    assert Decimal(summary["exact_amounts"]["monthly_burn"])==Decimal("0.30")
+    assert summary["net_burn"]==0
+    inv.amount="0.0001"
+    with pytest.raises(StatementError,match="storage precision"):db.commit()
+    db.rollback()
+    assert db.get(Invoice,"inv").amount==Decimal("0.10")
+
+def test_partial_payment_credit_refund_and_idempotency(db):
+    inv=invoice(db)
+    post(db,"invoice_issue","100","issue-0001",inv.id)
+    p=post(db,"payment","20","payment-0001",inv.id)
+    assert post(db,"payment","20","payment-0001",inv.id).id==p.id
+    with pytest.raises(ValueError,match="reference"):post(db,"payment","21","payment-0001",inv.id)
+    db.rollback()
+    c=post(db,"credit","10","credit-0001",inv.id)
+    assert ledger.invoice_balance(db,"a",inv)==Decimal("70")
+    post(db,"refund","5","refund-0001",inv.id,related=p.id)
+    post(db,"credit_reversal","2","reverse-0001",inv.id,related=c.id)
+    post(db,"debit_adjustment","3","debit-0001",inv.id)
+    assert ledger.invoice_balance(db,"a",inv)==Decimal("80")
+    assert calculate_business_financials(db,"a")["overdue_receivables_amount"]==80
+    with pytest.raises(ValueError,match="exceeds"):post(db,"refund","16","refund-0002",inv.id,related=p.id)
+    db.rollback()
+    with pytest.raises(ValueError,match="exceeds"):post(db,"payment","80.01","payment-0002",inv.id)
+    db.rollback()
+    post(db,"payment","80","payment-0003",inv.id)
+    assert inv.status=="paid" and ledger.invoice_balance(db,"a",inv)==0
+    post(db,"refund","5","refund-0003",inv.id,related=p.id)
+    assert inv.status=="overdue" and ledger.invoice_balance(db,"a",inv)==5
+    assert sum(ledger.trial_balance(db.query(JournalEntry).all(),"AED").values())==0
+
+def test_currency_conversion_and_original_payment_reversal(db):
+    inv=invoice(db)
+    post(db,"opening_invoice","100","opening-0001",inv.id)
+    p=post(db,"payment","10.01","payment-0001",inv.id,"USD","3.6725","dated supplied quote")
+    # 10.01 * 3.6725 = 36.761725 -> 36.76 AED
+    assert p.original_minor==1001 and p.base_minor==3676
+    assert ledger.invoice_balance(db,"a",inv)==Decimal("63.24")
+    post(db,"refund","10.01","refund-0001",inv.id,"USD","3.6725","dated supplied quote",related=p.id)
+    assert ledger.invoice_balance(db,"a",inv)==100
+    assert ledger.minor("123","JPY")==123
+    assert ledger.minor("1.234","KWD")==1234
+    with pytest.raises(ValueError,match="precision"):ledger.minor("1.01","JPY")
+    with pytest.raises(ValueError,match="Same currency"):post(db,"expense","1","expense-0001",currency="AED",rate="2")
+    db.rollback()
+    with pytest.raises(ValueError,match="missing"):post(db,"payment","1","foreign-0001",inv.id,currency="USD",tenant="b")
+
+def test_bank_reconciliation_close_and_immutable_history(db):
+    inv=invoice(db)
+    post(db,"opening_cash","500","opening-0001")
+    post(db,"invoice_issue","100","issue-0001",inv.id)
+    payment=post(db,"payment","100","payment-0001",inv.id)
+    expense=post(db,"cogs","25","expense-0001")
+    csv="reference,date,currency,amount\nreceipt,2020-01-01,AED,100.00\ncost,2020-01-01,AED,-25.00\n"
+    preview=bank.import_lines(db,"a","Operating",csv,True)
+    assert preview["new"]==2 and not db.query(BankStatementLine).count()
+    imported=bank.import_lines(db,"a","Operating",csv)
+    assert imported["new"]==2 and bank.import_lines(db,"a","Operating",csv)["duplicates"]==2
+    lines={r["reference"]:r for r in imported["records"]}
+    with pytest.raises(ValueError,match="Reconcile"):ledger.close_period(db,"a","actor","2020-01","CLOSE 2020-01")
+    db.rollback()
+    assert [r.id for r in bank.candidates(db,"a",db.get(BankStatementLine,lines["receipt"]["id"]))]==[payment.id]
+    with pytest.raises(ValueError):bank.match(db,"b","actor",lines["receipt"]["id"],payment.id)
+    db.rollback()
+    with pytest.raises(ValueError):bank.match(db,"a","actor",lines["receipt"]["id"],expense.id)
+    db.rollback()
+    bank.match(db,"a","actor",lines["receipt"]["id"],payment.id)
+    bank.match(db,"a","actor",lines["cost"]["id"],expense.id)
+    closed=ledger.close_period(db,"a","actor","2020-01","CLOSE 2020-01")
+    assert closed["snapshot"]["cash_balance"]=="575.00"
+    assert closed["snapshot"]["gross_profit"]=="75.00"
+    assert closed["snapshot"]["gross_margin_pct"]=="75.00"
+    assert closed["snapshot"]["bank_verified"] is False
+    assert ledger.close_period(db,"a","actor","2020-01","CLOSE 2020-01")==closed
+    with pytest.raises(ValueError,match="closed"):post(db,"expense","1","blocked-0001")
+    db.rollback()
+    with pytest.raises(ValueError,match="closed"):post(db,"expense","1","blocked-0002",date="2019-12-31")
+    db.rollback()
+    assert ledger.serialize_close(db.query(AccountingClose).one())==closed
+
+def test_independent_random_integer_receivable_matrix(db):
+    rng=Random(198)
+    inv=invoice(db,"5000")
+    post(db,"invoice_issue","5000","issue-0001",inv.id)
+    expected=500000
+    for i in range(100):
+        value=rng.randint(1,1000)
+        kind=rng.choice(["payment","credit","debit_adjustment"])
+        post(db,kind,str(Decimal(value)/100),f"matrix-{i:04}",inv.id)
+        expected+=value if kind=="debit_adjustment" else -value
+        assert ledger.invoice_balance(db,"a",inv)==Decimal(expected)/100
+    assert ledger.trial_balance(db.query(JournalEntry).all(),"AED")["receivables"]==expected
+
+def test_scenario_math_and_missing_denominators():
+    s={"currency":"AED","period":"2026-01","cash_balance":"1000","revenue":"200","cost_of_sales":"50","operating_expenses":"50","acquisition_expense":"30"}
+    assumptions={k:{"revenue_growth":"0","expense_growth":"0","collection_fraction":v} for k,v in (("low","0.5"),("base","0.75"),("high","1"))}
+    _,res=forecast.scenarios(s,3,assumptions)
+    assert [Decimal(x["cash"]) for x in res["base"]]==[1050,1100,1150]
+    assert Decimal(res["low"][-1]["cash"])==1000
+    assert Decimal(res["high"][-1]["cash"])==1300
+    econ=economics.compute(s,10,2,2,10)
+    assert econ["cac"]=="15.00" and econ["ltv_estimate"]=="75.00" and econ["gross_margin_pct"]=="75.00"
+    assert economics.compute(s,10,0,0,10)["ltv_estimate"] is None
+    assert economics.compute(s,10,0,0,10)["cac"] is None
+    with pytest.raises(ValueError,match="cohort"):economics.compute(s,10,2,2,11)
+
+def test_forecast_outcome_uses_closed_record_and_cannot_be_replaced(db,monkeypatch):
+    class Clock(date):
+        @classmethod
+        def today(cls):return cls(2020,2,1)
+    monkeypatch.setattr(forecast,"date",Clock)
+    inv=invoice(db)
+    post(db,"invoice_issue","100","issue-0001",inv.id)
+    ledger.close_period(db,"a","actor","2020-01","CLOSE 2020-01")
+    a={k:{"revenue_growth":"0","expense_growth":"0","collection_fraction":"0"} for k in ("low","base","high")}
+    row=forecast.create(db,"a","actor","2020-01",1,a)
+    with pytest.raises(ValueError,match="closed|close"):forecast.observe(db,"a","actor",row["id"])
+    db.rollback()
+    post(db,"debit_adjustment","90","adjust-0001",inv.id,date="2020-02-01")
+    ledger.close_period(db,"a","actor","2020-02","CLOSE 2020-02")
+    actual=forecast.observe(db,"a","actor",row["id"])
+    assert actual["outcome"]["metrics"]["revenue"]["absolute_error"]=="10.00"
+    assert actual["outcome"]["metrics"]["revenue"]["within_scenario_range"] is False
+    assert forecast.observe(db,"a","other",row["id"])==actual
+    with pytest.raises(ValueError):forecast.observe(db,"b","actor",row["id"])
+
+def test_foreign_invoice_fx_gain_loss_revaluation_and_refund(db):
+    inv=invoice(db,"360.00")
+    post(db,"invoice_issue","100","foreign-issue",inv.id,"USD","3.6","issue-date quote")
+    p=post(db,"payment","40","foreign-pay1",inv.id,"USD","3.7","payment-date quote")
+    assert ledger.invoice_balance(db,"a",inv)==216
+    assert ledger.statement(db,"a","2020-01")["realized_fx_result"]=="4.00"
+    post(db,"fx_revaluation","60","foreign-revalue",inv.id,"USD","3.8","period-end quote")
+    assert ledger.invoice_balance(db,"a",inv)==228
+    assert ledger.statement(db,"a","2020-01")["unrealized_fx_result"]=="12.00"
+    post(db,"payment","60","foreign-pay2",inv.id,"USD","3.75","payment-date quote")
+    assert inv.status=="paid" and ledger.invoice_balance(db,"a",inv)==0
+    assert ledger.statement(db,"a","2020-01")["realized_fx_result"]=="1.00"
+    post(db,"refund","10","foreign-refund",inv.id,"USD","3.7","original quote",related=p.id)
+    assert ledger.invoice_balance(db,"a",inv)==36
+    assert ledger.statement(db,"a","2020-01")["realized_fx_result"]=="0.00"
+    assert sum(ledger.trial_balance(db.query(JournalEntry).all(),"AED").values())==0
+
+
+def test_real_legacy_sqlite_float_migration_preserves_amounts(tmp_path):
+    import importlib.util
+    from pathlib import Path
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    import apps.api.models.goals_tasks,apps.api.models.agent_council,apps.api.models.memory
+    import apps.api.models.workflow,apps.api.models.decision_evidence,apps.api.models.integrations
+    engine=create_engine("sqlite:///"+str(tmp_path/"legacy.sqlite"))
+    Base.metadata.create_all(engine)
+    path=Path(__file__).resolve().parents[2]/"alembic/versions/022_batch_k_finance.py"
+    spec=importlib.util.spec_from_file_location("fixture_migration",path);migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(migration)
+    try:
+        with engine.begin() as conn:
+            context=MigrationContext.configure(conn)
+            with Operations.context(context) as op:
+                for table,fields in migration.FIELDS.items():
+                    with op.batch_alter_table(table,recreate="always") as batch:
+                        for name in fields:batch.alter_column(name,existing_type=sa.BigInteger(),type_=sa.Float())
+            conn.execute(text("INSERT INTO businesses (id,name,currency,current_cash_balance,monthly_burn_rate) VALUES ('legacy','Legacy','KWD',1.2345,12.345)"))
+            conn.execute(text("INSERT INTO invoices (id,business_id,customer_name,invoice_number,amount,status,due_date) VALUES ('legacy-inv','legacy','Fixture','legacy-inv',123.456,'sent','2020-01-01 00:00:00')"))
+            with Operations.context(context):migration.upgrade()
+            assert conn.execute(text("SELECT amount,typeof(amount) FROM invoices WHERE id='legacy-inv'")).one()==(123456,"integer")
+            assert conn.execute(text("SELECT current_cash_balance,monthly_burn_rate FROM businesses WHERE id='legacy'")).one()==(1235,12345)
+        with Session(engine) as session:
+            assert session.get(Invoice,"legacy-inv").amount==Decimal("123.456")
+            assert session.get(Business,"legacy").current_cash_balance==Decimal("1.235")
+    finally:engine.dispose()
+
+def test_empty_closed_month_and_statement_only_prior_period(db):
+    post(db,"opening_cash","100","opening-0001")
+    ledger.close_period(db,"a","actor","2020-01","CLOSE 2020-01")
+    bank.import_lines(db,"a","Operating","reference,date,currency,amount\nmissing,2020-02-01,AED,1\n")
+    with pytest.raises(ValueError,match="earlier"):ledger.close_period(db,"a","actor","2020-03","CLOSE 2020-03")
+    db.rollback()
+    p=post(db,"capital","1","capital-0001",date="2020-02-01")
+    line=db.query(BankStatementLine).one()
+    bank.match(db,"a","actor",line.id,p.id)
+    ledger.close_period(db,"a","actor","2020-02","CLOSE 2020-02")
+    zero=ledger.close_period(db,"a","actor","2020-03","CLOSE 2020-03")
+    assert zero["snapshot"]["entry_count"]==0 and zero["snapshot"]["cash_balance"]=="101.00"
+
+def test_three_decimal_base_financials_and_currency_precision(db):
+    b=db.get(Business,"b");b.currency="KWD";b.current_cash_balance="2.345"
+    db.add(Customer(business_id="b",name="Exact",mrr="1.234"))
+    db.add(Expense(business_id="b",vendor="Exact",category="Expense",amount="1.233"))
+    db.commit()
+    summary=calculate_business_financials(db,"b")
+    assert summary["mrr"]==1.234 and summary["monthly_burn"]==1.233 and summary["net_burn"]==-0.001
+    inv=invoice(db,"1.234",tenant="b",ident="kwd-inv")
+    post(db,"invoice_issue","1.234","kwd-issue",inv.id,currency="KWD",tenant="b")
+    assert ledger.invoice_balance(db,"b",inv)==Decimal("1.234")
+
+
+def test_dashboard_cash_switches_only_after_explicit_opening_balance(db):
+    post(db,"capital","20","capital-0001")
+    before=calculate_business_financials(db,"a")
+    assert before["cash_balance"]==123.45 and before["journal_cash_balance"]=="20.00"
+    post(db,"opening_cash","100","opening-0001")
+    post(db,"expense","5","expense-0001")
+    after=calculate_business_financials(db,"a")
+    assert after["cash_balance"]==115 and after["journal_cash_balance"]=="115.00"
+    assert after["profile_cash_balance"]=="123.45"
+    assert after["financial_sources"]["cash_balance"]=="journal_with_recorded_opening_balance"
+
+def test_hackathon_review_fixed_independent_cash_receivables_and_profit_oracle(db):
+    """Amounts in the oracle are computed from a hand-specified synthetic business,
+    not from OneBoard's financial helpers. No bank, provider or real records."""
+    inv=invoice(db,"1000.00",ident="review-invoice")
+    post(db,"opening_cash","5000.00","review-opening")
+    post(db,"invoice_issue","1000.00","review-issue",inv.id)
+    payment=post(db,"payment","600.00","review-payment",inv.id)
+    post(db,"credit","100.00","review-credit",inv.id)
+    post(db,"refund","50.00","review-refund",inv.id,related=payment.id)
+    post(db,"cogs","200.00","review-cogs")
+    post(db,"expense","150.00","review-expense")
+    # Cash: 5000 + 600 - 50 - 200 - 150 = 5200
+    # Receivables: 1000 - 600 - 100 + 50 = 350
+    # Net sales: 1000 - 100 = 900; gross profit: 900 - 200 = 700.
+    expected={"cash":520000,"opening_equity":-500000,"receivables":35000,
+              "revenue":-100000,"sales_returns":10000,"cost_of_sales":20000,
+              "operating_expense":15000}
+    rows=db.query(JournalEntry).filter_by(business_id="a").all()
+    assert ledger.trial_balance(rows,"AED")==expected
+    assert ledger.invoice_balance(db,"a",inv)==Decimal("350.00")
+    data=calculate_business_financials(db,"a")
+    assert Decimal(data["exact_amounts"]["cash_balance"])==Decimal("5200.00")
+    assert Decimal(data["exact_amounts"]["overdue_receivables"])==Decimal("350.00")
+    assert data["financial_data_verified"] is False
+    assert data["financial_provenance"]["independent_ledger_reconciliation"] is False
+    assert sum(expected.values())==0

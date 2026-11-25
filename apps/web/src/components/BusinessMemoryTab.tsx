@@ -1,3 +1,4 @@
+import {LoadState} from './ScreenSupport';
 import React, { useState, useEffect } from 'react';
 import {
   Search,
@@ -11,17 +12,25 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { MemoryConflict } from '../types';
 
 export const BusinessMemoryTab: React.FC = () => {
+  const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
   const [activeSubTab, setActiveSubTab] = useState<'search' | 'graph' | 'conflicts' | 'upload'>('conflicts');
   const [searchQuery, setSearchQuery] = useState('pricing for growth tier');
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [documents,setDocuments]=useState<any[]>([]),[model,setModel]=useState(''),[replacement,setReplacement]=useState(''),[fileType,setFileType]=useState(''),[sourceFilter,setSourceFilter]=useState(''),[lastQuery,setLastQuery]=useState(''),[notice,setNotice]=useState('');
+  const refreshDocuments=async()=>{try{const r=await api.memoryDocuments();setDocuments(r.documents);setModel(r.model_identity)}catch(e){setNotice(e instanceof Error?e.message:'Document status unavailable')}};
+  useEffect(()=>{void refreshDocuments();const timer=setInterval(()=>void refreshDocuments(),10000);return()=>clearInterval(timer)},[]);
   const [isSearching, setIsSearching] = useState(false);
 
-  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[]; unresolved?:any[]; bounded?:boolean }>({ nodes: [], links: [] });
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
   const [isResolving, setIsResolving] = useState<string | null>(null);
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [resolutionDrafts, setResolutionDrafts] = useState<Record<string, string>>({});
 
   // File Upload State
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -33,39 +42,39 @@ export const BusinessMemoryTab: React.FC = () => {
   }, []);
 
   const loadMemoryData = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const [g, c] = await Promise.all([api.getMemoryGraph(), api.getConflicts()]);
       setGraphData(g);
       setConflicts(c);
     } catch (e) {
-      console.error('Error loading memory data', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading memory data');
+    } finally {setScreenLoading(false)}
   };
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
-    setIsSearching(true);
+    setIsSearching(true);setNotice("");
     try {
-      const res = await api.searchMemory(searchQuery);
-      setSearchResults(res.results || []);
+      const res = await inference.run("/memory/search", {query: searchQuery, top_k: 5,file_type:fileType||null,document_id:sourceFilter||null});
+      setSearchResults(res.results || []);setLastQuery(searchQuery);
     } catch (e) {
-      console.error('Search failed', e);
+      setSearchResults([]);setNotice(e instanceof Error?e.message:'Search failed');
     } finally {
       setIsSearching(false);
     }
   };
 
   const handleResolveConflict = async (conflictId: string) => {
+    const resolution = (resolutionDrafts[conflictId] || '').trim();
+    if (!resolution) return;
+    setResolutionError(null);
     setIsResolving(conflictId);
     try {
-      await api.resolveConflict(
-        conflictId,
-        'Confirmed: Public tier remains $59/mo, Acme contract grandfathered at promotional $49/mo.',
-        'custom'
-      );
+      await api.resolveConflict(conflictId, resolution, 'custom');
       await loadMemoryData();
     } catch (e) {
-      console.error('Conflict resolution failed', e);
+      setResolutionError(e instanceof Error ? e.message : 'Resolution failed. Please retry.');
     } finally {
       setIsResolving(null);
     }
@@ -77,22 +86,11 @@ export const BusinessMemoryTab: React.FC = () => {
 
     setIsUploading(true);
     setUploadStatus(null);
-    const formData = new FormData();
-    formData.append('file', uploadFile);
-
     try {
-      const res = await fetch('/api/memory/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks indexed).`);
-        setUploadFile(null);
-        await loadMemoryData();
-      } else {
-        setUploadStatus(`Error: ${data.detail}`);
-      }
+      const data = await api.uploadDocument(uploadFile,replacement||undefined);
+      setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks stored; semantic embeddings are indexed separately).`);
+      setUploadFile(null);setReplacement('');setSearchResults([]);setSourceFilter("");await refreshDocuments();
+      await loadMemoryData();
     } catch (err: any) {
       setUploadStatus(`Upload failed: ${err.message}`);
     } finally {
@@ -102,6 +100,9 @@ export const BusinessMemoryTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!conflicts.length?'No recorded conflicts. Import documents to build memory.':undefined} retry={()=>void loadMemoryData()}/>
+      {inference.indicator}
+      {notice&&<p role="status" className="text-xs">{notice}</p>}
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -143,6 +144,7 @@ export const BusinessMemoryTab: React.FC = () => {
       {/* 1. Conflict Detection View (Demo Scenario A) */}
       {activeSubTab === 'conflicts' && (
         <div className="space-y-4">
+          {resolutionError && <p role="alert" className="text-red-300">{resolutionError}</p>}
           <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200">
             <span className="font-bold block mb-0.5">Automated Discrepancy & Provenance Audit:</span>
             When multiple connected documents disagree, OneBoard prevents silent data overwrites by classifying the discrepancy and requesting founder ratification.
@@ -172,13 +174,13 @@ export const BusinessMemoryTab: React.FC = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source A (Official Catalog)</span>
+                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source A</span>
                     <div className="font-semibold text-slate-200">{conf.source_a.name}</div>
                     <div className="text-indigo-400 font-mono text-sm">{conf.source_a.value}</div>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source B (Customer Contract)</span>
+                    <span className="text-slate-500 text-[10px] uppercase font-mono">Source B</span>
                     <div className="font-semibold text-slate-200">{conf.source_b.name}</div>
                     <div className="text-amber-400 font-mono text-sm">{conf.source_b.value}</div>
                   </div>
@@ -195,13 +197,23 @@ export const BusinessMemoryTab: React.FC = () => {
                     <span className="text-slate-300">{conf.suggested_resolution}</span>
                   </div>
                   {conf.status === 'unresolved' && (
+                    <div className="space-y-2 w-full">
+                    <textarea
+                      aria-label="Founder resolution"
+                      value={resolutionDrafts[conf.id] || ''}
+                      onChange={event => setResolutionDrafts(old => ({...old, [conf.id]:event.target.value}))}
+                      placeholder="Record your evidence-based resolution"
+                      maxLength={4000}
+                      className="w-full p-2 rounded-lg bg-slate-900 border border-slate-700"
+                    />
                     <button
                       onClick={() => handleResolveConflict(conf.id)}
-                      disabled={isResolving === conf.id}
+                      disabled={isResolving === conf.id || !resolutionDrafts[conf.id]?.trim()}
                       className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl transition whitespace-nowrap self-start sm:self-auto"
                     >
                       {isResolving === conf.id ? 'Applying...' : 'Approve Resolution'}
                     </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -218,6 +230,7 @@ export const BusinessMemoryTab: React.FC = () => {
           </div>
 
           <div className="p-6 rounded-2xl glass-panel space-y-4">
+            <p className="text-xs text-slate-400">{graphData.unresolved?.length||0} unresolved or ambiguous recorded relationships excluded.{graphData.bounded?' Display limit reached.':''} Links are based on recorded evidence, not independent verification.</p>
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
               Active Entity Relationships ({graphData.links?.length || 0} Edges)
             </h3>
@@ -226,14 +239,14 @@ export const BusinessMemoryTab: React.FC = () => {
               {graphData.links?.map((lnk, idx) => (
                 <div key={idx} className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-slate-200">{lnk.source}</span>
+                    <span className="font-semibold text-slate-200">{graphData.nodes.find(n=>n.id===lnk.source)?.label||lnk.source}</span>
                     <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-mono text-[10px]">
                       {lnk.relationship}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
                     <ArrowRight className="w-3 h-3 text-slate-500" />
-                    <span>{lnk.target}</span>
+                    <span>{graphData.nodes.find(n=>n.id===lnk.target)?.label||lnk.target}</span>
                   </div>
                 </div>
               ))}
@@ -249,6 +262,7 @@ export const BusinessMemoryTab: React.FC = () => {
             <Search className="w-5 h-5 text-indigo-400 shrink-0" />
             <input
               type="text"
+              aria-label="Memory search query"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -264,7 +278,9 @@ export const BusinessMemoryTab: React.FC = () => {
             </button>
           </div>
 
+          <div className="flex gap-2 text-xs"><select aria-label="File type filter" value={fileType} onChange={e=>setFileType(e.target.value)}><option value="">All file types</option>{["txt","md","pdf","csv","xlsx","json"].map(t=><option key={t}>{t}</option>)}</select><select aria-label="Source document filter" value={sourceFilter} onChange={e=>setSourceFilter(e.target.value)}><option value="">All current sources</option>{documents.filter(d=>d.active).map(d=><option key={d.document_id} value={d.document_id}>{d.title} (v{d.version})</option>)}</select></div>
           <div className="space-y-3">
+            {!isSearching&&lastQuery&&searchResults.length===0&&<p role="status">No current matching sources.</p>}
             {searchResults.map((res, i) => (
               <div key={i} className="p-4 rounded-xl glass-panel space-y-1.5 text-xs">
                 <div className="flex items-center justify-between">
@@ -272,9 +288,12 @@ export const BusinessMemoryTab: React.FC = () => {
                     <FileText className="w-3.5 h-3.5 text-indigo-400" />
                     Citation Source: {res.source_title}
                   </span>
-                  <span className="font-mono text-slate-500 text-[10px]">Score: {res.score}</span>
+                  <span className="font-mono text-slate-500 text-[10px]">Score: {res.score} · {res.search_strategy || 'local retrieval'}</span>
                 </div>
                 <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{res.content}</p>
+                {res.citation&&<p className="text-slate-400">Version {res.citation.version} · {res.citation.location||`Chunk ${res.citation.chunk_index+1}`} · {res.citation.offset_verified?`Extracted characters ${res.citation.char_start}–${res.citation.char_end}`:"Legacy source offset unavailable"}</p>}
+                <button onClick={async()=>{try{const source=await api.memorySource(res.chunk_id);setNotice(source.active?`Source checked: ${source.citation.title}, SHA-256 ${source.citation.chunk_sha256}`:"Source is superseded; run search again")}catch(e){setNotice(String(e))}}}>Check citation</button>
+                {["Helpful","Not helpful"].map((label,i)=><button key={label} className="ml-3" onClick={async()=>{try{await api.memoryFeedback(lastQuery,res.chunk_id,i===0);setNotice("Relevance feedback recorded for this query")}catch(e){setNotice(String(e))}}}>{label}</button>)}
               </div>
             ))}
           </div>
@@ -291,16 +310,19 @@ export const BusinessMemoryTab: React.FC = () => {
             </p>
           </div>
 
+          <div className="space-y-2"><h4 className="font-bold">Indexing progress</h4><p>Model: {model||"Unavailable"}</p><button onClick={async()=>{try{const r=await inference.run("/memory/index",{});setNotice(`${r.indexed||0} chunks indexed`);await refreshDocuments()}catch(e){setNotice(String(e))}}}>Index pending documents</button>
+          {documents.map(d=><div key={d.document_id} className="border border-slate-700 p-2 rounded"><p>{d.title} · v{d.version} · {d.active?d.status:"superseded"} · {d.indexed_chunks}/{d.total_chunks}</p>{d.error&&<p>{d.error}</p>}{d.active&&d.status!=="indexing"&&<button className="mr-3" onClick={async()=>{if(!window.confirm("Rebuild this document using the current embedding model? Lexical search remains available."))return;try{await api.reindexMemoryDocument(d.document_id);await refreshDocuments();setNotice("Reindex requested")}catch(e){setNotice(String(e))}}}>Reindex source</button>}{d.active&&["failed","retry"].includes(d.status)&&<button onClick={async()=>{try{await api.retryMemoryDocument(d.document_id);await refreshDocuments()}catch(e){setNotice(String(e))}}}>Retry indexing</button>}</div>)}</div>
           <form onSubmit={handleFileUpload} className="space-y-3">
+            <label>Replace a source (optional)<select className="block w-full bg-slate-900" value={replacement} onChange={e=>setReplacement(e.target.value)}><option value="">Add new document</option>{documents.filter(d=>d.active).map(d=><option key={d.document_id} value={d.document_id}>{d.title} v{d.version}</option>)}</select></label>
             <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center space-y-2">
               <Upload className="w-8 h-8 text-indigo-400 mx-auto" />
               <input
-                type="file"
-                accept=".csv,.xlsx,.xls,.pdf,.txt,.md,.json"
+                type="file" aria-label="Document to upload"
+                accept=".csv,.xlsx,.pdf,.txt,.md,.json"
                 onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                 className="text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
               />
-              <span className="block text-[11px] text-slate-500">Max size 25MB. Local parsing only.</span>
+              <span className="block text-[11px] text-slate-500">Max size 10MB. Local parsing only.</span>
             </div>
 
             {uploadStatus && (
@@ -314,7 +336,7 @@ export const BusinessMemoryTab: React.FC = () => {
               disabled={isUploading || !uploadFile}
               className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-semibold rounded-xl transition"
             >
-              {isUploading ? 'Extracting & Indexing...' : 'Index Document into Business Memory'}
+              {isUploading ? 'Extracting & Storing...' : 'Store Document in Business Memory'}
             </button>
           </form>
         </div>

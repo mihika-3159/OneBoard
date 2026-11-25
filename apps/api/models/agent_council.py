@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Integer, Boolean
+from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Integer, Boolean, Index
 from datetime import datetime
 import uuid
 from apps.api.core.database import Base
@@ -21,6 +21,8 @@ class CouncilMeeting(Base):
     # Structured outcomes
     deliberation_transcript = Column(JSON, default=list) # Array of adviser speeches and challenge messages
     synthesis_summary = Column(Text, nullable=True)
+    structured_synthesis = Column(JSON, nullable=True)
+    checkpoint_at = Column(DateTime, nullable=True)
     areas_of_agreement = Column(JSON, default=list)
     areas_of_disagreement = Column(JSON, default=list)
     recommended_actions = Column(JSON, default=list)
@@ -46,15 +48,25 @@ class AdviserScorecard(Base):
     
     # Empirical accuracy
     predictions_tracked = Column(Integer, default=0)
-    average_prediction_error_pct = Column(Float, default=0.0)
-    evidence_completeness_score = Column(Float, default=0.92) # 0.0 to 1.0
-    action_completion_rate = Column(Float, default=0.88)
-    verified_outcome_rate = Column(Float, default=0.85)
+    average_prediction_error_pct = Column(Float, nullable=True, default=None)
+    evidence_completeness_score = Column(Float, nullable=True, default=None) # Only with independently assessed evidence
+    action_completion_rate = Column(Float, nullable=True, default=None)
+    verified_outcome_rate = Column(Float, nullable=True, default=None)
     
-    last_evaluated_at = Column(DateTime, default=datetime.utcnow)
+    last_evaluated_at = Column(DateTime, nullable=True, default=None)
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (Index("uq_agent_run_tenant_key", "business_id", "idempotency_key", unique=True),)
+    idempotency_key = Column(String(128), nullable=True)
+    request_hash = Column(String(64), nullable=True)
+    status = Column(String(30), nullable=True)
+    next_step = Column(Integer, nullable=True)
+    attempt_count = Column(Integer, nullable=True)
+    lease_owner = Column(String(36), nullable=True)
+    lease_until = Column(DateTime, nullable=True)
+    deadline = Column(DateTime, nullable=True)
+    checkpoint_at = Column(DateTime, nullable=True)
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     business_id = Column(String(36), nullable=False)

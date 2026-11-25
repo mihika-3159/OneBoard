@@ -45,8 +45,8 @@ class Evidence(Base):
     source_record_id = Column(String(255), nullable=True)
     snippet = Column(Text, nullable=False)
     content_hash = Column(String(64), nullable=True)
-    confidence_score = Column(Float, default=1.0) # 0.0 to 1.0
-    provenance_type = Column(String(50), default="verified_fact") # verified_fact, user_statement, calculated_value, model_estimate, assumption
+    confidence_score = Column(Float, nullable=True, default=None) # 0.0 to 1.0
+    provenance_type = Column(String(50), default="user_statement") # verified_fact, user_statement, calculated_value, model_estimate, assumption
     associated_entities = Column(JSON, default=list)
     retrieval_timestamp = Column(DateTime, default=datetime.utcnow)
     
