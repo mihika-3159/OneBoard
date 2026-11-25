@@ -174,6 +174,10 @@ def decode_access_token(token: str) -> Dict[str, Any]:
         if len(parts) != 2:
             raise ValueError("Malformed token structure")
         payload_b64, sig = parts
+        # Accept only the canonical wire representation produced by our issuer.
+        if (not payload_b64 or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for ch in payload_b64)
+                or len(sig) != 64 or any(ch not in "0123456789abcdef" for ch in sig)):
+            raise ValueError("Invalid token encoding")
         expected_sig = hmac.new(
             SECRET_KEY.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256
         ).hexdigest()
@@ -183,9 +187,17 @@ def decode_access_token(token: str) -> Dict[str, Any]:
                 raise ValueError("Invalid signature")
 
         padding = "=" * (4 - len(payload_b64) % 4)
-        payload = json.loads(
-            base64.urlsafe_b64decode((payload_b64 + padding).encode("utf-8")).decode("utf-8")
-        )
+        decoded = base64.b64decode(payload_b64 + padding, altchars=b"-_", validate=True)
+        if base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=") != payload_b64:
+            raise ValueError("Noncanonical token encoding")
+        def unique_claims(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate token claim")
+                result[key] = value
+            return result
+        payload = json.loads(decoded.decode("utf-8"), object_pairs_hook=unique_claims)
 
         # A valid HMAC alone does not make the signed claims well-formed.
         # Reject missing, malformed, or non-expiring identity/time claims.
@@ -331,6 +343,31 @@ def reset_login_throttle(identifier: str, db: Optional[Session] = None, *, commi
 # ---------------------------------------------------------------------------
 # CSRF Protection
 # ---------------------------------------------------------------------------
+def verify_session_issuance_origin(request: Request) -> None:
+    """Protect browser login/registration against cross-site session swapping.
+
+    Non-browser API clients can still request bearer credentials without an
+    Origin. The explicit browser cookie mode requires the configured origin
+    in production, including before a session cookie exists.
+    """
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    browser_mode = request.headers.get("X-OneBoard-Session-Mode") == "cookie"
+    if not origin and referer:
+        try:
+            parsed = urlsplit(referer)
+            if not parsed.scheme or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError("Invalid referer")
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+        except ValueError:
+            raise HTTPException(403, "Untrusted authentication origin") from None
+    allowed = {item.strip() for item in settings.CORS_ORIGINS.split(",") if item.strip()}
+    if (origin and origin not in allowed) or (
+        settings.ONEBOARD_PRODUCTION_MODE and browser_mode and not origin
+    ):
+        raise HTTPException(403, "Untrusted authentication origin")
+
+
 def verify_csrf_protection(request: Request) -> None:
     """
     Validate CSRF token for cookie-authenticated state-changing requests.

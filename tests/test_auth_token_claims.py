@@ -46,3 +46,16 @@ def test_rejects_malformed_signed_claims(mutation):
     valid = {"jti": "session", "sub": "user", "biz": "tenant", "iat": now, "exp": now + 600}
     with pytest.raises(ValueError, match="Invalid access token"):
         decode_access_token(_signed(mutation(valid)))
+
+def test_valid_signature_does_not_permit_duplicate_claims():
+    now=int(time.time())
+    raw=json.dumps({"jti":"session","sub":"user","biz":"tenant","iat":now,"exp":now+600})
+    raw=raw[:-1]+',"biz":"other"}'
+    encoded=base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
+    signature=hmac.new(SECRET_KEY.encode(),encoded.encode(),hashlib.sha256).hexdigest()
+    with pytest.raises(ValueError):decode_access_token(encoded+"."+signature)
+
+def test_valid_signature_does_not_permit_noncanonical_encoding():
+    encoded=create_access_token("user","tenant").split(".")[0]+"="
+    signature=hmac.new(SECRET_KEY.encode(),encoded.encode(),hashlib.sha256).hexdigest()
+    with pytest.raises(ValueError):decode_access_token(encoded+"."+signature)

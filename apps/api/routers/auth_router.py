@@ -28,6 +28,7 @@ from apps.api.core.auth import (
     set_auth_cookies,
     verify_password,
     verify_csrf_protection,
+    verify_session_issuance_origin,
 )
 from apps.api.core.config import settings
 from apps.api.core.database import get_db
@@ -58,6 +59,7 @@ def register(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """Register a new founder account, business entity, and server-side membership."""
+    verify_session_issuance_origin(request)
     if len(req.password) < 8:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -201,6 +203,7 @@ def login(
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """Authenticate founder credentials with Argon2id and issue session cookie and token."""
+    verify_session_issuance_origin(request)
     # The source+account key stops repeated guesses from one address without
     # allowing a different account at that address to clear the counter.
     # Never trust a client-supplied X-Forwarded-For header here: Request.client
