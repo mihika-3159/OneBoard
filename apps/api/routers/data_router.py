@@ -76,6 +76,7 @@ def delete_document(document_id:str,current_user:User=Depends(require_founder_ro
 class DeleteRequest(BaseModel):
     confirmation:str=Field(min_length=8,max_length=80)
     password:str=Field(min_length=1,max_length=1024,repr=False)
+    mfa_code:str|None=Field(default=None,max_length=64,repr=False)
 
 @router.post("/delete-workspace")
 def delete_workspace(req:DeleteRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
@@ -85,7 +86,9 @@ def delete_workspace(req:DeleteRequest,current_user:User=Depends(require_founder
     from apps.api.services.tenant_resource_budget import consume_tenant_budget
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db,current_user.business_id,"workspace_delete")
-    if not verify_password(req.password,current_user.hashed_password):
+    from apps.api.core.tenant_context import password_verifier
+    from apps.api.services.account_security import verify_factor
+    if not verify_password(req.password,password_verifier(db,current_user)) or not verify_factor(db,current_user,req.mfa_code):
         raise HTTPException(status_code=403,detail="Password verification failed")
     try:
         return lifecycle.delete_workspace(db,current_user,req.confirmation)

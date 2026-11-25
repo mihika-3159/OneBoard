@@ -31,3 +31,9 @@ def tenant_ids(db,after="",limit=1000):
     if restricted(db):
         return [r[0] for r in db.execute(text("SELECT * FROM public.ob_tenant_ids(:after,:limit)"),{"after":after,"limit":limit})]
     return [r[0] for r in db.query(Business.id).filter(Business.id>after).order_by(Business.id).limit(limit).all()]
+
+
+def password_verifier(db,user):
+    if restricted(db):
+        return db.execute(text("SELECT public.ob_password_verifier(:uid)"),{"uid":user.id}).scalar_one()
+    return user.hashed_password

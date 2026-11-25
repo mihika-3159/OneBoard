@@ -1216,3 +1216,5 @@ Batch F increment 2: interactive TOTP, recovery, staged email, session, key and 
 Batch F increment 3: signed transaction-bound tenant context, private key schema, RLS for businesses and authentication tables, ID-only pre-auth lookup functions and tampered GUC regression. SQL-only database credential compromise cannot mint valid scope; a compromised application process remains out of scope. Synthetic CI key provision and migration/restore checks updated. CI pending.
 
 Batch F increment 4: MFA enrollment revokes old keys and other sessions, authenticated disable and recovery controls, synthetic real HTTP adversarial MFA/replay/recovery, key expiry/scope, member privilege/revocation, encrypted challenge and tamper tests. No email sent. CI pending.
+
+Batch F increment 5: runtime role cannot SELECT password/API verifiers directly, even inside signed tenant scope. Fixed-search-path functions return one scoped password verifier, boolean key match and boolean unsafe-key check. The app remains trusted for credential verification; full application process compromise is not prevented. Workspace deletion requires MFA for enrolled owners. CI pending.

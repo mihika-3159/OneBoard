@@ -39,7 +39,8 @@ def _charge(db,key):
 def _reauth(db,user,req):
     _interactive(db)
     _charge(db,"account-security:"+user.id)
-    if not verify_password(req.password,user.hashed_password) or not security.verify_factor(db,user,req.mfa_code):
+    from apps.api.core.tenant_context import password_verifier
+    if not verify_password(req.password,password_verifier(db,user)) or not security.verify_factor(db,user,req.mfa_code):
         db.rollback()
         raise HTTPException(401,"Reauthentication failed")
 def _owner(db,user):

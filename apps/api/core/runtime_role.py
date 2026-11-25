@@ -34,6 +34,9 @@ def verify_runtime_role(engine):
             raise RuntimeError("Runtime tenant context signing key does not match database")
         if conn.execute(text("SELECT has_schema_privilege(current_user,'oneboard_private','USAGE')")).scalar_one():
             raise RuntimeError("Runtime may not access private context schema")
+        for column in ("hashed_password","api_key"):
+            if conn.execute(text("SELECT has_column_privilege(current_user,'public.users',:column,'SELECT')"),{"column":column}).scalar_one():
+                raise RuntimeError("Direct credential-verifier SELECT privileges are prohibited")
         for table in expected:
             rows=conn.execute(text("""SELECT c.relrowsecurity,c.relforcerowsecurity,p.polpermissive,
                  pg_get_expr(p.polqual,c.oid),pg_get_expr(p.polwithcheck,c.oid),p.polname,p.polcmd

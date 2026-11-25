@@ -1,5 +1,6 @@
 from sqlalchemy import Column, String, Text, DateTime, JSON, Boolean, Float, Integer, ForeignKey
 from datetime import datetime
+from sqlalchemy.orm import deferred
 import uuid
 from apps.api.core.database import Base
 
@@ -39,11 +40,11 @@ class User(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     email = Column(String(255), unique=True, index=True, nullable=False)
     name = Column(String(255), nullable=False)
-    hashed_password = Column(String(255), nullable=False)
+    hashed_password = deferred(Column(String(255), nullable=False))
     role = Column(String(50), default="founder")  # "founder", "member", "admin"
     business_id = Column(String(36), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True)
     is_active = Column(Boolean, default=True)
-    api_key = Column(String(100), unique=True, index=True, nullable=True)
+    api_key = deferred(Column(String(100), unique=True, index=True, nullable=True))
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

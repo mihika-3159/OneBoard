@@ -38,7 +38,7 @@ def _request_lifecycle_scope(connection, tenant, exclusive=False, auth=None, fou
             FROM users u JOIN businesses b ON b.id=u.business_id
             LEFT JOIN business_memberships m ON m.user_id=u.id AND m.business_id=b.id
             WHERE u.id=:uid AND b.id=:tenant AND u.is_active IS TRUE
-            AND (CAST(:keyhash AS text) IS NULL OR u.api_key=:keyhash)"""),
+            AND (CAST(:keyhash AS text) IS NULL OR public.ob_key_matches(u.id,:keyhash))"""),
             {"uid":uid,"tenant":tenant,"keyhash":keyhash}).first()
         if not user or (user.owner_id!=uid and user.membership_role is None):
             raise HTTPException(status_code=401,detail="Workspace access revoked")
@@ -202,13 +202,8 @@ def init_db():
             # API keys. Check the actual data without returning or logging a
             # credential. Postgres translate() strips all valid hex digits.
             if connection.dialect.name == "postgresql":
-                unsafe_key = connection.execute(text(
-                    "SELECT 1 FROM users WHERE api_key IS NOT NULL "
-                    "AND (api_key NOT LIKE 'sha256:%' OR length(api_key) <> 71 "
-                    "OR translate(substring(api_key from 8), "
-                    "'0123456789abcdef', '') <> '') LIMIT 1"
-                )).first()
-                if unsafe_key is not None:
+                unsafe_key = connection.execute(text("SELECT public.ob_unsafe_api_keys()")).scalar_one()
+                if unsafe_key:
                     raise RuntimeError(
                         "Production database contains non-hashed API credentials; "
                         "complete migration 006 and rotate invalid legacy keys"

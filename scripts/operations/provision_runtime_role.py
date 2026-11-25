@@ -33,9 +33,14 @@ def provision(engine, role, password, context_key=None):
             cur.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(conn.execute(text("SELECT current_database()")).scalar_one()),sql.Identifier(role)))
             cur.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
             for table in sorted(Base.metadata.tables):
-                cur.execute(sql.SQL("GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.{} TO {}").format(sql.Identifier(table),sql.Identifier(role)))
+                if table=="users":
+                    cols=[sql.Identifier(c.name) for c in Base.metadata.tables[table].c if c.name not in ("hashed_password","api_key")]
+                    cur.execute(sql.SQL("GRANT SELECT ({}) ON TABLE public.users TO {}").format(sql.SQL(",").join(cols),sql.Identifier(role)))
+                    cur.execute(sql.SQL("GRANT INSERT,UPDATE,DELETE ON TABLE public.users TO {}").format(sql.Identifier(role)))
+                else:
+                    cur.execute(sql.SQL("GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.{} TO {}").format(sql.Identifier(table),sql.Identifier(role)))
             cur.execute(sql.SQL("GRANT SELECT ON TABLE public.alembic_version TO {}").format(sql.Identifier(role)))
-            for fn in ("ob_scope_valid()","ob_lookup_email(text)","ob_lookup_key(text)","ob_tenant_ids(text,integer)"):
+            for fn in ("ob_scope_valid()","ob_lookup_email(text)","ob_lookup_key(text)","ob_tenant_ids(text,integer)","ob_password_verifier(text)","ob_key_matches(text,text)","ob_unsafe_api_keys()"):
                 cur.execute(sql.SQL("GRANT EXECUTE ON FUNCTION public."+fn+" TO {}").format(sql.Identifier(role)))
 
 def main():

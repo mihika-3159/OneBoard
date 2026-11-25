@@ -526,10 +526,13 @@ def get_current_user(
             if not found:
                 raise invalid_key
             scope_tenant_session(db,found.tenant)
-        user = db.query(User).filter(
-            User.api_key == hash_api_key(api_key),
-            User.is_active == True,
-        ).first()
+        if restricted(db):
+            user=db.query(User).filter_by(id=found.uid,business_id=found.tenant,is_active=True).first()
+        else:
+            user = db.query(User).filter(
+                User.api_key == hash_api_key(api_key),
+                User.is_active == True,
+            ).first()
         if user is None and not settings.ONEBOARD_PRODUCTION_MODE:
             # Development-only support for legacy, locally seeded demo keys.
             user = db.query(User).filter(

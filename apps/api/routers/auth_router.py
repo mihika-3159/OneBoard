@@ -242,9 +242,10 @@ def login(
             user=None
     else:
         user = db.query(User).filter(User.email == clean_email).first()
+    from apps.api.core.tenant_context import password_verifier
     valid_credentials = (
         user is not None
-        and verify_password(req.password, user.hashed_password)
+        and verify_password(req.password, password_verifier(db,user))
         and user.is_active
     )
     if valid_credentials:
