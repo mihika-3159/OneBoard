@@ -500,7 +500,7 @@ def get_current_user(
         if user.business_id != payload.get("biz"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session tenant mismatch.")
         _require_active_membership(user, db)
-        if isinstance(db,Session) and settings.ONEBOARD_PRODUCTION_MODE:
+        if isinstance(db,Session):
             db.info['oneboard_auth']=(user.id,jti,None)
         scope_tenant_session(db, user.business_id)
         return user

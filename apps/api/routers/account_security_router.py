@@ -71,6 +71,11 @@ def confirm_mfa(req:Code,user:User=Depends(get_current_user),db:Session=Depends(
     _charge(db,"account-security:"+user.id)
     return {"recovery_codes":_safe_action(db,lambda:security.confirm_mfa(db,user,req.code))}
 
+@router.post("/mfa/disable")
+def disable_mfa(req:Reauth,user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    _reauth(db,user,req)
+    return _safe_action(db,lambda:security.disable_mfa(db,user))
+
 @router.post("/recovery-codes")
 def rotate_codes(req:Reauth,user:User=Depends(get_current_user),db:Session=Depends(get_db)):
     _reauth(db,user,req)
@@ -80,6 +85,9 @@ def rotate_codes(req:Reauth,user:User=Depends(get_current_user),db:Session=Depen
 def recover(req:Recovery,request:Request,response:Response,db:Session=Depends(get_db)):
     email=req.email.strip().lower()
     source=request.client.host if request.client else "unknown"
+    from apps.api.core.config import settings
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        _charge(db,"global-auth-admission")
     _charge(db,"account-recovery-source:"+source)
     _charge(db,"account-recovery:"+email)
     from apps.api.core.tenant_context import restricted,lookup
@@ -92,6 +100,9 @@ def recover(req:Recovery,request:Request,response:Response,db:Session=Depends(ge
     else:
         user=db.query(User).filter_by(email=email,is_active=True).first()
     if not user: raise HTTPException(401,"Recovery failed")
+    from apps.api.core.auth import _require_active_membership
+    try: _require_active_membership(user,db)
+    except HTTPException: raise HTTPException(401,"Recovery failed") from None
     db.info["oneboard_exclusive_lifecycle"]=True
     scope_tenant_session(db,user.business_id)
     if not security.reset_with_recovery(db,user,req.recovery_code,req.new_password):

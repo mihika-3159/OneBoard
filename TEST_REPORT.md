@@ -1214,3 +1214,5 @@ migration 014. New endpoint wiring and tests follow; CI pending.
 Batch F increment 2: interactive TOTP, recovery, staged email, session, key and owner membership routes. Global production authentication admission supplements IP/account limits. Email delivery is not enabled. CI pending; database privilege narrowing and tests remain outstanding.
 
 Batch F increment 3: signed transaction-bound tenant context, private key schema, RLS for businesses and authentication tables, ID-only pre-auth lookup functions and tampered GUC regression. SQL-only database credential compromise cannot mint valid scope; a compromised application process remains out of scope. Synthetic CI key provision and migration/restore checks updated. CI pending.
+
+Batch F increment 4: MFA enrollment revokes old keys and other sessions, authenticated disable and recovery controls, synthetic real HTTP adversarial MFA/replay/recovery, key expiry/scope, member privilege/revocation, encrypted challenge and tamper tests. No email sent. CI pending.

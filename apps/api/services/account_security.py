@@ -129,9 +129,17 @@ def confirm_mfa(db,user,code,now=None):
     n=_counter(secret,code,now=now)
     if n is None: raise ValueError("Invalid verification code")
     row.mfa_ciphertext=_encrypt(user.id,"totp",secret)
+    user.api_key=None  # Previously issued API keys cannot bypass newly enabled MFA.
     row.pending_mfa_ciphertext=row.pending_mfa_expires=None
     row.last_totp_counter=n
     codes=_new_recovery(row)
+    # Revoke all other sessions, but keep the interactive enrollment
+    # session so the founder can safely receive the one-time recovery codes.
+    current=db.info.get("oneboard_auth")
+    sessions=db.query(UserSession).filter_by(user_id=user.id,business_id=user.business_id,is_revoked=False)
+    if current and current[1]:
+        sessions=sessions.filter(UserSession.id!=current[1])
+    sessions.update({"is_revoked":True},synchronize_session=False)
     _record(db,user,"mfa_enabled")
     db.commit()
     return codes
@@ -194,9 +202,24 @@ def check_api_key_permissions(db,user,request):
     method=request.method
     if path.startswith("/api/auth/security") or path in ("/api/data/delete-workspace","/api/auth/regenerate-api-key"):
         raise HTTPException(403,"Interactive session required")
+    if row and row.mfa_ciphertext and row.api_key_scopes is None:
+        raise HTTPException(403,"MFA account requires a reauthenticated scoped API key")
     if row and row.api_key_expires_at and row.api_key_expires_at<=datetime.utcnow():
         raise HTTPException(401,"API key expired")
     if row and row.api_key_scopes is not None:
         needed="read" if method in ("GET","HEAD","OPTIONS") else "write"
         if needed not in row.api_key_scopes:
             raise HTTPException(403,"API key scope denied")
+
+
+def disable_mfa(db,user):
+    _lock(db,user.business_id)
+    row=state(db,user)
+    if not row or not row.mfa_ciphertext:
+        raise ValueError("MFA is not active")
+    row.mfa_ciphertext=row.pending_mfa_ciphertext=row.pending_mfa_expires=row.last_totp_counter=None
+    row.recovery_hashes=[]
+    user.api_key=None
+    _record(db,user,"mfa_disabled")
+    db.commit()
+    return {"mfa_enabled":False,"api_key_revoked":True}
