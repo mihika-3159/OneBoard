@@ -100,7 +100,7 @@ async function checkedResponse(path: string, options: RequestInit = {}): Promise
 
   const epoch=authEpoch;
   const authEndpoint=/^\/auth\/(login|register|logout|me|security\/recover)$/.test(path);
-  const report=(message:string)=>{if(epoch===authEpoch&&!authEndpoint)window.dispatchEvent(new CustomEvent(connectionIssueEvent,{detail:{message,write:method!=='GET'&&method!=='HEAD'}}))};
+  const report=(message:string)=>{if(epoch===authEpoch&&!authEndpoint)window.dispatchEvent(new CustomEvent(connectionIssueEvent,{detail:{message,path,write:method!=='GET'&&method!=='HEAD'}}))};
   let res:Response;
   try{res=await fetch(url,options)}catch(e){if(!options.signal?.aborted)report('Network request interrupted.');throw e}
   if(res.status>=500)report('Service request failed.');
@@ -140,6 +140,7 @@ async function checkedResponse(path: string, options: RequestInit = {}): Promise
   }
 
   if(epoch!==authEpoch)throw new UnauthorizedError('Session changed during request.');
+  if(!authEndpoint&&(method==='GET'||method==='HEAD'))window.dispatchEvent(new CustomEvent(connectionIssueEvent,{detail:{path,recovered:true}}));
   return res;
 }
 

@@ -120,7 +120,7 @@ test('provider API outage produces a visible retryable integrations error', asyn
   await sidebar.locator('nav button').filter({
     has: page.locator('span').getByText('Integrations', { exact: true }),
   }).click();
-  await expect(page.getByRole('alert')).toContainText('Synthetic service unavailable');
+  await expect(page.getByRole('alert').filter({hasText:'Synthetic service unavailable'})).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry' })).toBeVisible();
   await page.unroute('**/api/integrations');
   await page.getByRole('button', { name: 'Retry' }).click();

@@ -18,6 +18,11 @@ PATTERNS = {
     "Slack token": re.compile(rb"\bxox[baprs]-[A-Za-z0-9-]{30,}\b"),
     "Stripe live key": re.compile(rb"\b(?:sk|rk)_live_[A-Za-z0-9]{24,}\b"),
     "GitLab token": re.compile(rb"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+    "Azure DevOps token": re.compile(rb"\\b[A-Za-z0-9]{52}AZDO[A-Za-z0-9]{28}\\b"),
+    "DigitalOcean token": re.compile(rb"\\bdop_v1_[a-f0-9]{64}\\b"),
+    "npm access token": re.compile(rb"\\bnpm_[A-Za-z0-9]{36}\\b"),
+    "Shopify token": re.compile(rb"\\bshpat_[a-fA-F0-9]{32}\\b"),
+    "SendGrid token": re.compile(rb"\\bSG\\.[A-Za-z0-9_-]{22}\\.[A-Za-z0-9_-]{43}\\b"),
     "Hugging Face token": re.compile(rb"\bhf_[A-Za-z0-9]{30,}\b"),
 }
 def inspect(path,content):

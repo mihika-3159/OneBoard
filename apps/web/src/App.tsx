@@ -48,7 +48,7 @@ export const App: React.FC = () => {
   // Authentication State
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [checkingSession,setCheckingSession]=useState(true),[sessionCheckError,setSessionCheckError]=useState(''),[screenRevision,setScreenRevision]=useState(0);
-  const [connectionIssue,setConnectionIssue]=useState<{message:string;write:boolean}|null>(null);
+  const [connectionIssue,setConnectionIssue]=useState<{message:string;write:boolean;path:string}|null>(null);
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [currentBusiness, setCurrentBusiness] = useState<Partial<BusinessProfile> | null>(null);
   const [authError, setAuthError] = useState<string>('');
@@ -65,8 +65,8 @@ export const App: React.FC = () => {
   const [authBizName, setAuthBizName] = useState<string>('');
 
   useEffect(()=>{
-    const expired=(event:Event)=>{setIsAuthenticated(false);setCurrentUser(null);setCurrentBusiness(null);setGatewayStatus(null);setAlerts([]);setShowAlertModal(false);setAuthPassword('');setAuthFactor('');setConnectionIssue(null);setAuthError((event as CustomEvent).detail||'Your session expired. Sign in again. No interrupted write was automatically replayed.');};
-    const issue=(event:Event)=>setConnectionIssue((event as CustomEvent).detail);
+    const expired=(event:Event)=>{setIsRegisterMode(false);setRecoverMode(false);setIsAuthenticated(false);setCurrentUser(null);setCurrentBusiness(null);setGatewayStatus(null);setAlerts([]);setShowAlertModal(false);setAuthPassword('');setAuthFactor('');setConnectionIssue(null);setAuthError((event as CustomEvent).detail||'Your session expired. Sign in again. No interrupted write was automatically replayed.');};
+    const issue=(event:Event)=>{const detail=(event as CustomEvent).detail;setConnectionIssue(old=>detail.recovered?(old?.path===detail.path&&!old.write?null:old):detail);};
     window.addEventListener(sessionExpiredEvent,expired);window.addEventListener(connectionIssueEvent,issue);
     void checkSessionAndLoad();
     return()=>{window.removeEventListener(sessionExpiredEvent,expired);window.removeEventListener(connectionIssueEvent,issue)};
@@ -117,7 +117,7 @@ export const App: React.FC = () => {
         setCurrentUser(res.user);
         setCurrentBusiness(res.business);
       }
-      setIsAuthenticated(true);setConnectionIssue(null);setAuthPassword('');setAuthFactor('');
+      setIsAuthenticated(true);setIsRegisterMode(false);setRecoverMode(false);setConnectionIssue(null);setAuthPassword('');setAuthFactor('');
       await loadAppStatus();
     } catch (err: any) {
       setAuthError(err.detail || err.message || 'Authentication failed. Please check your credentials.');
