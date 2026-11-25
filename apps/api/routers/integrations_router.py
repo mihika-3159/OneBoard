@@ -231,6 +231,7 @@ from apps.api.services.data_lifecycle import owner
 from apps.api.core.database import scope_tenant_session
 
 def live_owner(db,user):
+    if db.info.get('oneboard_api_key'):raise HTTPException(403,'Interactive owner session required')
     try:owner(db,user)
     except PermissionError:raise HTTPException(403,"Workspace owner required") from None
     if settings.ONEBOARD_PRODUCTION_MODE:consume_tenant_budget(db,user.business_id,"customer_import")

@@ -4,7 +4,7 @@ No tenant-supplied URLs, redirects, credentials in logs, or implicit network acc
 The normalized API is an explicit bridge contract, not a claim that every vendor
 implements these endpoints. Operators must configure a trusted adapter.
 """
-import json,re
+import json,re,time
 from urllib.parse import urlsplit,urlencode
 import httpx
 from apps.api.core.config import settings
@@ -72,8 +72,9 @@ def request(config,url,*,token=None,form=None,payload=None,method="POST"):
                     raise ProviderFailure("rate_limited" if status==429 else "provider_unavailable",True,seconds)
                 if status in (401,403):raise ProviderFailure("authorization_rejected")
                 if not 200<=status<300:raise ProviderFailure("provider_rejected")
-                raw=bytearray()
+                raw=bytearray();deadline=time.monotonic()+10
                 for chunk in response.iter_bytes():
+                    if time.monotonic()>deadline:raise ProviderFailure("transport_uncertain",True)
                     raw.extend(chunk)
                     if len(raw)>MAX_BODY:raise ProviderFailure("response_too_large")
                 try:

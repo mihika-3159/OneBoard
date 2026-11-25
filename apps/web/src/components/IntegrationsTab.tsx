@@ -13,6 +13,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { ProviderLifecyclePanel } from './ProviderLifecyclePanel';
 
 export const IntegrationsTab: React.FC = () => {
   const [integrations, setIntegrations] = useState<any[]>([]);
@@ -108,7 +109,7 @@ export const IntegrationsTab: React.FC = () => {
             <span className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               Integrations Framework
             </span>
-            <span className="text-xs text-slate-400">Local sandbox adapters • No live provider authorization</span>
+            <span className="text-xs text-slate-400">Local sandbox adapters and optional configured external adapters</span>
           </div>
           <h1 className="text-xl font-bold text-white">Integration Sandbox & Connector Readiness</h1>
         </div>
@@ -157,6 +158,7 @@ export const IntegrationsTab: React.FC = () => {
           {csvPreview.rows_validated} rows validated. No records written yet.
         </p>}
       </section>
+      <ProviderLifecyclePanel />
       {/* Connectors Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
         {integrations.map((conn) => (

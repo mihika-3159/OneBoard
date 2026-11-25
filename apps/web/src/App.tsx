@@ -38,7 +38,7 @@ import { api, UnauthorizedError } from './services/api';
 import { GatewayStatus, ProactiveAlert, UserProfile, BusinessProfile } from './types';
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<string>('overview');
+  const [activeTab, setActiveTab] = useState<string>(()=>new URLSearchParams(window.location.search).has('provider_oauth')?'integrations':'overview');
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(null);
   const [alerts, setAlerts] = useState<ProactiveAlert[]>([]);
   const [showAlertModal, setShowAlertModal] = useState<boolean>(false);

@@ -27,12 +27,21 @@ def _aad(tenant,provider,scopes,expires_at):
     return json.dumps([tenant,provider,sorted(scopes),expires_at.isoformat()],separators=(",",":")).encode()
 
 def encrypt_token(tenant,provider,scopes,expires_at,token):
+    if settings.PROVIDER_ACTIVE_KEY_ID:
+        from apps.api.services.integrations.provider_crypto import seal
+        return "v2:"+seal(token,tenant,provider+"|"+expires_at.isoformat()+"|"+" ".join(sorted(scopes)),"legacy_token")
     nonce=os.urandom(12)
     return base64.b64encode(nonce+AESGCM(_key()).encrypt(nonce,token.encode(),_aad(tenant,provider,scopes,expires_at))).decode()
 
 def decrypt_token(row):
     if row.expires_at<=datetime.utcnow():
         raise ValueError("Provider credential expired")
+    return decrypt_stored_token(row)
+
+def decrypt_stored_token(row):
+    if row.encrypted_token.startswith("v2:"):
+        from apps.api.services.integrations.provider_crypto import unseal
+        return unseal(row.encrypted_token[3:],row.business_id,row.provider+"|"+row.expires_at.isoformat()+"|"+" ".join(sorted(row.scopes)),"legacy_token")
     value=base64.b64decode(row.encrypted_token,validate=True)
     return AESGCM(_key()).decrypt(value[:12],value[12:],_aad(row.business_id,row.provider,row.scopes,row.expires_at)).decode()
 

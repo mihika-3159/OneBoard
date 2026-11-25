@@ -126,6 +126,12 @@ def rotate_keys(db,tenant):
             old=row.encrypted_credentials;row.encrypted_credentials=crypto.rotate(old,tenant,row.id,"oauth");count+=old!=row.encrypted_credentials
     for row in db.query(ProviderAuthorization).filter(ProviderAuthorization.business_id==tenant,ProviderAuthorization.consumed_at.is_(None),ProviderAuthorization.expires_at>now()).all():
         old=row.encrypted_verifier;row.encrypted_verifier=crypto.rotate(old,tenant,row.state_hash,"pkce");count+=old!=row.encrypted_verifier
+    from apps.api.models.operations import ProviderCredential
+    from apps.api.services.provider_staging import decrypt_stored_token,encrypt_token
+    for row in db.query(ProviderCredential).filter_by(business_id=tenant).all():
+        if not row.encrypted_token.startswith("v2:"+crypto.keyring()[0]+"."):
+            value=decrypt_stored_token(row)
+            row.encrypted_token=encrypt_token(tenant,row.provider,row.scopes,row.expires_at,value);count+=1
     db.commit();return {"rotated":count,"active_key_id":crypto.keyring()[0]}
 
 def disconnect(db,tenant,provider):
@@ -253,7 +259,10 @@ ACTION_FIELDS={"contact.upsert":({"name","email"},{"company"}),"email.send":({"r
 def action_payload(action,payload):
     required,optional=ACTION_FIELDS[action];json_payload(payload)
     if not required<=set(payload)<=required|optional:raise ValueError("Invalid action fields")
-    for name,value in payload.items():bounded_string(value,12000 if name=="body" else 1000)
+    for name,value in payload.items():
+        if name in ("body","description"):
+            if not isinstance(value,str) or not 1<=len(value)<=12000 or any(ord(c)<32 and c not in "\n\r\t" for c in value):raise ValueError("Invalid action text")
+        else:bounded_string(value,1000)
     if action=="email.send" and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+",payload["recipient"]):raise ValueError("Invalid recipient")
     if action=="event.create":
         try:
