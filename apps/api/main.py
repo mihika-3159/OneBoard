@@ -72,12 +72,18 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down OneBoard Services...")
     scheduler_service.shutdown()
 
+from sqlalchemy.exc import TimeoutError as DatabasePoolTimeout
+
 app = FastAPI(
     title="OneBoard API",
     description="AI Operating System for a Company of One. Local-first executive council, visual workflows, and accountable business management.",
     version="1.0.0",
     lifespan=lifespan
 )
+
+@app.exception_handler(DatabasePoolTimeout)
+async def database_pool_exhausted(request,exc):
+    return JSONResponse({"detail":"Database capacity temporarily exhausted; retry"},status_code=503,headers={"Retry-After":"5"})
 
 @app.exception_handler(RequestValidationError)
 async def redact_sensitive_validation(request, exc):

@@ -1801,3 +1801,162 @@ def test_37_batch_l_provider_enqueue_concurrency_and_rls(monkeypatch):
             conn.execute(text(f"DROP OWNED BY {role}"))
             conn.execute(text(f"DROP ROLE {role}"))
         engine.dispose()
+
+
+def test_38_batch_m_populated_upgrade_and_indexed_keyset():
+    """Exercise 023 -> 024 against a genuinely populated older schema."""
+    from uuid import uuid4
+    from time import perf_counter
+    from sqlalchemy import inspect
+    from sqlalchemy.engine import make_url
+    validation=_engine();validation.dispose()
+    base=make_url(URL);name="oneboard_migration_"+uuid4().hex[:12]
+    admin=create_engine(base.set(database="postgres"),isolation_level="AUTOCOMMIT")
+    dburl=base.set(database=name)
+    engine=None;created=False
+    def migrate(target):
+        p=subprocess.run([sys.executable,"-m","alembic","upgrade",target],cwd=ROOT,
+            env={**os.environ,"DATABASE_URL":dburl.render_as_string(hide_password=False),"PYTHONPATH":str(ROOT)},
+            text=True,capture_output=True,timeout=120)
+        assert p.returncode==0,p.stderr[-3000:]
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f"CREATE DATABASE {name}"));created=True
+        migrate("023_batch_l_providers")
+        engine=create_engine(dburl,pool_pre_ping=True)
+        with engine.begin() as conn:
+            # Revision 003 bootstraps current ORM metadata on a fresh database.
+            # Remove later-only artifacts to reproduce a real 023 installation.
+            for table in ("portable_archive_pages","portable_archives","database_performance_samples"):
+                conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+            for col in ("completed_sync_days","resolved_conflict_days","completed_draft_days","performance_sample_days"):
+                conn.execute(text(f"ALTER TABLE data_retention_policies DROP COLUMN IF EXISTS {col}"))
+            for table in ("side_effect_outbox","provider_sync_jobs","provider_record_conflicts"):
+                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN IF EXISTS retention_redacted_at"))
+            conn.execute(text("INSERT INTO businesses(id,name,currency) VALUES ('tenant-a','Fixture A','USD'),('tenant-b','Fixture B','USD')"))
+            conn.execute(text("""INSERT INTO tasks(id,business_id,title,description,status)
+                SELECT 'task-'||lpad(i::text,8,'0'),CASE WHEN i%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic task',repeat('x',100),'todo' FROM generate_series(1,30000) i"""))
+            conn.execute(text("""INSERT INTO customers(id,business_id,name,mrr,status)
+                SELECT 'cust-'||lpad(i::text,8,'0'),CASE WHEN i%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic customer',i*1001,'active' FROM generate_series(1,10000) i"""))
+            conn.execute(text("""INSERT INTO memory_documents(id,business_id,title,content_hash,chunk_count)
+                SELECT 'doc-'||lpad(i::text,4,'0'),CASE WHEN i%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic document',repeat('a',64),100 FROM generate_series(1,100) i"""))
+            conn.execute(text("""INSERT INTO memory_chunks(id,document_id,business_id,content,chunk_index)
+                SELECT 'chunk-'||lpad(i::text,8,'0'),'doc-'||lpad(((i-1)/100+1)::text,4,'0'),
+                CASE WHEN ((i-1)/100+1)%2=0 THEN 'tenant-a' ELSE 'tenant-b' END,
+                'Synthetic chunk',((i-1)%100) FROM generate_series(1,10000) i"""))
+            def manifest(conn):
+                return {
+                    table:conn.execute(text(f"SELECT count(*),md5(string_agg(row_to_json(t)::text,',' ORDER BY id)) FROM {table} t")).one()
+                    for table in ("tasks","customers","memory_documents","memory_chunks")}
+            before=manifest(conn)
+        started=perf_counter();migrate("head");elapsed=perf_counter()-started
+        with engine.begin() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()=="024_batch_m_storage"
+            assert manifest(conn)==before
+            assert sum(x[0] for x in before.values())==50100
+            assert {"portable_archives","portable_archive_pages","database_performance_samples"}<=set(inspect(conn).get_table_names())
+            assert any(i["column_names"]==["business_id","id"] for i in inspect(conn).get_indexes("tasks"))
+            conn.execute(text("ANALYZE tasks"))
+            plan=conn.execute(text("""EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON)
+                SELECT id,title FROM tasks WHERE business_id='tenant-a' AND id>'task-00020000'
+                ORDER BY id LIMIT 100""")).scalar_one()[0]
+            serialized=str(plan)
+            assert "Index Scan" in serialized or "Index Only Scan" in serialized
+            assert plan["Plan"]["Actual Rows"]==100
+            assert conn.execute(text("SELECT mrr FROM customers WHERE id='cust-00000002'")).scalar_one()==2002
+            print("Batch M populated migration rows",sum(x[0] for x in before.values()),"seconds",round(elapsed,3),"keyset execution ms",plan["Execution Time"])
+    finally:
+        if engine:engine.dispose()
+        with admin.connect() as conn:
+            if created:conn.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
+        admin.dispose()
+
+
+def test_39_batch_m_restricted_portable_restore_and_complete_deletion(monkeypatch):
+    from uuid import uuid4
+    from types import SimpleNamespace
+    import base64,secrets
+    from sqlalchemy.orm import Session
+    from sqlalchemy.exc import DBAPIError
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business,User
+    from apps.api.models.goals_tasks import Task
+    from apps.api.models.integrations import IntegrationAccount,SyncHistory
+    from apps.api.models.operations import PortableArchive,PortableArchivePage
+    from apps.api.services import portable_archive as archive,data_lifecycle as lifecycle
+    from apps.api.services import tenant_storage as quota
+    engine=_engine();tenant,other,actor,other_actor=[str(uuid4()) for _ in range(4)]
+    ia,ib,sa,sb=[str(uuid4()) for _ in range(4)]
+    role="oneboard_archive_ci_"+uuid4().hex[:12];restricted=None
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD 'disposable-fixture-only'"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            for name in Base.metadata.tables:
+                if name=="users":
+                    cols=",".join(c.name for c in Base.metadata.tables[name].c if c.name not in ("hashed_password","api_key"))
+                    conn.execute(text(f"GRANT SELECT ({cols}),INSERT,UPDATE,DELETE ON TABLE public.users TO {role}"))
+                else:conn.execute(text(f"GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE public.{name} TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            key=bytes(old) if old is not None else secrets.token_bytes(32)
+            if old is None:conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES(true,:key)"),{"key":key})
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
+            monkeypatch.setattr(settings,"PORTABLE_ARCHIVE_SIGNING_KEY",base64.b64encode(b"q"*32).decode())
+        with Session(engine) as db:
+            db.add_all([Business(id=tenant,name="A",owner_id=actor),Business(id=other,name="B",owner_id=other_actor)]);db.flush()
+            db.add_all([User(id=actor,business_id=tenant,email=actor+"@example.test",name="A",hashed_password="fixture"),
+                User(id=other_actor,business_id=other,email=other_actor+"@example.test",name="B",hashed_password="fixture")])
+            db.add_all([IntegrationAccount(id=ia,business_id=tenant,name="A",connector_type="github"),
+                IntegrationAccount(id=ib,business_id=other,name="B",connector_type="github")]);db.flush()
+            db.add_all([SyncHistory(id=sa,integration_id=ia),SyncHistory(id=sb,integration_id=ib)]);db.commit()
+        restricted=create_engine(make_url(URL).set(username=role,password="disposable-fixture-only"),pool_pre_ping=True)
+        user=SimpleNamespace(business_id=tenant,id=actor)
+        monkeypatch.setitem(quota.ROW_LIMITS,"tasks",1)
+        gate=Barrier(2)
+        def submit(i):
+            with Session(restricted) as db:
+                scope_tenant_session(db,tenant);db.info["oneboard_enforce_quota"]=True
+                gate.wait(timeout=10);db.add(Task(business_id=tenant,title=f"Task {i}"))
+                try:db.commit();return True
+                except HTTPException as exc:
+                    db.rollback();assert exc.status_code==429;return False
+        with ThreadPoolExecutor(max_workers=2) as pool:assert sum(pool.map(submit,range(2)))==1
+        with Session(restricted) as db:
+            scope_tenant_session(db,tenant)
+            exp=archive.capture(db,user)
+            imp=archive.begin_import(db,user,exp["manifest"])["id"]
+            for d in exp["manifest"]["pages"]:
+                content,_=archive.download(db,tenant,exp["id"],d["number"])
+                archive.upload(db,tenant,imp,d["number"],content)
+            assert db.query(Task).filter_by(business_id=tenant).delete()==1;db.commit()
+            assert archive.restore(db,user,imp,"RESTORE "+tenant)["inserted"]==1
+            assert db.query(PortableArchivePage).count()>0
+        with Session(restricted) as db:
+            scope_tenant_session(db,other)
+            assert db.query(PortableArchive).count()==0
+            assert db.query(PortableArchivePage).count()==0
+            with pytest.raises(ValueError):archive.download(db,other,exp["id"],0)
+            db.rollback()
+        with Session(restricted) as db:
+            scope_tenant_session(db,tenant)
+            result=lifecycle.delete_workspace(db,user,"DELETE "+tenant)
+            assert result["verified_remaining_rows"]==0
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT count(*) FROM sync_history WHERE id=:s"),{"s":sa}).scalar_one()==0
+            assert conn.execute(text("SELECT count(*) FROM sync_history WHERE id=:s"),{"s":sb}).scalar_one()==1
+            for name in ("portable_archive_pages","portable_archives","tasks","users","integration_accounts"):
+                assert conn.execute(text(f"SELECT count(*) FROM {name} WHERE business_id=:t"),{"t":tenant}).scalar_one()==0
+            assert conn.execute(text("SELECT count(*) FROM businesses WHERE id=:t"),{"t":other}).scalar_one()==1
+    finally:
+        if restricted:restricted.dispose()
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM sync_history WHERE id IN (:a,:b)"),{"a":sa,"b":sb})
+            for name in ("portable_archive_pages","portable_archives","tasks","integration_accounts","users","businesses"):
+                col="id" if name=="businesses" else "business_id"
+                conn.execute(text(f"DELETE FROM {name} WHERE {col} IN (:a,:b)"),{"a":tenant,"b":other})
+            conn.execute(text(f"DROP OWNED BY {role}"));conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()
