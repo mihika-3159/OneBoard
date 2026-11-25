@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 class SchedulerService:
     def __init__(self):
-        self.scheduler = BackgroundScheduler()
+        self.scheduler = BackgroundScheduler(timezone="UTC")
         # Per-business alerts store: Dict[business_id, List[Alert]]
         self.active_alerts_by_business: Dict[str, List[Dict[str, Any]]] = {}
 
@@ -29,7 +29,7 @@ class SchedulerService:
             self.scheduler.add_job(
                 self.run_scheduled_checks,
                 "interval",
-                seconds=60,
+                seconds=settings.SCHEDULER_INTERVAL_SECONDS,
                 id="proactive_health_check",
                 replace_existing=True,
                 max_instances=1,
@@ -66,7 +66,7 @@ class SchedulerService:
                     finish_job(db, job, token, False)
                     raise
                 else:
-                    finish_job(db, job, token, True)
+                    finish_job(db, job, token, True, interval_seconds=settings.SCHEDULER_INTERVAL_SECONDS)
 
     def shutdown(self):
         if self.scheduler.running:
@@ -187,8 +187,8 @@ class SchedulerService:
                 self.active_alerts_by_business[b_id] = list(alerts)
                 db.commit()
 
-        except Exception:
-            logger.exception("Error in proactive check run")
+        except Exception as exc:
+            logger.error("Error in proactive check run (%s)", type(exc).__name__)
             raise  # Do not silently return stale cached alerts as current.
         finally:
             db.close()

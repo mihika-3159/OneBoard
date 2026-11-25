@@ -66,6 +66,7 @@ jobs:
       ONEBOARD_PRODUCTION_MODE: "false"
       ONEBOARD_LIVE_API_DISPOSABLE: "1"
       ONEBOARD_LIVE_API_URL: "http://127.0.0.1:8000"
+      CORS_ORIGINS: "http://127.0.0.1:8000"
       DATABASE_URL: "sqlite:///./oneboard_mandatory_live_ci.sqlite3"
       MODEL_PROFILES: '{"balanced":{"chat_model":"qwen2.5:0.5b","reasoning_model":"qwen2.5:0.5b","embedding_model":"all-minilm","context_size":"4096","description":"Disposable CI model profile"}}'
       OLLAMA_BASE_URL: "http://127.0.0.1:11434"
@@ -189,3 +190,15 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq age
           python scripts/verify_encrypted_pg_restore.py
+      - name: Measured two-worker HTTPS PostgreSQL tenant load and restart drill
+        env:
+          ONEBOARD_CI_HTTP_LOAD: "1"
+        run: python scripts/verify_disposable_http_load.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: postgres-required-and-load
+          path: |
+            postgres-required.xml
+            http-load-result.json
+          retention-days: 7

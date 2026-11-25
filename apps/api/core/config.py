@@ -95,6 +95,8 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("ONEBOARD_DEMO_MODE must be disabled")
     if config.DEBUG:
         errors.append("DEBUG must be disabled")
+    if not 1 <= config.SCHEDULER_INTERVAL_SECONDS <= 3600:
+        errors.append("Scheduler interval must be between 1 and 3600 seconds")
     if not config.COOKIE_SECURE:
         errors.append("COOKIE_SECURE must be enabled behind HTTPS")
     if len(config.AUTH_SECRET_KEY) < 32 or config.AUTH_SECRET_KEY == "oneboard-LOCAL-DEMO-ONLY-NOT-FOR-PRODUCTION":

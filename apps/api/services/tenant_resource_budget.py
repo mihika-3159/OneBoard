@@ -15,6 +15,7 @@ from apps.api.models.operations import TenantResourceWindow
 
 POLICIES = {
     "ai_command": (30, 60),
+    "ai_benchmark": (6, 60),
     "memory_search": (120, 60),
     "customer_import": (6, 300),
     "financial_reconciliation": (20, 60),

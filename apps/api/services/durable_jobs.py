@@ -43,10 +43,12 @@ def claim_job(db, job, lease_seconds=180, now=None):
     db.commit()
     return token
 
-def finish_job(db, job, token, success, now=None):
+def finish_job(db, job, token, success, now=None, interval_seconds=60):
+    if not 1 <= interval_seconds <= 3600:
+        raise ValueError("Invalid job interval")
     now = _now(db) if now is None else now
     values = {"owner_token": None, "lease_until": 0,
-              "next_due_at": now + (60 if success else 15)}
+              "next_due_at": now + (interval_seconds if success else min(15, interval_seconds))}
     if success:
         values["last_success_at"] = now
     count = db.query(ScheduledJobLease).filter(

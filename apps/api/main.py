@@ -1,5 +1,7 @@
 import os
 import logging
+import time
+from uuid import uuid4
 from urllib.parse import urlsplit
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -24,6 +26,7 @@ from apps.api.routers.integrations_router import router as integrations_router
 from apps.api.routers.alerts_router import router as alerts_router
 from apps.api.routers.model_gateway_router import router as model_gateway_router
 from apps.api.routers.data_router import router as data_router
+from apps.api.routers.diagnostics_router import router as diagnostics_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("oneboard")
@@ -89,6 +92,8 @@ async def security_response_headers(request, call_next):
     # sensitive requests to attacker-controlled origins. The deployment must
     # configure the ASGI server's forwarded-allow-ips to its actual proxy IP,
     # never a wildcard; this guard alone cannot verify external TLS.
+    started = time.monotonic()
+    request_id = uuid4().hex
     secure_external_request = False
     if settings.ONEBOARD_PRODUCTION_MODE:
         expected_host = urlsplit(settings.PUBLIC_API_ORIGIN).netloc
@@ -112,11 +117,17 @@ async def security_response_headers(request, call_next):
     else:
         response = await call_next(request)
 
+    route = request.scope.get("route")
+    route_template = getattr(route, "path", "unmatched")
+    logger.info("request_finished id=%s method=%s route=%s status=%d elapsed_ms=%.1f",
+                request_id, request.method, route_template, response.status_code,
+                (time.monotonic() - started) * 1000)
+    response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith(("/api/auth/", "/api/data/", "/api/integrations/providers/", "/api/business/financial/")):
+    if request.url.path.startswith(("/api/auth/", "/api/data/", "/api/integrations/providers/", "/api/business/financial/", "/api/diagnostics/")):
         response.headers["Cache-Control"] = "no-store"
     if settings.ONEBOARD_PRODUCTION_MODE and secure_external_request:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
@@ -144,3 +155,5 @@ app.include_router(alerts_router)
 app.include_router(model_gateway_router)
 
 app.include_router(data_router)
+
+app.include_router(diagnostics_router)

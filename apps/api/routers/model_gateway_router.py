@@ -83,6 +83,8 @@ async def benchmark_gateway(
     db: Session = Depends(get_db)
 ):
     """Run a latency benchmark against the Ollama gateway. Requires authentication."""
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "ai_benchmark")
     profile = _business_model_profile(db, current_user.business_id)
     start = time.time()
     res = await ollama_gateway.chat_complete(

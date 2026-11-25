@@ -1054,3 +1054,14 @@ results. Dedicated job requires 20 original gateway tests, 5 smoke/embedding
 tests, 11 authenticated live HTTP tests and 27 PostgreSQL tests with zero
 missing/skipped/failed cases. Ordinary offline suite intentionally skips
 live infrastructure tests. Exact new head CI pending; not production certification.
+
+
+Batch D increment 2: structured request IDs, route-template/status/latency
+logs (no body, query, credential or raw tenant identifier), founder-only
+tenant diagnostics and production benchmark quotas. Monitor schedule uses
+UTC and configured interval with durable next-due time. Dedicated PostgreSQL
+job adds six synthetic tenants, two actual HTTPS application workers,
+20-second sustained request workload, idempotent execution, quota exhaustion,
+cross-tenant denial and stop/restart persistence; reports median/p95 and
+request counts. Local CI TLS is not certification of public edge TLS.
+CI pending. No deployment or external actions.
