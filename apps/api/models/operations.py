@@ -308,3 +308,108 @@ class UnitEconomicsObservation(Base):
     results=Column(JSON,nullable=False)
     actor_id=Column(String(36),nullable=False)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class ProviderConnection(Base):
+    __tablename__="provider_connections"
+    __table_args__=(UniqueConstraint("business_id","provider",name="uq_live_provider"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    provider=Column(String(30),nullable=False)
+    state=Column(String(30),nullable=False,default="disconnected")
+    generation=Column(Integer,nullable=False,default=0)
+    scopes=Column(JSON,nullable=False,default=list)
+    encrypted_credentials=Column(Text,nullable=True)
+    expires_at=Column(DateTime,nullable=True)
+    remote_account=Column(String(255),nullable=True)
+    checkpoint=Column(Text,nullable=True)
+    last_sync=Column(DateTime,nullable=True)
+    last_error=Column(String(100),nullable=True)
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class ProviderAuthorization(Base):
+    __tablename__="provider_authorizations"
+    __table_args__=(Index("ix_provider_auth_tenant","business_id","expires_at"),)
+    state_hash=Column(String(64),primary_key=True)
+    business_id=Column(String(36),nullable=False)
+    connection_id=Column(String(36),nullable=False)
+    actor_id=Column(String(36),nullable=False)
+    generation=Column(Integer,nullable=False)
+    scopes=Column(JSON,nullable=False)
+    encrypted_verifier=Column(Text,nullable=False)
+    expires_at=Column(DateTime,nullable=False)
+    consumed_at=Column(DateTime,nullable=True)
+
+class ProviderSyncJob(Base):
+    __tablename__="provider_sync_jobs"
+    __table_args__=(UniqueConstraint("business_id","connection_id","request_key",name="uq_provider_sync_request"),
+                    Index("ix_provider_sync_due","business_id","state","next_attempt"))
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    connection_id=Column(String(36),nullable=False)
+    generation=Column(Integer,nullable=False)
+    request_key=Column(String(128),nullable=False)
+    state=Column(String(30),nullable=False,default="queued")
+    attempts=Column(Integer,nullable=False,default=0)
+    pages=Column(Integer,nullable=False,default=0)
+    imported=Column(Integer,nullable=False,default=0)
+    duplicates=Column(Integer,nullable=False,default=0)
+    conflicts=Column(Integer,nullable=False,default=0)
+    next_attempt=Column(DateTime,nullable=False,default=datetime.utcnow)
+    error_code=Column(String(100),nullable=True)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    finished_at=Column(DateTime,nullable=True)
+
+class ProviderRecord(Base):
+    __tablename__="provider_records"
+    __table_args__=(UniqueConstraint("business_id","connection_id","remote_id",name="uq_provider_record"),
+                    Index("ix_provider_record_connection","business_id","connection_id"))
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    connection_id=Column(String(36),nullable=False)
+    remote_id=Column(String(255),nullable=False)
+    revision=Column(String(128),nullable=False)
+    payload=Column(JSON,nullable=False)
+    payload_hash=Column(String(64),nullable=False)
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class ProviderRecordConflict(Base):
+    __tablename__="provider_record_conflicts"
+    __table_args__=(UniqueConstraint("business_id","record_id","incoming_hash",name="uq_provider_record_conflict"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    connection_id=Column(String(36),nullable=False)
+    record_id=Column(String(36),nullable=False)
+    incoming_revision=Column(String(128),nullable=False)
+    incoming_payload=Column(JSON,nullable=False)
+    incoming_hash=Column(String(64),nullable=False)
+    state=Column(String(30),nullable=False,default="pending")
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class ProviderWebhookReceipt(Base):
+    __tablename__="provider_webhook_receipts"
+    __table_args__=(UniqueConstraint("business_id","connection_id","event_id",name="uq_provider_webhook_event"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    connection_id=Column(String(36),nullable=False)
+    event_id=Column(String(128),nullable=False)
+    body_hash=Column(String(64),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class ProviderDelivery(Base):
+    __tablename__="provider_deliveries"
+    __table_args__=(UniqueConstraint("business_id","connection_id","request_key",name="uq_provider_delivery_key"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    connection_id=Column(String(36),nullable=False)
+    generation=Column(Integer,nullable=False)
+    request_key=Column(String(128),nullable=False)
+    request_hash=Column(String(64),nullable=False)
+    action=Column(String(50),nullable=False)
+    payload=Column(JSON,nullable=False)
+    actor_id=Column(String(36),nullable=False)
+    state=Column(String(30),nullable=False,default="approved")
+    remote_reference=Column(String(255),nullable=True)
+    error_code=Column(String(100),nullable=True)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)

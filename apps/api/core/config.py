@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     
     # Separate base64-encoded 32-byte key; never derive from session signing secret.
     PROVIDER_TOKEN_KEY: str = ""
+    # Operator-managed configuration, never writable through tenant APIs.
+    PROVIDER_ACTIVE_KEY_ID: str = ""
+    PROVIDER_ENCRYPTION_KEYS: dict[str, str] = {}
+    PROVIDER_CONNECTORS: dict[str, dict[str, Any]] = {}
 
     # Centralized Ollama Model Gateway
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
