@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from apps.api.services.inference_stream import stream_or_wait
+from fastapi import Request, APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from apps.api.services.inference_budget import inference_tenant
@@ -31,6 +32,7 @@ class AgentGenerateRequest(BaseModel):
 
 class AgentTestRequest(BaseModel):
     test_input: str = Field(min_length=1,max_length=8000)
+    cache_text: bool = False
 
 @router.get("")
 def list_agents(
@@ -73,18 +75,22 @@ async def generate_agent_config(
     req: AgentGenerateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "agent_generate")
-    with inference_tenant(current_user.business_id):
-        return await natural_language_builder.generate_agent_from_prompt(req.prompt)
+    async def work():
+        with inference_tenant(current_user.business_id):
+            return await natural_language_builder.generate_agent_from_prompt(req.prompt)
+    return await stream_or_wait(request, work)
 
 @router.post("/{agent_id}/test")
 async def test_agent(
     agent_id: str,
     req: AgentTestRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None,
 ):
     agent = db.query(CustomAgent).filter(CustomAgent.id == agent_id).first()
     if not agent:
@@ -94,22 +100,27 @@ async def test_agent(
 
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "agent_test")
-    with inference_tenant(current_user.business_id):
-        res = await ollama_gateway.chat_complete(
-            messages=[{"role": "user", "content": quoted_data("agent_configuration",agent.system_prompt)+"\n"+quoted_data("test_input",req.test_input)}],
-            system_prompt="You are a text-only OneBoard sandbox. "+DATA_BOUNDARY,
-            model=agent.selected_model
-        )
-    return {
-        "agent_name": agent.name,
-        "tool_execution_enabled": False,
-        "granted_tools": [],
-        "input": req.test_input,
-        "output": res.get("content"),
-        "model_used": res.get("model"),
-        "simulated": res.get("simulated", False),
-        "inference_engine": "offline_simulated" if res.get("simulated") else "local_ollama"
-    }
+    async def work():
+        with inference_tenant(current_user.business_id):
+            res = await ollama_gateway.chat_complete(
+                messages=[{"role": "user", "content": quoted_data("agent_configuration",agent.system_prompt)+"\n"+quoted_data("test_input",req.test_input)}],
+                system_prompt="You are a text-only OneBoard sandbox. "+DATA_BOUNDARY,
+                model=agent.selected_model,
+                **({"cache_text": True} if req.cache_text else {})
+            )
+        return {
+            "agent_name": agent.name,
+            "tool_execution_enabled": False,
+            "granted_tools": [],
+            "input": req.test_input,
+            "output": res.get("content"),
+            "model_used": res.get("model"),
+            "simulated": res.get("simulated", False),
+            "inference_engine": "offline_simulated" if res.get("simulated") else res.get("provider_protocol", "local_ollama"),
+            "cache_hit": bool(res.get("cache_hit"))
+        }
+    return await stream_or_wait(request, work, provider_stream=not req.cache_text)
+
 
 @router.post("/{agent_id}/toggle-status")
 def toggle_agent_status(

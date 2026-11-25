@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { Cpu, CheckCircle2, AlertTriangle, Zap, Server, ShieldCheck, RefreshCw } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { AccountSecurityPanel } from './AccountSecurityPanel';
 import { GatewayStatus } from '../types';
 
 export const SettingsTab: React.FC = () => {
+  const inference = useInferenceOperation();
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(null);
   const [activeProfile, setActiveProfile] = useState('balanced');
   const [benchmarkResult, setBenchmarkResult] = useState<any | null>(null);
@@ -78,7 +80,7 @@ export const SettingsTab: React.FC = () => {
     setIsBenchmarking(true);
     setBenchmarkResult(null);
     try {
-      const res = await api.benchmarkGateway();
+      const res = await inference.run("/ai/benchmark");
       setBenchmarkResult(res);
       setError(null);
     } catch (e) {
@@ -90,6 +92,7 @@ export const SettingsTab: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {inference.indicator}
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

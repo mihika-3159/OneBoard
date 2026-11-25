@@ -21,6 +21,12 @@ async function clickRequest(page:Page,button:string,path:string,method='POST') {
     page.getByRole('button',{name:button,exact:true}).click()
   ]);
   expect(response.status(),path+': '+await response.text()).toBe(200);
+  if (response.headers()["content-type"]?.includes("application/x-ndjson")) {
+    const events = (await response.text()).trim().split("\n").map(line => JSON.parse(line));
+    expect(events.some(event => event.error)).toBe(false);
+    expect(events.at(-1)).toHaveProperty("result");
+    return events.at(-1).result;
+  }
   return response.json();
 }
 test('real buttons import CSV, search a stored document and refresh financial data',async({page})=>{

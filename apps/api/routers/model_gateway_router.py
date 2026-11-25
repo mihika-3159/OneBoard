@@ -11,6 +11,7 @@ from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.models.business import User, Business
 from apps.api.services.ollama_gateway import ollama_gateway
 from apps.api.services.request_inference import run_request_inference
+from apps.api.services.inference_stream import stream_or_wait
 from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
 from apps.api.models.entities import Commitment
 from apps.api.models.goals_tasks import Task
@@ -90,27 +91,30 @@ async def benchmark_gateway(
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "ai_benchmark")
     profile = _business_model_profile(db, current_user.business_id)
-    start = time.time()
-    with inference_tenant(current_user.business_id):
-        res = await run_request_inference(request, ollama_gateway.chat_complete(
-            messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
-            system_prompt="Return brief benchmark acknowledgment.",
-            model=ollama_gateway.get_model_for_task(profile=profile)
-        ))
-    total_time = round((time.time() - start) * 1000, 2)
-    is_simulated = res.get("simulated", False)
+    async def work():
+        start = time.time()
+        with inference_tenant(current_user.business_id):
+            res = await ollama_gateway.chat_complete(
+                messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
+                system_prompt="Return brief benchmark acknowledgment.",
+                model=ollama_gateway.get_model_for_task(profile=profile)
+            )
+        total_time = round((time.time() - start) * 1000, 2)
+        is_simulated = res.get("simulated", False)
     
-    return {
-        "status": "simulated_fallback" if is_simulated else "passed",
-        "inference_available": not is_simulated,
-        "fallback_reason": res.get("fallback_reason") if is_simulated else None,
-        "active_profile": profile,
-        "total_latency_ms": total_time,
-        "model": res.get("model"),
-        "simulated": is_simulated,
-        "inference_engine": "offline_simulated" if is_simulated else "local_ollama",
-        "gateway_url": ollama_gateway.base_url
-    }
+        return {
+            "status": "simulated_fallback" if is_simulated else "passed",
+            "inference_available": not is_simulated,
+            "fallback_reason": res.get("fallback_reason") if is_simulated else None,
+            "active_profile": profile,
+            "total_latency_ms": total_time,
+            "model": res.get("model"),
+            "simulated": is_simulated,
+            "inference_engine": "offline_simulated" if is_simulated else res.get("provider_protocol", "local_ollama"),
+            "gateway_url": ollama_gateway.base_url
+        }
+    return await stream_or_wait(request, work)
+
 
 @router.post("/command")
 async def handle_founder_command(
@@ -193,7 +197,7 @@ async def handle_founder_command(
         "model": res.get("model"),
         "simulated": is_simulated,
         "fallback_reason": res.get("fallback_reason") if is_simulated else None,
-        "inference_engine": "offline_simulated" if is_simulated else "local_ollama",
+        "inference_engine": "offline_simulated" if is_simulated else res.get("provider_protocol", "local_ollama"),
         "business_state_summary": {
             "mrr": total_mrr if data_status == "recorded" else None,
             "overdue_receivables": (

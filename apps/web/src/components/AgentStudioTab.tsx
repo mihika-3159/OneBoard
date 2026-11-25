@@ -13,9 +13,11 @@ import {
   Send,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { CustomAgent } from '../types';
 
 export const AgentStudioTab: React.FC = () => {
+  const inference = useInferenceOperation();
   const [agents, setAgents] = useState<CustomAgent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<CustomAgent | null>(null);
 
@@ -37,6 +39,7 @@ export const AgentStudioTab: React.FC = () => {
   const [requiresApproval, setRequiresApproval] = useState<string[]>(['send_email']);
 
   // Sandbox Tester State
+  const [cacheSandbox, setCacheSandbox] = useState(false);
   const [testInput, setTestInput] = useState('We have 3 new customer signups today. One has not configured their API key yet.');
   const [testOutput, setTestOutput] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
@@ -61,7 +64,7 @@ export const AgentStudioTab: React.FC = () => {
   const handleGenerateNL = async () => {
     setIsSubmitting(true);
     try {
-      const config = await api.generateAgentConfig(nlPrompt);
+      const config = await inference.run("/agents/generate", {prompt: nlPrompt});
       setName(config.name || 'New Custom Agent');
       setRoleTitle(config.role_title || 'Autonomous Specialist');
       setDepartment(config.department || 'Operations');
@@ -105,7 +108,7 @@ export const AgentStudioTab: React.FC = () => {
     if (!selectedAgent) return;
     setIsTesting(true);
     try {
-      const res = await api.testAgent(selectedAgent.id, testInput);
+      const res = await inference.run(`/agents/${selectedAgent.id}/test`, {test_input: testInput, cache_text: cacheSandbox});
       setTestOutput(res.output);
     } catch (e) {
       console.error('Testing failed', e);
@@ -116,6 +119,8 @@ export const AgentStudioTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {inference.indicator}
+      <label className="flex gap-2 text-sm text-slate-400"><input type="checkbox" checked={cacheSandbox} onChange={e => setCacheSandbox(e.target.checked)} /> Reuse identical pinned deterministic sandbox responses for 30 seconds</label>
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

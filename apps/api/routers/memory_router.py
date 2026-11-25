@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, status
+from apps.api.services.inference_stream import stream_or_wait
+from fastapi import Request, APIRouter, Depends, UploadFile, File, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
@@ -40,24 +41,28 @@ class ResolveConflictRequest(BaseModel):
 async def search_memory(
     req: SearchRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None,
 ):
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "memory_search")
-    results = await memory_engine.search_semantic_memory(
-        db=db,
-        business_id=current_user.business_id,
-        query=req.query,
-        top_k=req.top_k
-    )
-    return {"query": req.query, "results": results}
+    async def work():
+        results = await memory_engine.search_semantic_memory(
+            db=db,
+            business_id=current_user.business_id,
+            query=req.query,
+            top_k=req.top_k
+        )
+        return {"query": req.query, "results": results}
+    return await stream_or_wait(request, work, provider_stream=False)
+
 
 @router.post("/index")
-async def index_memory(current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+async def index_memory(current_user: User = Depends(require_founder_role), db: Session = Depends(get_db), request: Request = None):
     from apps.api.services.semantic_index import index_pending
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "document_upload")
-    return await index_pending(db, current_user.business_id)
+    return await stream_or_wait(request, lambda: index_pending(db, current_user.business_id), provider_stream=False)
 
 
 @router.get("/graph")

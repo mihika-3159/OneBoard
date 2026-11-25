@@ -151,6 +151,33 @@ const pendingWorkflowKeys = new Map<string, string>();
 // Exported API Client
 // ---------------------------------------------------------------------------
 export const api = {
+  streamInference: async <T = any>(path: string, payload: unknown, signal: AbortSignal, progress: (message: string) => void): Promise<T> => {
+    const res = await checkedResponse(path, {method: "POST", signal, headers: {Accept: "application/x-ndjson"},
+      ...(payload === undefined ? {} : {body: JSON.stringify(payload)})});
+    if (!res.headers.get("content-type")?.includes("application/x-ndjson") || !res.body) throw new Error("Missing inference stream");
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) throw new Error("Inference interrupted before a final result");
+        buffer += value;
+        if (buffer.length > 8 * 1024 * 1024) throw new Error("Inference response exceeded limit");
+        let end;
+        while ((end = buffer.indexOf("\n")) >= 0) {
+          const event = JSON.parse(buffer.slice(0, end));
+          buffer = buffer.slice(end + 1);
+          if (event.error) throw new Error(event.error);
+          if (Object.prototype.hasOwnProperty.call(event, "result")) return event.result as T;
+          if (typeof event.progress !== "string") throw new Error("Invalid inference progress event");
+          progress(event.progress);
+        }
+      }
+    } finally {
+      try { await reader.cancel(); } catch { /* Already aborted */ }
+      reader.releaseLock();
+    }
+  },
   // Authentication & Session
   login: async (email: string, password: string, mfa_code?: string): Promise<AuthResponse> => {
     const res = await request<AuthResponse>('/auth/login', {

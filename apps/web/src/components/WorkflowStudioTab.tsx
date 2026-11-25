@@ -23,9 +23,11 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { WorkflowDef } from '../types';
 
 export const WorkflowStudioTab: React.FC = () => {
+  const inference = useInferenceOperation();
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowDef | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -152,7 +154,7 @@ export const WorkflowStudioTab: React.FC = () => {
   const handleGenerateWorkflow = async () => {
     setIsGenerating(true);
     try {
-      const generated = await api.generateWorkflowFromPrompt(promptText);
+      const generated = await inference.run("/workflows/generate", {prompt: promptText});
       const created = await api.createWorkflow(generated);
       await loadWorkflows();
       selectWorkflow(created);
@@ -166,7 +168,7 @@ export const WorkflowStudioTab: React.FC = () => {
   const handleTeachProcess = async () => {
     setIsGenerating(true);
     try {
-      const generated = await api.teachProcess(teachDesc);
+      const generated = await inference.run("/workflows/teach-process", {description: teachDesc});
       const created = await api.createWorkflow(generated);
       await loadWorkflows();
       selectWorkflow(created);
@@ -207,6 +209,7 @@ export const WorkflowStudioTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {inference.indicator}
       {/* Header bar */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

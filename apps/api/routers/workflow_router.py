@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from apps.api.services.inference_stream import stream_or_wait
+from fastapi import Request, APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Literal
@@ -164,23 +165,28 @@ async def generate_from_prompt(
     req: PromptGenerationRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "workflow_generate")
-    with inference_tenant(current_user.business_id):
-        generated = await natural_language_builder.generate_workflow_from_prompt(req.prompt)
-    return generated
+    async def work():
+        with inference_tenant(current_user.business_id):
+            return await natural_language_builder.generate_workflow_from_prompt(req.prompt)
+    return await stream_or_wait(request, work)
 
 @router.post("/teach-process")
 async def teach_process(
     req: TeachProcessRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    request: Request = None,
 ):
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "workflow_generate")
-    with inference_tenant(current_user.business_id):
-        return await natural_language_builder.teach_a_process(req.description, req.examples)
+    async def work():
+        with inference_tenant(current_user.business_id):
+            return await natural_language_builder.teach_a_process(req.description, req.examples)
+    return await stream_or_wait(request, work)
 
 @router.get("/outbox")
 def list_local_outbox(

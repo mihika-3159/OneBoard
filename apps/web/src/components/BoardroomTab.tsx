@@ -13,9 +13,11 @@ import {
   Check,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { CouncilRole, CouncilMeeting } from '../types';
 
 export const BoardroomTab: React.FC = () => {
+  const inference = useInferenceOperation();
   const [roles, setRoles] = useState<CouncilRole[]>([]);
   const [meetings, setMeetings] = useState<CouncilMeeting[]>([]);
   const [selectedMeeting, setSelectedMeeting] = useState<CouncilMeeting | null>(null);
@@ -59,7 +61,7 @@ export const BoardroomTab: React.FC = () => {
   const handleConvene = async () => {
     setIsDeliberating(true);
     try {
-      const newMeeting = await api.deliberateMeeting({
+      const newMeeting = await inference.run<CouncilMeeting>("/council/deliberate", {
         title: meetingTitle,
         meeting_type: meetingType,
         topic: meetingTopic,
@@ -100,6 +102,7 @@ export const BoardroomTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {inference.indicator}
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from apps.api.services.inference_stream import stream_or_wait
+from fastapi import Request, APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -38,21 +39,25 @@ def get_council_meetings(
 async def convene_council_meeting(
     req: DeliberationRequest,
     current_user: User = Depends(require_founder_role),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None,
 ):
     from apps.api.core.config import settings
     from apps.api.services.tenant_resource_budget import consume_tenant_budget
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "council_deliberate")
-    meeting = await council_engine.conduct_deliberation(
-        db=db,
-        business_id=current_user.business_id,
-        title=req.title,
-        meeting_type=req.meeting_type,
-        topic=req.topic,
-        selected_advisers=req.selected_advisers
-    )
-    return meeting
+    async def work():
+        meeting = await council_engine.conduct_deliberation(
+            db=db,
+            business_id=current_user.business_id,
+            title=req.title,
+            meeting_type=req.meeting_type,
+            topic=req.topic,
+            selected_advisers=req.selected_advisers
+        )
+        return meeting
+    return await stream_or_wait(request, work)
+
 
 @router.post("/meetings/{meeting_id}/approve")
 def approve_meeting(

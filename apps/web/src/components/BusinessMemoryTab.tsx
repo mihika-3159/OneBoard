@@ -11,9 +11,11 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { useInferenceOperation } from './useInferenceOperation';
 import { MemoryConflict } from '../types';
 
 export const BusinessMemoryTab: React.FC = () => {
+  const inference = useInferenceOperation();
   const [activeSubTab, setActiveSubTab] = useState<'search' | 'graph' | 'conflicts' | 'upload'>('conflicts');
   const [searchQuery, setSearchQuery] = useState('pricing for growth tier');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -48,7 +50,7 @@ export const BusinessMemoryTab: React.FC = () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     try {
-      const res = await api.searchMemory(searchQuery);
+      const res = await inference.run("/memory/search", {query: searchQuery, top_k: 5});
       setSearchResults(res.results || []);
     } catch (e) {
       console.error('Search failed', e);
@@ -92,6 +94,7 @@ export const BusinessMemoryTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {inference.indicator}
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

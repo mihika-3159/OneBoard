@@ -75,3 +75,14 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 release.set()
                 await asyncio.gather(task, return_exceptions=True)
+
+
+    async def test_structured_stream_never_exposes_provisional_json(self):
+        from datetime import datetime
+        async def operation():
+            await on_text.get()('{"unvalidated":')
+            return {"validated": True, "created": datetime(2026, 1, 1)}
+        frames = [frame async for frame in stream_events(operation, expose_text=False)]
+        self.assertEqual(len(frames), 1)
+        self.assertNotIn("unvalidated", frames[0])
+        self.assertIn('"validated": true', frames[0])
