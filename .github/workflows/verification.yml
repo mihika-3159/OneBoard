@@ -324,7 +324,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements.lock
+      - run: 'python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements.lock'
       - run: python -m alembic upgrade head
       - name: Exercise the exact disposable PostgreSQL service
         env:
