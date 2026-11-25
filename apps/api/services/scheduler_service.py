@@ -75,25 +75,49 @@ class SchedulerService:
         with SessionLocal() as db:
             return [row[0] for row in db.query(Business.id).order_by(Business.id).all()]
 
+    def next_job_tenants(self,limit=64):
+        from apps.api.models.operations import SchedulerCursor
+        with SessionLocal() as db:
+            cursor=db.get(SchedulerCursor,"tenant_jobs")
+            if cursor is None:
+                cursor=SchedulerCursor(key="tenant_jobs",last_tenant="")
+                db.add(cursor)
+                db.flush()
+            ids=[row[0] for row in db.query(Business.id).filter(Business.id>cursor.last_tenant).order_by(Business.id).limit(limit).all()]
+            if not ids:
+                ids=[row[0] for row in db.query(Business.id).order_by(Business.id).limit(limit).all()]
+            if ids:
+                cursor.last_tenant=ids[-1]
+            db.commit()
+            return ids
+
     def run_tenant_jobs(self):
         from apps.api.services.workflow_schedule import run_due
         failed=0
-        for tenant in self.tenant_ids():
+        for tenant in self.next_job_tenants():
             try:
                 self.run_proactive_checks(tenant, apply_policy=True)
-                with SessionLocal() as db:
-                    db.info["oneboard_request"]=True
-                    scope_tenant_session(db,tenant)
-                    process_local_outbox(db,tenant=tenant)
-                    run_due(db,tenant)
             except Exception as exc:
                 failed+=1
-                logger.error("Tenant background job failed (%s)",type(exc).__name__)
+                logger.error("Tenant alerts/retention job failed (%s)",type(exc).__name__)
+            for task in (lambda db: process_local_outbox(db,tenant=tenant),lambda db: run_due(db,tenant)):
+                try:
+                    with SessionLocal() as db:
+                        db.info.update(oneboard_request=True,oneboard_worker=True)
+                        scope_tenant_session(db,tenant)
+                        task(db)
+                except Exception as exc:
+                    failed+=1
+                    logger.error("Tenant background job failed (%s)",type(exc).__name__)
         if settings.ONEBOARD_PRODUCTION_MODE:
             import asyncio
             from apps.api.services.semantic_index import scheduled_index
-            with SessionLocal() as db:
-                asyncio.run(scheduled_index(db))
+            try:
+                with SessionLocal() as db:
+                    asyncio.run(scheduled_index(db))
+            except Exception as exc:
+                failed+=1
+                logger.error("Semantic backfill failed (%s)",type(exc).__name__)
         return failed
 
     def run_proactive_checks(self, business_id: Optional[str] = None, apply_policy=False):
@@ -113,6 +137,8 @@ class SchedulerService:
         try:
             now=datetime.utcnow()
             db.info["oneboard_request"]=True
+            if apply_policy:
+                db.info["oneboard_worker"]=True
             scope_tenant_session(db,business_id)
             biz=db.query(Business).filter_by(id=business_id).first()
             if biz is None:

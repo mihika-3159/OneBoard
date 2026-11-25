@@ -89,7 +89,7 @@ def test_tenant_worker_failure_does_not_starve_next_tenant(db,monkeypatch):
     monkeypatch.setattr(service,"run_proactive_checks",refresh)
     monkeypatch.setattr(workflow_schedule,"run_due",lambda session,tenant:seen.append("schedule:"+tenant))
     assert service.run_tenant_jobs()==1
-    assert seen==["a","b","schedule:b"]
+    assert seen==["a","schedule:a","b","schedule:b"]
 
 def test_snapshot_export_and_opt_in_retention(db):
     for tenant in ("a","b"):
@@ -157,3 +157,23 @@ async def test_multiprobe_recovers_near_band_without_exact_collision(db,monkeypa
     result=await semantic_index.retrieve(db,"a","query",5)
     assert result[0]["document_id"]==doc.id
     assert await semantic_index.retrieve(db,"b","query",5)==[]
+
+
+def test_history_scan_finds_removed_secret_without_printing_value(tmp_path):
+    import subprocess
+    from scripts.check_tracked_secrets import history_scan
+    def git(*args):
+        return subprocess.check_output(["git",*args],cwd=tmp_path,stderr=subprocess.DEVNULL)
+    git("init")
+    git("config","user.name","Synthetic")
+    git("config","user.email","synthetic@example.test")
+    marker="ghp_"+"B"*36
+    path=tmp_path/"removed.txt"
+    path.write_text(marker)
+    git("add","removed.txt")
+    git("commit","-m","synthetic initial")
+    git("rm","removed.txt")
+    git("commit","-m","synthetic deletion")
+    count,findings=history_scan(tmp_path)
+    assert count>=1 and any(label=="GitHub token" for _,label in findings)
+    assert marker not in repr(findings)

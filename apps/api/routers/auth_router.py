@@ -327,6 +327,13 @@ def logout(
                     and session_record.user_id == payload.get("sub")
                     and session_record.business_id == payload.get("biz")
                 ):
+                    if settings.ONEBOARD_PRODUCTION_MODE and isinstance(db,Session) and db.get_bind().dialect.name=='postgresql':
+                        from apps.api.core.database import tenant_lifecycle_lock
+                        tenant_lifecycle_lock(db,session_record.business_id,exclusive=True)
+                        session_record=db.query(UserSession).filter_by(id=jti,user_id=payload.get('sub'),business_id=payload.get('biz')).populate_existing().first()
+                    if session_record is None:
+                        clear_auth_cookies(response)
+                        return {'status':'success','message':'Logged out successfully.'}
                     session_record.is_revoked = True
                     try:
                         db.commit()

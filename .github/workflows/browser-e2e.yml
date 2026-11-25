@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: python -m pip install -r apps/api/requirements.txt
+      - run: python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements.lock
       - name: Install browser test tooling
         working-directory: apps/web
         run: |

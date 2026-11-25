@@ -631,4 +631,6 @@ def require_founder_role(
                 raise forbidden
     if isinstance(db,Session) and settings.ONEBOARD_PRODUCTION_MODE:
         db.info['oneboard_founder']=True
+        if db.info.get('oneboard_request'):
+            scope_tenant_session(db,current_user.business_id)
     return current_user

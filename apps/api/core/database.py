@@ -71,6 +71,9 @@ def scope_tenant_session(db, tenant):
 def _restore_tenant_scope(session, transaction, connection):
     tenant = session.info.get("oneboard_tenant")
     if tenant and connection.dialect.name == "postgresql":
+        if session.info.get("oneboard_worker"):
+            connection.execute(text("SET LOCAL lock_timeout = '3s'"))
+            connection.execute(text("SET LOCAL statement_timeout = '15s'"))
         connection.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
                            {"tenant": tenant})
         if session.info.get("oneboard_request"):

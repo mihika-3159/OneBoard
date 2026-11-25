@@ -125,6 +125,6 @@ async def scheduled_index(db):
     cursor.last_tenant=tenant
     db.commit()  # Advance even if the provider is unavailable.
     with Session(bind=db.get_bind()) as scoped:
-        scoped.info["oneboard_request"]=True
+        scoped.info.update(oneboard_request=True,oneboard_worker=True)
         scope_tenant_session(scoped,tenant)
         return await index_pending(scoped,tenant,limit=1,gateway=OllamaGateway())

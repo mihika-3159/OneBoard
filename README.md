@@ -64,7 +64,7 @@ cd OneBoard
 python -m venv .venv
 # Linux/macOS: source .venv/bin/activate
 # Windows PowerShell: .venv\\Scripts\\Activate.ps1
-python -m pip install -r apps/api/requirements.txt
+python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements.lock
 ```
 
 Create a root `.env` for disposable **development** data:
