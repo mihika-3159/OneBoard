@@ -1,0 +1,19 @@
+# Batch K (67–78): financial intelligence
+
+## Storage and migration
+Revision 022 converts legacy floating-point monetary fields to signed integer thousandths, preserving up to three decimal places. Legacy values are rounded half-up only at that precision; nonfinite or excessive legacy values block the migration rather than being silently replaced. ORM calculations use Decimal. New journal entries store currency-specific integer minor units. The existing dashboard and API retain numeric presentation fields for backward compatibility and expose exact amount strings. Empty accounting schemas can downgrade in disposable tests; populated accounting history requires restoring a pre-upgrade backup.
+
+## Journal and settlement
+Founder-authorized, idempotent entries pair debits and credits. PostgreSQL tenant locks serialize financial reads, posting, invoice settlement and period closes. Legacy settlement evidence remains separate; an existing invoice with partial legacy settlement can be enrolled as an explicit opening receivable net of that evidence, never as invented historical revenue. Existing paid/draft/cancelled records cannot be silently enrolled. New issued invoices may be denominated in supported 0-, 2- or 3-decimal currencies. Base invoices may accept foreign receipts; foreign invoices require their original denomination. Realized FX differences and founder-supplied unrealized revaluation are separate postings; partial refunds allocate the original transaction cumulatively to avoid rounding drift. No automatic external FX quote is claimed.
+
+## Bank reconciliation and closing
+Import a bounded signed CSV with headers reference,date,currency,amount, an account label and duplicate/conflict checks. Review exact amount/currency/date/direction candidates; match one statement line to one cash journal entry. A close requires all recorded cash movements and statement lines matched, prior journal/statement months closed, and exact CLOSE YYYY-MM confirmation. A completed no-activity month can close after an initial recorded period. Close snapshots include cumulative trial balance, financial statement, journal digest, reconciliation manifest digest and open foreign receivable values. Later writes into closed or earlier periods are rejected. Bank and FX evidence are user supplied, not independently authenticated; no completeness claim about omitted bank transactions.
+
+## Unit economics, trends and forecasting
+Gross margin uses recorded revenue less cost of sales. CAC uses recorded acquisition expense divided by evidenced new-customer count. LTV is explicitly a constant-churn gross-profit estimate and is unavailable without valid denominators. Cohort counts must reconcile and reference a closed period and source digest. Historical trends use immutable closed snapshots. Forecasts use low/base/high explicit monthly revenue growth, expense growth and collection assumptions; results are deterministic scenario ranges, not statistical confidence intervals. Outcomes link once to the due period's immutable close with absolute error and range coverage.
+
+## Acceptance
+Mandatory independent integer arithmetic regression matrix, malformed amounts, original FX and rounding/refund tests, real SQLite legacy-value migration, PostgreSQL concurrent payment admission and restricted-role RLS tests, and a browser journey covering journal, bank match and close. All existing CI workflows remain required. No external paid provider, bank credentials, or live financial institution access is introduced.
+
+## Scope
+OneBoard is not a certified accounting system, audited financial statement generator, or authenticated banking service. Taxes, statutory accounting standards, jurisdiction-specific reporting and external bank integration are not claimed. Ledger opening balances are explicitly recorded and separate from the old business profile's unverified cash value.

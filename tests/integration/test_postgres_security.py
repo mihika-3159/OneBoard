@@ -1702,3 +1702,49 @@ def test_35_batch_k_concurrent_payments_do_not_overcollect():
             db.query(Business).filter_by(id=tenant).delete()
             db.commit()
         engine.dispose()
+
+
+def test_36_batch_k_rls_journal_and_closed_periods(monkeypatch):
+    from uuid import uuid4
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business
+    from apps.api.models.operations import JournalEntry,AccountingClose
+    from apps.api.services import finance_ledger as ledger
+    import base64,secrets
+    engine=_engine();a,b=str(uuid4()),str(uuid4());role="oneboard_finance_ci_"+uuid4().hex[:12]
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            conn.execute(text(f"GRANT SELECT, INSERT, UPDATE ON journal_entries,accounting_closes TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            key=bytes(old) if old is not None else secrets.token_bytes(32)
+            if old is None:conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES(true,:key)"),{"key":key})
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
+        with Session(engine) as db:
+            for tenant in (a,b):
+                db.add(Business(id=tenant,name="Synthetic",currency="USD"))
+            db.commit()
+            for tenant in (a,b):
+                ledger.post(db,tenant,"fixture",reference="opening-fixture",kind="opening_cash",amount="100",currency="USD",
+                    fx_rate="1",fx_source="same_currency",booked_on="2020-01-01",evidence_text="Synthetic balance")
+                ledger.close_period(db,tenant,"fixture","2020-01","CLOSE 2020-01")
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            assert db.query(JournalEntry).count()==db.query(AccountingClose).count()==0
+            scope_tenant_session(db,a)
+            assert {x.business_id for x in db.query(JournalEntry).all()}=={a}
+            assert {x.business_id for x in db.query(AccountingClose).all()}=={a}
+            db.add(AccountingClose(business_id=b,period="2020-02",snapshot={},snapshot_hash="a"*64,actor_id="fixture"))
+            with pytest.raises(DBAPIError):db.flush()
+            db.rollback()
+    finally:
+        with engine.begin() as conn:
+            for table in ("accounting_closes","journal_entries"):
+                conn.execute(text(f"DELETE FROM {table} WHERE business_id IN (:a,:b)"),{"a":a,"b":b})
+            conn.execute(text("DELETE FROM businesses WHERE id IN (:a,:b)"),{"a":a,"b":b})
+            conn.execute(text(f"DROP OWNED BY {role}"))
+            conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()

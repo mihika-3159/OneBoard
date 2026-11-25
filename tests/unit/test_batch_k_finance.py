@@ -184,3 +184,57 @@ def test_foreign_invoice_fx_gain_loss_revaluation_and_refund(db):
     assert ledger.invoice_balance(db,"a",inv)==36
     assert ledger.statement(db,"a","2020-01")["realized_fx_result"]=="0.00"
     assert sum(ledger.trial_balance(db.query(JournalEntry).all(),"AED").values())==0
+
+
+def test_real_legacy_sqlite_float_migration_preserves_amounts(tmp_path):
+    import importlib.util
+    from pathlib import Path
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    import apps.api.models.goals_tasks,apps.api.models.agent_council,apps.api.models.memory
+    import apps.api.models.workflow,apps.api.models.decision_evidence,apps.api.models.integrations
+    engine=create_engine("sqlite:///"+str(tmp_path/"legacy.sqlite"))
+    Base.metadata.create_all(engine)
+    path=Path(__file__).resolve().parents[2]/"alembic/versions/022_batch_k_finance.py"
+    spec=importlib.util.spec_from_file_location("fixture_migration",path);migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(migration)
+    try:
+        with engine.begin() as conn:
+            context=MigrationContext.configure(conn)
+            with Operations.context(context) as op:
+                for table,fields in migration.FIELDS.items():
+                    with op.batch_alter_table(table,recreate="always") as batch:
+                        for name in fields:batch.alter_column(name,existing_type=sa.BigInteger(),type_=sa.Float())
+            conn.execute(text("INSERT INTO businesses (id,name,currency,current_cash_balance,monthly_burn_rate) VALUES ('legacy','Legacy','KWD',1.2345,12.345)"))
+            conn.execute(text("INSERT INTO invoices (id,business_id,customer_name,invoice_number,amount,status,due_date) VALUES ('legacy-inv','legacy','Fixture','legacy-inv',123.456,'sent','2020-01-01 00:00:00')"))
+            with Operations.context(context):migration.upgrade()
+            assert conn.execute(text("SELECT amount,typeof(amount) FROM invoices WHERE id='legacy-inv'")).one()==(123456,"integer")
+            assert conn.execute(text("SELECT current_cash_balance,monthly_burn_rate FROM businesses WHERE id='legacy'")).one()==(1235,12345)
+        with Session(engine) as session:
+            assert session.get(Invoice,"legacy-inv").amount==Decimal("123.456")
+            assert session.get(Business,"legacy").current_cash_balance==Decimal("1.235")
+    finally:engine.dispose()
+
+def test_empty_closed_month_and_statement_only_prior_period(db):
+    post(db,"opening_cash","100","opening-0001")
+    ledger.close_period(db,"a","actor","2020-01","CLOSE 2020-01")
+    bank.import_lines(db,"a","Operating","reference,date,currency,amount\nmissing,2020-02-01,AED,1\n")
+    with pytest.raises(ValueError,match="earlier"):ledger.close_period(db,"a","actor","2020-03","CLOSE 2020-03")
+    db.rollback()
+    p=post(db,"capital","1","capital-0001",date="2020-02-01")
+    line=db.query(BankStatementLine).one()
+    bank.match(db,"a","actor",line.id,p.id)
+    ledger.close_period(db,"a","actor","2020-02","CLOSE 2020-02")
+    zero=ledger.close_period(db,"a","actor","2020-03","CLOSE 2020-03")
+    assert zero["snapshot"]["entry_count"]==0 and zero["snapshot"]["cash_balance"]=="101.00"
+
+def test_three_decimal_base_financials_and_currency_precision(db):
+    b=db.get(Business,"b");b.currency="KWD";b.current_cash_balance="2.345"
+    db.add(Customer(business_id="b",name="Exact",mrr="1.234"))
+    db.add(Expense(business_id="b",vendor="Exact",category="Expense",amount="1.233"))
+    db.commit()
+    summary=calculate_business_financials(db,"b")
+    assert summary["mrr"]==1.234 and summary["monthly_burn"]==1.233 and summary["net_burn"]==-0.001
+    inv=invoice(db,"1.234",tenant="b",ident="kwd-inv")
+    post(db,"invoice_issue","1.234","kwd-issue",inv.id,currency="KWD",tenant="b")
+    assert ledger.invoice_balance(db,"b",inv)==Decimal("1.234")

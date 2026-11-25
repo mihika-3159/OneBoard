@@ -243,6 +243,18 @@ def statement(db,tenant,period):
     cash_lines=db.query(BankStatementLine).filter_by(business_id=tenant,period=period).all()
     cash_entries=[r for r in rows if "cash" in (r.debit_account,r.credit_account) and r.kind not in ("opening_cash","opening_overdraft")]
     matched={r.journal_id for r in cash_lines if r.journal_id}
+    bank_manifest=[{"id":r.id,"account":r.account,"reference":r.reference,"date":r.booked_on,"currency":r.currency,"signed_minor":r.signed_minor,"source_hash":r.source_hash,"journal_id":r.journal_id} for r in sorted(cash_lines,key=lambda r:r.id)]
+    foreign=[]
+    by_invoice={}
+    for row in all_rows:
+        if row.invoice_id:by_invoice.setdefault(row.invoice_id,[]).append(row)
+    for invoice_id,entries in sorted(by_invoice.items()):
+        origin=next((r for r in entries if r.kind in RECOGNITION),None)
+        if origin and origin.currency!=biz.currency:
+            units=sum(r.invoice_minor_delta or 0 for r in entries)
+            if units>0:
+                last=max((r.booked_on for r in entries if r.kind=="fx_revaluation"),default=None)
+                foreign.append({"invoice_id":invoice_id,"currency":origin.currency,"outstanding":major(units,origin.currency),"carrying_amount":major(receivable(entries),biz.currency),"last_revaluation":last})
     revenue=-balances.get("revenue",0)-balances.get("sales_returns",0)
     cogs=balances.get("cost_of_sales",0)
     operating=balances.get("operating_expense",0)+balances.get("acquisition_expense",0)
@@ -260,6 +272,8 @@ def statement(db,tenant,period):
       "unmatched_bank_lines":sum(not r.journal_id for r in cash_lines),
       "unmatched_cash_entries":sum(r.id not in matched for r in cash_entries),
       "source_entry_ids":[r.id for r in rows],"source_digest":digest([serialize(r) for r in all_rows]),
+      "bank_line_ids":[r["id"] for r in bank_manifest],"bank_match_digest":digest(bank_manifest),
+      "foreign_receivables":foreign,"fx_revaluation_policy":"Founder-supplied dated rates; no independent FX or period-end valuation certification",
       "bank_verified":False,"basis":"recorded_journal_not_independent_audit"}
 
 def close_period(db,tenant,actor,period,confirmation):
@@ -272,9 +286,10 @@ def close_period(db,tenant,actor,period,confirmation):
     if db.query(AccountingClose.id).filter(AccountingClose.business_id==tenant,AccountingClose.period>period).first():raise ValueError("Cannot close before an already closed later period")
     closed={r[0] for r in db.query(AccountingClose.period).filter_by(business_id=tenant).all()}
     older={r[0] for r in db.query(JournalEntry.period).filter(JournalEntry.business_id==tenant,JournalEntry.period<period).distinct().all()}
-    if older-closed:raise ValueError("Close earlier journal periods first")
+    older.update(r[0] for r in db.query(BankStatementLine.period).filter(BankStatementLine.business_id==tenant,BankStatementLine.period<period).distinct().all())
+    if older-closed:raise ValueError("Close earlier journal or statement periods first")
     snapshot=statement(db,tenant,period)
-    if not snapshot["entry_count"]:raise ValueError("Cannot close an empty journal period")
+    if not snapshot["entry_count"] and not closed:raise ValueError("An initial journal period requires recorded activity or opening balances")
     if snapshot["unmatched_bank_lines"] or snapshot["unmatched_cash_entries"]:raise ValueError("Reconcile all statement and cash entries before close")
     row=AccountingClose(business_id=tenant,period=period,snapshot=snapshot,snapshot_hash=digest(snapshot),actor_id=actor)
     db.add(row);db.commit()
