@@ -42,7 +42,7 @@ sustained independent stress test, or proof of deployed resource fairness.
 
 ## 3. Clean Windows installation
 
-New Windows Actions job does a fresh Python 3.11 / Node 20 install,
+New Windows Actions job does a fresh Python 3.11 / Node 22 install,
 Python dependencies, npm ci and frontend build, SQLite Alembic migration,
 financial and rate tests, then launches a local Uvicorn child process.
 A black-box HTTP smoke creates two synthetic tenants and confirms

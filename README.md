@@ -56,7 +56,7 @@ SQLite is for development and disposable local demos. Production multi-tenant mo
 
 ## Quickstart for local development only
 
-Prerequisites: Python 3.11+, Node.js 20+, npm, and optionally a local Ollama daemon. A local start does not use a hosted provider or require any paid service.
+Prerequisites: Python 3.11+, Node.js 22.12+, npm, and optionally a local Ollama daemon. A local start does not use a hosted provider or require any paid service.
 
 ```bash
 git clone https://github.com/mihika-3159/OneBoard.git
