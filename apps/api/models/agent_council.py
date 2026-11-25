@@ -21,6 +21,8 @@ class CouncilMeeting(Base):
     # Structured outcomes
     deliberation_transcript = Column(JSON, default=list) # Array of adviser speeches and challenge messages
     synthesis_summary = Column(Text, nullable=True)
+    structured_synthesis = Column(JSON, nullable=True)
+    checkpoint_at = Column(DateTime, nullable=True)
     areas_of_agreement = Column(JSON, default=list)
     areas_of_disagreement = Column(JSON, default=list)
     recommended_actions = Column(JSON, default=list)

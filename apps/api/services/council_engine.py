@@ -3,6 +3,8 @@ from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+import asyncio
+from apps.api.services.council_evidence import evidence_inventory, adviser_record, synthesis_record
 import json
 from apps.api.models.agent_council import CouncilMeeting, AdviserScorecard
 from apps.api.models.decision_evidence import Decision
@@ -111,6 +113,10 @@ class CouncilEngine:
             raise ValueError("Select distinct, recognized advisers")
 
         topic = topic.strip()
+        if len(topic) > 8000 or not title.strip() or len(title) > 255:
+            raise ValueError("Invalid meeting title or topic length")
+        inventory = evidence_inventory(db, business_id)
+        evidence_text = quoted_data("tenant_evidence_inventory", json.dumps(inventory), 12000)
         financials = self._calculate_deterministic_financials(db, business_id)
         facts = (
             f"MRR={financials['mrr']}; monthly expenses={financials['monthly_expenses']}; "
@@ -130,13 +136,33 @@ class CouncilEngine:
             )
         meeting = CouncilMeeting(
             business_id=business_id, title=title, meeting_type=meeting_type,
-            topic=topic, advisers_present=selected_advisers, stage="deliberating"
+            topic=topic, advisers_present=selected_advisers, stage="deliberating",
+            checkpoint_at=datetime.utcnow(), retrieved_evidence_ids=[]
         )
         db.add(meeting)
         db.commit()
         db.refresh(meeting)
 
         transcript = []
+        try:
+            return await asyncio.wait_for(self._deliberate(db, meeting, business_id, topic, selected_advisers,
+                financials, facts, inventory, evidence_text, transcript), timeout=600)
+        except BaseException:
+            db.rollback()
+            meeting.stage = "interrupted"
+            meeting.checkpoint_at = datetime.utcnow()
+            meeting.synthesis_summary = "Deliberation interrupted; no approval or actions are available."
+            meeting.recommended_actions = []
+            db.commit()
+            raise
+
+    async def _deliberate(self, db, meeting, business_id, topic, selected_advisers, financials, facts, inventory, evidence_text, transcript):
+        def checkpoint(stage):
+            meeting.deliberation_transcript = list(transcript)
+            meeting.stage = stage
+            meeting.checkpoint_at = datetime.utcnow()
+            db.commit()
+
         positions = {}
         for name in selected_advisers:
             role = COUNCIL_ROLES[name]
@@ -145,10 +171,12 @@ class CouncilEngine:
                     messages=[{"role": "user", "content": (
                         f"Topic: {topic}\nRecorded financial facts: {facts}\n"
                         f"Focus: {role['focus']}.\n"
-                        "In at most 100 words, provide a position, assumptions, risks and a measurable next step. "
-                        "Do not invent customers, contracts, sources or numerical targets."
+                        f"{evidence_text}\n"
+                        'Return JSON {"position":"at most 100 words", "citations":[{"id":"inventory id","quote":"exact text"}]}. '
+                        "Cite only supplied records, use [] when unsupported, label assumptions. Do not invent numeric targets."
                     )}],
-                    system_prompt=f"Act as {name}; use only supplied facts. "+DATA_BOUNDARY
+                    system_prompt=f"Act as {name}; use only supplied facts. "+DATA_BOUNDARY,
+                    format_json=True
                 )
             simulated = bool(res.get("simulated", False))
             # The gateway's offline fallback contains canned Northstar Studio
@@ -158,8 +186,14 @@ class CouncilEngine:
                 f"Available financial facts: {facts}"
                 if simulated else (res.get("content") or "No adviser response returned.")
             )
+            verified = adviser_record(res, inventory)
+            if verified:
+                content = verified["position"]
             positions[name] = content
             transcript.append({
+                "argument_id": f"argument-{len(transcript)+1}",
+                "citations": verified["citations"] if verified else [],
+                "evidence_status": verified["evidence_status"] if verified else "unsupported",
                 "adviser": name, "role": role["title"],
                 "department": role["department"], "stage": "independent_analysis",
                 "content": content, "simulated": simulated,
@@ -167,6 +201,7 @@ class CouncilEngine:
                 "source": "deterministic_fallback" if simulated else "local_ollama_unverified",
                 "timestamp": datetime.utcnow().isoformat()
             })
+            checkpoint("independent_analysis")
 
         disagreements = []
         challengers = [n for n in selected_advisers if n != "Chief of Staff"]
@@ -202,6 +237,7 @@ class CouncilEngine:
                 "compared_advisers": [first, second],
                 "timestamp": datetime.utcnow().isoformat()
             })
+            checkpoint("challenge_round")
             challenge_summaries.append(f"{first} / {second}: {comparison[:800]}")
             if not simulated and comparison.strip():
                 disagreements.append(
@@ -231,17 +267,23 @@ class CouncilEngine:
         visible_positions = "\n".join(
             f"{name}: {quoted_data('adviser_position',positions[name],1500)}" for name in selected_advisers
         )
+        checkpoint("synthesis")
         with inference_tenant(business_id):
             synthesis = await ollama_gateway.chat_complete(
                 messages=[{"role": "user", "content": (
                     f"Topic: {topic}\nRecorded facts: {facts}\n"
                     f"Actual adviser positions:\n{visible_positions}\n"
                     f"Challenges: {'; '.join(challenge_summaries) if challenge_summaries else 'Not performed'}\n"
-                    "In at most 100 words, summarize only supported advice and trade-offs. "
-                    "Do not invent evidence, numeric targets or consensus."
+                    f"{evidence_text}\nArguments with stable IDs: {quoted_data('argument_inventory',json.dumps([{'id':a.get('argument_id'),'content':a['content'],'citations':a.get('citations',[])} for a in transcript if a.get('argument_id')]),12000)}\n"
+                    'Return JSON {"arguments":[{"id":"argument ID","quote":"exact adviser words"}],"citations":[{"id":"record ID","quote":"exact record words"}]}. '
+                    "Select only linked evidence; no invented claims, numeric targets or consensus."
                 )}],
-                system_prompt="Synthesize the visible transcript, labelling assumptions. "+DATA_BOUNDARY
+                system_prompt="Synthesize the visible transcript, labelling assumptions. "+DATA_BOUNDARY,
+                format_json=True
             )
+        structured = synthesis_record(synthesis, transcript, inventory)
+        meeting.structured_synthesis = structured
+        meeting.retrieved_evidence_ids = [item["id"] for item in structured["citations"]]
         if synthesis.get("simulated", False):
             summary = (
                 f"Offline council summary (no LLM inference). Topic: {topic}. "
@@ -250,22 +292,34 @@ class CouncilEngine:
                 "No independent agreement or disagreement established."
             )
         else:
-            summary = (
-                "AI-generated synthesis (unverified; review adviser positions): "
-                + ("[Output limit reached; incomplete response] " if synthesis.get("output_limit_reached") else "")
-                + (synthesis.get("content") or "No synthesis returned.")
-            )
+            summary = ("AI-generated synthesis (unverified; review adviser positions): "
+                       + ("; ".join(a["adviser"] + ": " + a["quote"] for a in structured["arguments"])
+                          if structured["arguments"] else "No evidence-linked synthesis accepted; collect evidence before acting."))
 
         meeting.deliberation_transcript = transcript
         meeting.synthesis_summary = summary
         meeting.areas_of_agreement = []
         meeting.areas_of_disagreement = disagreements
         meeting.recommended_actions = actions
-        meeting.stage = "completed"
+        incomplete = (not synthesis.get("simulated") and bool(synthesis.get("output_limit_reached"))) or any(a["output_limit_reached"] for a in transcript)
+        mixed = any(a["simulated"] for a in transcript) and any(not a["simulated"] for a in transcript)
+        meeting.stage = "partial" if incomplete or mixed or (synthesis.get("simulated") and any(not a["simulated"] for a in transcript)) else "completed"
+        if meeting.stage == "partial":
+            meeting.recommended_actions = []
+        meeting.checkpoint_at = datetime.utcnow()
         meeting.completed_at = datetime.utcnow()
         db.commit()
         db.refresh(meeting)
         return meeting
+
+    def reconcile_interrupted(self, db, business_id):
+        cutoff = datetime.utcnow() - timedelta(minutes=12)
+        count = db.query(CouncilMeeting).filter(CouncilMeeting.business_id == business_id,
+            CouncilMeeting.stage.in_(["deliberating", "independent_analysis", "challenge_round", "synthesis"]),
+            ((CouncilMeeting.checkpoint_at < cutoff) | ((CouncilMeeting.checkpoint_at.is_(None)) & (CouncilMeeting.created_at < cutoff))))\
+            .update({"stage": "interrupted", "recommended_actions": [], "synthesis_summary": "Deliberation interrupted; no approval available."}, synchronize_session=False)
+        db.commit()
+        return count
 
     def approve_meeting_decision(
         self,
@@ -295,6 +349,7 @@ class CouncilEngine:
             business_context=meeting.topic,
             advisers_consulted=meeting.advisers_present,
             recommendations_summary=meeting.synthesis_summary,
+            supporting_evidence_ids=meeting.retrieved_evidence_ids or [],
             assumptions=[],  # Do not invent financial or acquisition predictions.
             dissenting_opinions=meeting.areas_of_disagreement,
             founder_decision="approved",

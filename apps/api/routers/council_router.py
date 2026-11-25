@@ -31,6 +31,7 @@ def get_council_meetings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    council_engine.reconcile_interrupted(db, current_user.business_id)
     return db.query(CouncilMeeting).filter(
         CouncilMeeting.business_id == current_user.business_id
     ).order_by(CouncilMeeting.created_at.desc()).all()
