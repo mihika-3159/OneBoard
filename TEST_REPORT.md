@@ -882,3 +882,45 @@ proof. No production deploy, real customer data, offsite storage, provider
 enrollment or payment used. PR remains draft and unmerged. External
 financial authenticity and independent production acceptance are open.
 
+
+### Batch A exact-head execution results: 25 November 2026
+
+**Verified green code head:** 3bd9a2f9ee19e4e70e6c738bde421aaa35dfb166.
+ALL FIVE GitHub Actions workflows completed/success on the same SHA:
+
+- OneBoard verification, run 45532793042: 568 Python tests passed, 42 skipped,
+  4 warnings; frontend build and real small-model Ollama inference passed;
+  21 PostgreSQL integration/migration/security tests passed. Normal PG16
+  logical restore checked 40 tables, 42 synthetic records, SHA-256 and
+  Alembic head 009. NEW real age-encrypted PG16 custom backup, age
+  decryption and restore into freshly created localhost scratch database
+  passed, recovering 41 schema tables at revision 009. This is NOT offsite DR.
+- Windows clean installation/startup, run 45532793076: completed/success.
+- Real-browser E2E, run 45532793043: completed/success, including
+  new real-founder Operations empty-state and demo-data denial.
+- Isolated browser inference feasibility, run 45532793141: completed/success;
+  not approved/default inference architecture.
+- Acceptance-evidence, run 45532793045: completed/success, intentionally
+  reports production Level 3 NO-GO and no independent reviewer sign-off.
+
+**Test failures found and corrected rather than bypassed:**
+1. The workflow-approval UI invariant test falsely matched a comment
+   containing a removed executeWorkflow reference; the comment was rephrased
+   and the strict no-second-dispatch assertion remains.
+2. The encrypted PG restore initially failed because the Docker-based PG16
+   client did not keep stdin attached. Added Docker -i so age-decrypted
+   archive bytes reached pg_restore. The genuine roundtrip then passed.
+3. New Operations Playwright test looked for "Operations" instead of the
+   actual "Operations & CRM" sidebar item. Fixed the selector, retained
+   the real browser test and confirmed green.
+
+**Unresolved external Level 3 gates:** independently authenticated
+financial sources, eligible real hosting and HTTPS, offsite encrypted
+backup retention/recovery, live provider OAuth/sync and independent
+production review. No real customer data, payments, provider signups,
+deployments, merges or main-branch changes occurred.
+
+**Exact-head caution:** This report-only commit generates a fresh SHA.
+All five applicable checks must pass on the new SHA before Batch B
+may begin. PR #8 remains draft.
+
