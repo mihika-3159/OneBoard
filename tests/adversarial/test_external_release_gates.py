@@ -111,7 +111,7 @@ def test_probe_checks_hsts_host_rejection_and_forwarded_header_rewrite():
     def result(code=200, hsts="max-age=31536000"):
         return SimpleNamespace(
             status_code=code,
-            headers={"strict-transport-security": hsts},
+            headers={"strict-transport-security": hsts,"x-content-type-options":"nosniff","x-frame-options":"DENY","referrer-policy":"no-referrer"},
             json=lambda: {"status": "healthy"},
         )
 
