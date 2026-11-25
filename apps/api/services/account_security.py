@@ -192,7 +192,7 @@ def check_api_key_permissions(db,user,request):
     row=state(db,user)
     path=getattr(getattr(request,"url",None),"path","")
     method=request.method
-    if path.startswith("/api/auth/security/") or path=="/api/data/delete-workspace":
+    if path.startswith("/api/auth/security") or path in ("/api/data/delete-workspace","/api/auth/regenerate-api-key"):
         raise HTTPException(403,"Interactive session required")
     if row and row.api_key_expires_at and row.api_key_expires_at<=datetime.utcnow():
         raise HTTPException(401,"API key expired")

@@ -11,7 +11,7 @@ from apps.api.services.tenant_storage import _lock
 
 EXCLUDED={"login_throttle_states","scheduled_job_leases","user_sessions","scheduler_cursors","account_security"}
 SECRET_COLUMNS={"password_hash","hashed_password","api_key","token","token_hash",
-                "encrypted_token","configuration","vector","embedding"}
+                "encrypted_token","configuration","vector","embedding","mfa_ciphertext","pending_mfa_ciphertext","recovery_hashes","email_challenge_hash","email_challenge_ciphertext"}
 def _safe(value):
     if isinstance(value,float) and not math.isfinite(value):
         return None

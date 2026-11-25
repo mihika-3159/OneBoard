@@ -108,6 +108,10 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("COOKIE_SECURE must be enabled behind HTTPS")
     if len(config.AUTH_SECRET_KEY) < 32 or config.AUTH_SECRET_KEY == "oneboard-LOCAL-DEMO-ONLY-NOT-FOR-PRODUCTION":
         errors.append("AUTH_SECRET_KEY must be at least 32 characters and not the demo sentinel")
+    if not 100 <= config.AUTH_GLOBAL_ATTEMPTS <= 10000:
+        errors.append("AUTH_GLOBAL_ATTEMPTS must be between 100 and 10000")
+    if config.AUTH_PREVIOUS_SECRET_KEY and (len(config.AUTH_PREVIOUS_SECRET_KEY)<32 or config.AUTH_PREVIOUS_SECRET_KEY=="oneboard-LOCAL-DEMO-ONLY-NOT-FOR-PRODUCTION"):
+        errors.append("Previous signing key must be strong")
     if not 60 <= config.SESSION_EXPIRY_SECONDS <= 30 * 24 * 3600:
         errors.append("SESSION_EXPIRY_SECONDS must be between 60 seconds and 30 days")
     if not 1 <= config.LOGIN_MAX_ATTEMPTS <= 20:

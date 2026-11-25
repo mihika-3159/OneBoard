@@ -159,5 +159,7 @@ app.include_router(alerts_router)
 app.include_router(model_gateway_router)
 
 app.include_router(data_router)
+from apps.api.routers.account_security_router import router as account_security_router
+app.include_router(account_security_router)
 
 app.include_router(diagnostics_router)

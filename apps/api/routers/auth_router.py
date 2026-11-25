@@ -80,6 +80,9 @@ def register(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Registration requires a verified client transport address."
             )
+        if isinstance(db,Session) and db.get_bind().dialect.name=="postgresql":
+            check_login_throttle("global-auth-admission",db)
+            record_failed_login("global-auth-admission",db)
         source_key = f"registration-source:{request.client.host}"
         check_login_throttle(source_key, db)
         # Count ALL admitted attempts (including duplicates and failures).
@@ -208,6 +211,9 @@ def login(
         # clear the budget while guessing passwords for other accounts.
         # This counter is independent of account-specific lockouts and
         # applies when an attacker rotates email addresses behind one IP.
+        if isinstance(db,Session) and db.get_bind().dialect.name=="postgresql":
+            check_login_throttle("global-auth-admission",db)
+            record_failed_login("global-auth-admission",db)
         shared_source_key = f"login-source:{source_host}"
         check_login_throttle(shared_source_key, db)
         record_failed_login(shared_source_key, db)
@@ -229,8 +235,9 @@ def login(
             _require_active_membership(user, db)
             from apps.api.core.database import scope_tenant_session
             from apps.api.services.account_security import verify_factor
-            scope_tenant_session(db,user.business_id)
-            if not verify_factor(db,user,req.mfa_code):
+            if isinstance(db,Session):
+                scope_tenant_session(db,user.business_id)
+            if isinstance(db,Session) and not verify_factor(db,user,req.mfa_code):
                 valid_credentials=False
         except HTTPException:
             valid_credentials = False
@@ -384,6 +391,11 @@ def regenerate_api_key_endpoint(
     db: Session = Depends(get_db)
 ) -> Dict[str, str]:
     """Regenerate a new high-entropy API key for the authenticated user."""
+    if isinstance(db,Session) and db.info.get("oneboard_request"):
+        from apps.api.services.account_security import state
+        row=state(db,current_user)
+        if row and (row.mfa_ciphertext or row.api_key_scopes is not None):
+            raise HTTPException(403,"Use reauthenticated scoped key management")
     new_key = generate_api_key()
     current_user.api_key = hash_api_key(new_key)
     db.commit()

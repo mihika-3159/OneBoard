@@ -1210,3 +1210,5 @@ recovery codes, password recovery primitive, staged encrypted email
 verification challenge (no delivery), API key scope/expiry checks,
 hash-chained security events, previous signing-key verification and
 migration 014. New endpoint wiring and tests follow; CI pending.
+
+Batch F increment 2: interactive TOTP, recovery, staged email, session, key and owner membership routes. Global production authentication admission supplements IP/account limits. Email delivery is not enabled. CI pending; database privilege narrowing and tests remain outstanding.
