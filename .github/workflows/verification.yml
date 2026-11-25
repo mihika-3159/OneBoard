@@ -59,6 +59,8 @@ jobs:
     env:
       PYTHONPATH: "."
       ONEBOARD_CI_OLLAMA_MODEL: "qwen2.5:0.5b"
+      OLLAMA_MAX_OUTPUT_TOKENS: "192"
+      OLLAMA_MAX_JSON_OUTPUT_TOKENS: "256"
       ONEBOARD_CI_EMBEDDING_MODEL: "all-minilm"
       ONEBOARD_LIVE_OLLAMA_TESTS: "1"
       AUTH_SECRET_KEY: "ci-only-live-api-secret-not-for-production-0123456789"

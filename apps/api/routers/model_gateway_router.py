@@ -181,7 +181,8 @@ async def handle_founder_command(
     
     return {
         "command": req.command,
-        "response": res.get("content"),
+        "response": (("[Output limit reached; incomplete response] " if res.get("output_limit_reached") else "") + (res.get("content") or "")),
+        "output_limit_reached": bool(res.get("output_limit_reached")),
         "model": res.get("model"),
         "simulated": is_simulated,
         "fallback_reason": res.get("fallback_reason") if is_simulated else None,

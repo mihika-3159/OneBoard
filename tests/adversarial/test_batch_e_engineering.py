@@ -203,3 +203,26 @@ async def test_multiprobe_large_synthetic_corpus_top_ten_recall(db,monkeypatch):
     recall=len(exact&{row["chunk_id"] for row in rows})/10
     print(f"SYNTHETIC_ANGULAR_RECALL corpus=1000 top_k=10 recall={recall:.2f}")
     assert recall>=.9 and len(rows)==10
+
+
+@pytest.mark.asyncio
+async def test_gateway_output_is_bounded_and_limit_is_explicit(monkeypatch):
+    from apps.api.services import ollama_gateway as module
+    from apps.api.services.ollama_gateway import OllamaGateway
+    import importlib
+    module=importlib.import_module("apps.api.services.ollama_gateway")
+    monkeypatch.setattr(settings,"OLLAMA_MAX_OUTPUT_TOKENS",192)
+    class Response:
+        status_code=200
+        def json(self):
+            return {"done":True,"done_reason":"length","message":{"content":"synthetic bounded answer"}}
+    class Client:
+        def __init__(self,**kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): return False
+        async def post(self,url,json):
+            assert json["options"]["num_predict"]==192
+            return Response()
+    monkeypatch.setattr(module.httpx,"AsyncClient",Client)
+    result=await OllamaGateway().chat_complete([{"role":"user","content":"synthetic"}])
+    assert not result["simulated"] and result["output_limit_reached"]

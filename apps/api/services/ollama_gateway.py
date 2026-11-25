@@ -91,6 +91,7 @@ class OllamaGateway:
             "model": target_model,
             "messages": [],
             "stream": False,
+            "options": {"num_predict": max(64,min(4096,settings.OLLAMA_MAX_JSON_OUTPUT_TOKENS if format_json else settings.OLLAMA_MAX_OUTPUT_TOKENS))},
         }
         if system_prompt:
             payload["messages"].append({"role": "system", "content": system_prompt})
@@ -143,6 +144,7 @@ class OllamaGateway:
                                 "content": content,
                                 "model": target_model,
                                 "simulated": False,
+                                "output_limit_reached": data.get("done_reason") == "length",
                                 "duration_ms": int((time.monotonic() - start_time) * 1000),
                             }
                     elif response.status_code == 404:

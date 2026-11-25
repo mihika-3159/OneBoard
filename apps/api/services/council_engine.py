@@ -142,7 +142,7 @@ class CouncilEngine:
                 messages=[{"role": "user", "content": (
                     f"Topic: {topic}\nRecorded financial facts: {facts}\n"
                     f"Focus: {role['focus']}.\n"
-                    "Provide a position, assumptions, risks and a measurable next step. "
+                    "In at most 100 words, provide a position, assumptions, risks and a measurable next step. "
                     "Do not invent customers, contracts, sources or numerical targets."
                 )}],
                 system_prompt=f"Act as {name}; use only supplied facts."
@@ -160,6 +160,7 @@ class CouncilEngine:
                 "adviser": name, "role": role["title"],
                 "department": role["department"], "stage": "independent_analysis",
                 "content": content, "simulated": simulated,
+                "output_limit_reached": bool(res.get("output_limit_reached")),
                 "source": "deterministic_fallback" if simulated else "local_ollama_unverified",
                 "timestamp": datetime.utcnow().isoformat()
             })
@@ -176,7 +177,7 @@ class CouncilEngine:
                     f"Topic: {topic}\\nRecorded facts: {facts}\\n"
                     f"{first} position: {positions[first][:1500]}\\n"
                     f"{second} position: {positions[second][:1500]}\\n"
-                    "Identify a specific tension only if the positions support one; "
+                    "In at most 70 words, identify a specific tension only if the positions support one; "
                     "otherwise say there is no demonstrated disagreement. "
                     "Do not invent a quote, source or target."
                 )}],
@@ -192,6 +193,7 @@ class CouncilEngine:
                 "adviser": "Council facilitator", "role": "Position comparison",
                 "department": "Executive Office", "stage": "challenge_round",
                 "content": comparison, "simulated": simulated,
+                "output_limit_reached": bool(challenge.get("output_limit_reached")),
                 "source": "deterministic_fallback" if simulated else "local_ollama_unverified",
                 "compared_advisers": [first, second],
                 "timestamp": datetime.utcnow().isoformat()
@@ -230,7 +232,7 @@ class CouncilEngine:
                 f"Topic: {topic}\nRecorded facts: {facts}\n"
                 f"Actual adviser positions:\n{visible_positions}\n"
                 f"Challenges: {'; '.join(challenge_summaries) if challenge_summaries else 'Not performed'}\n"
-                "Summarize only supported advice and trade-offs. "
+                "In at most 100 words, summarize only supported advice and trade-offs. "
                 "Do not invent evidence, numeric targets or consensus."
             )}],
             system_prompt="Synthesize the visible transcript, labelling assumptions."
@@ -245,6 +247,7 @@ class CouncilEngine:
         else:
             summary = (
                 "AI-generated synthesis (unverified; review adviser positions): "
+                + ("[Output limit reached; incomplete response] " if synthesis.get("output_limit_reached") else "")
                 + (synthesis.get("content") or "No synthesis returned.")
             )
 

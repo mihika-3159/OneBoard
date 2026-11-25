@@ -1192,3 +1192,12 @@ real loopback in-flight inference transport kill (not provider compute
 cancellation), a 1,000-vector exact-cosine geometric recall regression,
 commit/tag secret scan, and explicit failure reporting of schedule
 attempts. Exact final-head CI pending. PR remains draft.
+
+
+One hash-locked intermediate run (8926211) hit the real Ollama
+45-second deadline during council synthesis: 10/11 authenticated HTTP
+tests passed; the required genuine synthesis assertion correctly failed.
+Bounded generation output (production defaults 768 text / 1536 JSON
+tokens, disposable CPU CI 192 / 256), concise council requests and explicit
+output-limit metadata/labels address unbounded generation without
+weakening the mandatory non-simulated assertion. Final CI pending.
