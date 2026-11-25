@@ -29,6 +29,8 @@ def verify_runtime_role(engine):
         expected=sorted({t.name for t in Base.metadata.tables.values() if "business_id" in t.c}|{"businesses","sync_history"})
         from apps.api.core.tenant_context import apply_context,context_key
         context_key()
+        from apps.api.services.account_security import _key
+        _key()
         apply_context(conn,"oneboard-startup-probe")
         if conn.execute(text("SELECT public.ob_scope_valid()")).scalar_one()!="oneboard-startup-probe":
             raise RuntimeError("Runtime tenant context signing key does not match database")

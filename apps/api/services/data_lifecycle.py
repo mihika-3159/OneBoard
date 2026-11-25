@@ -155,6 +155,7 @@ def delete_workspace(db,user,confirmation):
     counts={}
     preferred=["sync_history","semantic_vectors","memory_chunks","memory_documents",
                "side_effect_outbox","approval_requests","workflow_schedules","workflow_runs","workflow_definitions",
+               "settlement_evidence","support_tickets","invoices","customers","tasks","goals","decisions",
                "user_sessions","business_memberships","users","businesses"]
     late={"user_sessions","business_memberships","users","businesses"}
     names=[n for n in preferred if n not in late]

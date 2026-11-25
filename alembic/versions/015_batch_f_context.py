@@ -58,29 +58,15 @@ def upgrade():
       AS $$ SELECT id::text FROM public.businesses WHERE id>after_id ORDER BY id LIMIT greatest(0,least(max_rows,1000)) $$""")
     op.execute("""CREATE FUNCTION public.ob_password_verifier(uid text) RETURNS text
       LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public
-      AS $ SELECT hashed_password::text FROM public.users WHERE id=uid AND business_id=public.ob_scope_valid() AND is_active IS TRUE LIMIT 1 $""")
+      AS $f$ SELECT hashed_password::text FROM public.users WHERE id=uid AND business_id=public.ob_scope_valid() AND is_active IS TRUE LIMIT 1 $f$""")
     op.execute("""CREATE FUNCTION public.ob_key_matches(uid text,value text) RETURNS boolean
       LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public
-      AS $ SELECT EXISTS(SELECT 1 FROM public.users WHERE id=uid AND business_id=public.ob_scope_valid() AND is_active IS TRUE AND api_key=value) $""")
+      AS $f$ SELECT EXISTS(SELECT 1 FROM public.users WHERE id=uid AND business_id=public.ob_scope_valid() AND is_active IS TRUE AND api_key=value AND NOT EXISTS (SELECT 1 FROM public.account_security a WHERE a.user_id=uid AND a.business_id=public.ob_scope_valid() AND a.api_key_expires_at<=timezone('UTC',now()))) $f$""")
     op.execute("""CREATE FUNCTION public.ob_unsafe_api_keys() RETURNS boolean
       LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog,public SET oneboard.tenant='' SET oneboard.proof=''
-      AS $ SELECT EXISTS(SELECT 1 FROM public.users WHERE api_key IS NOT NULL AND api_key !~ '^sha256:[a-f0-9]{64}
-def downgrade():
-    if op.get_bind().dialect.name!="postgresql": return
-    for table in tables():
-        op.execute(f"DROP POLICY oneboard_tenant_scope ON public.{table}")
-        if table in DIRECTORY:
-            op.execute(f"ALTER TABLE public.{table} NO FORCE ROW LEVEL SECURITY")
-            op.execute(f"ALTER TABLE public.{table} DISABLE ROW LEVEL SECURITY")
-        else:
-            raw="nullif(current_setting('oneboard.tenant',true),'')"
-            pred=f"(business_id={raw} OR ({owner(table)} AND {raw} IS NULL))" if table!="sync_history" else f"(EXISTS (SELECT 1 FROM public.integration_accounts i WHERE i.id=integration_id AND i.business_id={raw}) OR ({owner(table)} AND {raw} IS NULL))"
-            op.execute(f"CREATE POLICY oneboard_tenant_scope ON public.{table} USING {pred} WITH CHECK {pred}")
-    for fn in reversed(FUNCTIONS): op.execute(f"DROP FUNCTION public.{fn}")
-    op.execute("DROP TABLE oneboard_private.context_key")
-    op.execute("DROP SCHEMA oneboard_private")
-) $""")
+      AS $f$ SELECT EXISTS(SELECT 1 FROM public.users WHERE api_key IS NOT NULL AND api_key !~ '^sha256:[a-f0-9]{64}$') $f$""")
     for fn in FUNCTIONS: op.execute(f"REVOKE ALL ON FUNCTION public.{fn} FROM PUBLIC")
+
 def downgrade():
     if op.get_bind().dialect.name!="postgresql": return
     for table in tables():

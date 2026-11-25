@@ -41,6 +41,14 @@ def state(db,user,create=False):
 def _digest(code):
     return hashlib.sha256(code.encode()).hexdigest()
 
+def _event_digest(payload):
+    data=json.dumps(payload,separators=(",",":")).encode()
+    if settings.ACCOUNT_SECURITY_KEY:
+        return hmac.new(_key(),b"oneboard:security-event:v1:"+data,hashlib.sha256).hexdigest()
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        raise ValueError("Security audit key is not configured")
+    return hashlib.sha256(data).hexdigest()
+
 def _record(db,user,event):
     _lock(db,user.business_id)
     last=db.query(SecurityEvent).filter_by(business_id=user.business_id).order_by(SecurityEvent.sequence.desc()).first()
@@ -48,7 +56,7 @@ def _record(db,user,event):
     sequence=last.sequence+1 if last else 1
     now=datetime.utcnow()
     payload=[user.business_id,user.id,event,sequence,prev,now.isoformat()]
-    digest=_digest(json.dumps(payload,separators=(",",":")))
+    digest=_event_digest(payload)
     db.add(SecurityEvent(business_id=user.business_id,user_id=user.id,event=event,
         sequence=sequence,previous_hash=prev,event_hash=digest,created_at=now))
     db.flush()
@@ -57,7 +65,7 @@ def verify_chain(db,tenant):
     prev="0"*64
     for i,row in enumerate(db.query(SecurityEvent).filter_by(business_id=tenant).order_by(SecurityEvent.sequence).yield_per(100),1):
         payload=[tenant,row.user_id,row.event,i,prev,row.created_at.isoformat()]
-        if row.sequence!=i or row.previous_hash!=prev or not hmac.compare_digest(row.event_hash,_digest(json.dumps(payload,separators=(",",":")))):
+        if row.sequence!=i or row.previous_hash!=prev or not hmac.compare_digest(row.event_hash,_event_digest(payload)):
             return False
         prev=row.event_hash
     return True
