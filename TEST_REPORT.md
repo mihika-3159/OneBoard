@@ -1028,3 +1028,15 @@ secrets_excluded metadata label. Added ingestion rollback fault injection
 and scheduled-index separate event-loop gateway coverage. PostgreSQL
 migration/concurrency job had passed its tests on the preceding head;
 full final-head verification still required.
+
+
+Batch C test evidence before final exact-head rerun: commit
+11eae3e3ddaaa2de45bc5f8861c81516b0abc039 passed all 27 PostgreSQL tests,
+16 browser tests, Windows startup, frontend build and disposable plaintext
+and age-encrypted backup/restore (49 application tables, 49 records,
+revision 011). Its API suite reported 580 passed and one faulty
+credential assertion, now repaired. Dedicated local CPU embedding smoke
+added to check actual model vector generation, relative similarity,
+indexed persistence, retrieval and tenant separation using synthetic
+data only. This is not large-corpus recall or independent production
+certification. Final-head CI pending.
