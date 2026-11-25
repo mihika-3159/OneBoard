@@ -727,3 +727,29 @@ class TestDocumentUploadLimits:
         assert all(row["chunk_id"] != orphan.id for row in results)
         assert all(row["source_title"] != f["doc_b"].title for row in results)
         assert "orphan chunk from tenant A" not in repr(results)
+
+
+def test_batch_i_webhook_authentication_and_replay(multi_tenant_fixture):
+    from apps.api.core.auth import generate_api_key,hash_api_key
+    from apps.api.services import workflow_events as events,workflow_versions as versions
+    db=SessionLocal()
+    try:
+        a=db.query(User).filter_by(email="founder_a@alpha.test").one()
+        b=db.query(User).filter_by(email="founder_b@beta.test").one()
+        key_a,key_b=generate_api_key(),generate_api_key()
+        old_a,old_b=a.api_key,b.api_key
+        a.api_key=hash_api_key(key_a);b.api_key=hash_api_key(key_b)
+        wf=WorkflowDefinition(business_id=a.business_id,name="Webhook auth test",nodes=[{"id":"start","type":"trigger","data":{}}],edges=[],trigger_type="webhook",trigger_config={},is_valid=True,is_active=True)
+        db.add(wf);db.flush();versions.ensure_version(db,wf);events.activate(db,wf);db.commit()
+        url=f"/api/workflows/{wf.id}/webhook"
+        payload={"event_id":"webhook-auth-fixture","payload":{"value":1}}
+        with TestClient(app,raise_server_exceptions=False) as c:
+            assert c.post(url,json=payload).status_code==401
+            assert c.post(url,json=payload,headers={"X-API-Key":key_b}).status_code==409
+            first=c.post(url,json=payload,headers={"X-API-Key":key_a})
+            assert first.status_code==202,first.text
+            replay=c.post(url,json=payload,headers={"X-API-Key":key_a})
+            assert replay.status_code==202 and replay.json()["id"]==first.json()["id"]
+            assert c.post(url,json={**payload,"payload":{"value":2}},headers={"X-API-Key":key_a}).status_code==409
+    finally:
+        a.api_key=old_a;b.api_key=old_b;db.commit();db.close()

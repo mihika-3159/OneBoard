@@ -159,6 +159,16 @@ def drain(db,tenant,limit=20,now=None):
             operator_retry=row.error=="Operator retry authorized" and row.attempts==MAX_ATTEMPTS
             if (row.attempts>=MAX_ATTEMPTS and not operator_retry) or not wf or fingerprint(db,wf)!=row.definition_digest:
                 row.status="dead_letter";row.error="Retry budget exhausted or workflow changed";db.commit();continue
+            # An event can become obsolete while queued; do not trigger collections on
+            # an invoice that has since been paid or had its due date changed.
+            if row.kind=="invoice_overdue":
+                invoice=db.query(Invoice).filter_by(business_id=tenant,id=row.payload.get("invoice_id")).first()
+                if (not invoice or invoice.status not in ("sent","overdue") or not invoice.due_date
+                    or invoice.due_date.isoformat()!=row.payload.get("due_date")
+                    or invoice.due_date>=datetime.utcnow()):
+                    row.status="dead_letter";row.error="Invoice event no longer current";db.commit();continue
+            if row.kind=="new_customer" and not db.query(Customer.id).filter_by(business_id=tenant,id=row.payload.get("customer_id")).first():
+                row.status="dead_letter";row.error="Customer event no longer current";db.commit();continue
             token=str(uuid4());row.status="running";row.owner_token=token;row.lease_until=now+300;row.attempts+=1
             wid,kind,payload,digest=row.workflow_id,row.kind,row.payload,row.definition_digest
             db.commit()
@@ -194,6 +204,8 @@ def retry_dead_letter(db,tenant,ident):
     wf=db.query(WorkflowDefinition).filter_by(business_id=tenant,id=row.workflow_id,is_active=True,is_valid=True).first()
     if not wf or fingerprint(db,wf)!=row.definition_digest:
         raise ValueError("Definition changed; this event cannot be replayed")
+    if row.error in ("Invoice event no longer current","Customer event no longer current"):
+        raise ValueError("Source event no longer current")
     if row.error=="Operator retry exhausted":
         raise ValueError("Operator retry limit reached")
     # No reset of the durable attempt counter. Permit one operator-authorized extra claim.

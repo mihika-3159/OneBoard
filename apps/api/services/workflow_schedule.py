@@ -8,7 +8,7 @@ import hashlib
 import re
 from datetime import datetime,timedelta,timezone
 from zoneinfo import ZoneInfo,ZoneInfoNotFoundError
-from sqlalchemy import text
+from sqlalchemy import text, case
 from apps.api.models.operations import WorkflowSchedule
 from apps.api.models.workflow import WorkflowDefinition
 from apps.api.services.durable_jobs import execution_lock,_key,_now
@@ -95,10 +95,11 @@ def serialize(row):
     return {key:getattr(row,key) for key in ("workflow_id","cron","timezone","enabled","next_due_at","last_run_id","last_status","coalesced","missed_policy","missed_count")}
 
 def run_due(db,tenant,now=None,limit=20):
+    if type(limit) is not int or not 1<=limit<=100:raise ValueError("Invalid schedule drain limit")
     now=_now(db) if now is None else now
     ids=[r[0] for r in db.query(WorkflowSchedule.workflow_id).filter(
         WorkflowSchedule.business_id==tenant,WorkflowSchedule.enabled.is_(True),
-        WorkflowSchedule.next_due_at<=now).order_by(WorkflowSchedule.next_due_at,WorkflowSchedule.workflow_id).limit(limit).all()]
+        WorkflowSchedule.next_due_at<=now).order_by(case((WorkflowSchedule.missed_policy=="catch_up",1),else_=0),WorkflowSchedule.next_due_at,WorkflowSchedule.workflow_id).limit(limit).all()]
     db.rollback()
     completed=0
     failures=0

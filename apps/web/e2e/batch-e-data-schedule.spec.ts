@@ -60,3 +60,46 @@ test('owner downloads consistent snapshot and saves opt-in retention from settin
   await expect(page.getByLabel('Resolved alert retention days')).toHaveValue('45');
   await expect(page.getByLabel('Expired session retention days')).toHaveValue('60');
 });
+
+test('workflow request survives reload after a committed response is lost and revisions persist',async({page})=>{
+  await register(page);
+  const csrf=(await page.context().cookies()).find(c=>c.name==='oneboard_csrf')?.value;
+  const created=await page.request.post('/api/workflows',{headers:{'X-CSRF-Token':csrf!,'Origin':'http://127.0.0.1:4173'},data:{name:'Durable browser workflow',nodes:[{id:'start',type:'trigger',data:{}}],edges:[]}});
+  expect(created.status(),await created.text()).toBe(200);
+  const wf=await created.json();
+  await tab(page,'Workflow Studio');
+  const path='**/api/workflows/'+wf.id+'/execute?dry_run=false';
+  let key='',runId='';
+  await page.route(path,async route=>{
+    key=route.request().headers()['idempotency-key'];
+    const response=await route.fetch();
+    expect(response.status()).toBe(200);
+    runId=(await response.json()).id;
+    await route.abort('failed');
+  },{times:1});
+  await page.getByRole('button',{name:'Execute Workflow',exact:true}).click();
+  await expect(page.getByText(/Execution request failed:/)).toBeVisible();
+  expect(key).toBeTruthy();
+  expect(await page.evaluate(id=>localStorage.getItem('oneboard.workflow.pending.v1:'+id+':false'),wf.id)).toBe(key);
+  await page.reload();
+  await tab(page,'Workflow Studio');
+  const [replay]=await Promise.all([page.waitForResponse(r=>r.url().includes('/api/workflows/'+wf.id+'/execute?dry_run=false')),page.getByRole('button',{name:'Execute Workflow',exact:true}).click()]);
+  expect(replay.status()).toBe(200);
+  expect(replay.request().headers()['idempotency-key']).toBe(key);
+  expect((await replay.json()).id).toBe(runId);
+  await expect.poll(()=>page.evaluate(id=>localStorage.getItem('oneboard.workflow.pending.v1:'+id+':false'),wf.id)).toBeNull();
+  const history=await page.request.get('/api/workflows/runs');
+  expect((await history.json()).filter((r:any)=>r.workflow_id===wf.id)).toHaveLength(1);
+  await page.getByRole('button',{name:'Edit workflow definition and triggers'}).click();
+  const editor=page.getByLabel('Workflow definition JSON');
+  const def=JSON.parse(await editor.inputValue());
+  await editor.fill(JSON.stringify({...def,name:'Updated browser workflow'}));
+  await page.getByRole('button',{name:'Save new revision'}).click();
+  await expect(page.getByText('Updated browser workflow · revision 2 · active')).toBeVisible();
+  await page.getByLabel('Advanced cron').fill('0 9 1 * *');
+  await page.getByLabel('Missed slot policy').selectOption('catch_up');
+  await page.getByLabel('Enable automatic execution').check();
+  const [saved]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/workflows/'+wf.id+'/schedule')&&r.request().method()==='PUT'),page.getByRole('button',{name:'Save schedule'}).click()]);
+  expect(saved.status()).toBe(200);
+  expect((await saved.json()).missed_policy).toBe('catch_up');
+});

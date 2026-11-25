@@ -187,3 +187,28 @@ def test_expanded_cron_and_missed_policy(db):
     assert db.get(WorkflowSchedule,wf.id).next_due_at==due+86400
     assert schedules.run_due(db,"a",now=due+3*86400)==1
     assert db.query(WorkflowRun).count()==2
+
+
+def test_queued_invoice_rechecks_current_state(db):
+    workflow(db,kind="invoice_overdue")
+    invoice=Invoice(business_id="a",customer_name="Fixture",invoice_number="stale",amount=20,status="sent",due_date=datetime.utcnow()-timedelta(days=1))
+    db.add(invoice);db.commit()
+    events.detect(db,"a")
+    invoice.status="paid";db.commit()
+    events.drain(db,"a")
+    assert db.query(WorkflowEvent).one().status=="dead_letter"
+    assert db.query(WorkflowRun).count()==0
+
+
+def test_scheduler_bounded_backlog_no_duplicate_dispatch(db):
+    for _ in range(45):
+        wf=workflow(db)
+        schedules.configure(db,"a",wf.id,"0 9 * * *","UTC",True,0)
+    now=86400*2
+    assert schedules.run_due(db,"a",now=now)==20
+    assert schedules.run_due(db,"a",now=now)==20
+    assert schedules.run_due(db,"a",now=now)==5
+    assert schedules.run_due(db,"a",now=now)==0
+    runs=db.query(WorkflowRun).all()
+    assert len(runs)==45 and len({r.workflow_id for r in runs})==45
+    with pytest.raises(ValueError):schedules.run_due(db,"a",now=now,limit=101)

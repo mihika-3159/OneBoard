@@ -27,7 +27,7 @@ class ToolRegistry:
         invoices = db.query(Invoice).filter(
             Invoice.business_id == business_id,
             or_(Invoice.status == "overdue", (Invoice.status == "sent") & (Invoice.due_date < datetime.utcnow()))
-        ).all()
+        ).order_by(Invoice.id).all()
         return {
             "count": len(invoices),
             "invoices": [
@@ -41,7 +41,7 @@ class ToolRegistry:
         invoices = db.query(Invoice).filter(
             Invoice.business_id == business_id,
             or_(Invoice.status == "overdue", (Invoice.status == "sent") & (Invoice.due_date < datetime.utcnow()))
-        ).all()
+        ).order_by(Invoice.id).all()
         # A financial workflow must not bypass the dashboard's data
         # quality checks: a negative, NaN, or missing amount must fail the
         # workflow visibly, never become an actionable collection total.
@@ -61,9 +61,10 @@ class ToolRegistry:
         invoices = db.query(Invoice).filter(
             Invoice.business_id == business_id,
             or_(Invoice.status == "overdue", (Invoice.status == "sent") & (Invoice.due_date < datetime.utcnow()))
-        ).all()
+        ).order_by(Invoice.id).all()
         drafts = []
         for inv in invoices:
+            _money(inv.amount, "invoice.amount")
             drafts.append({
                 "invoice_id": inv.id,
                 "recipient": inv.customer_name,

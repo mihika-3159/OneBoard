@@ -86,6 +86,7 @@ export const WorkflowStudioTab: React.FC = () => {
   );
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [runError,setRunError]=useState<string|null>(null);
   const [executionOutput, setExecutionOutput] = useState<any | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<any[]>([]);
 
@@ -190,12 +191,13 @@ export const WorkflowStudioTab: React.FC = () => {
   const handleRunWorkflow = async (dryRun: boolean = false) => {
     if (!selectedWorkflow) return;
     setIsRunning(true);
+    setRunError(null);
     try {
       const res = await api.executeWorkflow(selectedWorkflow.id, dryRun);
       setExecutionOutput(res);
       await loadApprovals();
     } catch (e) {
-      console.error('Workflow run failed', e);
+      setRunError(e instanceof Error?e.message:'Workflow execution response unavailable');
     } finally {
       setIsRunning(false);
     }
@@ -381,6 +383,7 @@ export const WorkflowStudioTab: React.FC = () => {
             </div>
           </div>
 
+          {runError&&<p role="alert" className="text-sm text-red-300">Execution request failed: {runError}. Retry the same workflow to reconcile the pending request.</p>}
           {/* Execution Output Drawer */}
           {executionOutput && (
             <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
