@@ -1,0 +1,38 @@
+name: OneBoard reproducible container smoke
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lock base digests and build from locked package sets
+        run: |
+          sh deploy/lock-bases.sh container-bases.lock
+          sh deploy/build-image.sh container-bases.lock oneboard-ci:local
+          docker image inspect oneboard-ci:local --format '{{.Id}}' > container-image-id.txt
+      - name: Start nonroot read-only container and verify API and static bundle
+        run: |
+          docker run -d --name oneboard-container-ci --network host --read-only --tmpfs /tmp:rw,size=128m --tmpfs /var/lib/oneboard:rw,uid=10001,gid=10001,mode=0700,size=128m --cap-drop ALL --security-opt no-new-privileges --memory 2g --pids-limit 256 -e DATABASE_URL=sqlite:////var/lib/oneboard/disposable.sqlite -e AUTH_SECRET_KEY=ci-container-synthetic-only-not-production-0123456789 oneboard-ci:local
+          trap 'docker logs oneboard-container-ci --tail 30; docker rm -f oneboard-container-ci' EXIT
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8000/ready; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/health
+          curl -fsS http://127.0.0.1:8000/ready
+          curl -fsS http://127.0.0.1:8000/ | grep -q '<div id="root"'
+          test "$(docker exec oneboard-container-ci id -u)" = 10001
+          docker stop --time 60 oneboard-container-ci
+          test "$(docker inspect oneboard-container-ci --format '{{.State.ExitCode}}')" = 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-build-identities
+          path: |
+            container-bases.lock
+            container-image-id.txt

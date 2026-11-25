@@ -21,12 +21,15 @@ def secure_uvicorn_options(config: Settings) -> dict:
             "proxy_headers": True,
             "forwarded_allow_ips": config.TRUSTED_PROXY_IPS,
             "reload": False,
-            "workers": 1,
+            "workers": config.API_WORKERS,
+            "timeout_graceful_shutdown": 30,
+            "timeout_keep_alive": 5,
+            "access_log": False,
         }
     return {
         "host": "127.0.0.1", "port": 8000,
         "proxy_headers": False,
-        "reload": False, "workers": 1,
+        "reload": False, "workers": 1, "timeout_graceful_shutdown":30, "access_log":False,
     }
 
 

@@ -177,7 +177,7 @@ jobs:
   postgres-security:
     name: PostgreSQL migration and shared throttle concurrency
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:16
@@ -245,6 +245,7 @@ jobs:
       - name: Sustained restricted-role HTTPS PostgreSQL tenant load and restart drill
         env:
           ONEBOARD_CI_HTTP_LOAD: "1"
+          ONEBOARD_LOAD_SECONDS: "600"
         run: python scripts/verify_disposable_http_load.py
       - uses: actions/upload-artifact@v4
         if: always()

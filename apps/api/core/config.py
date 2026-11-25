@@ -108,6 +108,8 @@ class Settings(BaseSettings):
     OPERATOR_METRICS_KEY: str = ""
     OPERATOR_DISK_MIN_FREE_MIB: int = 256
     OPERATOR_DB_CONNECT_TIMEOUT: int = 3
+    API_WORKERS: int = 1
+    SERVE_WEB_BUILD: bool = False
 
 settings = Settings()
 
@@ -134,6 +136,8 @@ def validate_production_configuration(config: Settings) -> None:
         errors.append("ONEBOARD_DEMO_MODE must be disabled")
     if config.DEBUG:
         errors.append("DEBUG must be disabled")
+    if not 1<=config.API_WORKERS<=4:
+        errors.append("API_WORKERS must be between one and four")
     if not 1<=config.OPERATOR_DISK_MIN_FREE_MIB<=1048576 or not 1<=config.OPERATOR_DB_CONNECT_TIMEOUT<=15:
         errors.append("Invalid operator resource thresholds")
     if config.OPERATOR_METRICS_KEY and (len(config.OPERATOR_METRICS_KEY)<32 or config.OPERATOR_METRICS_KEY==config.AUTH_SECRET_KEY):

@@ -211,3 +211,9 @@ from apps.api.routers.account_security_router import router as account_security_
 app.include_router(account_security_router)
 
 app.include_router(diagnostics_router)
+
+# Optional same-origin static production bundle. Mounted last, so API routes
+# retain their own authentication and error semantics.
+if settings.SERVE_WEB_BUILD:
+    from starlette.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=settings.BASE_DIR/"apps/web/dist",html=True),name="web")

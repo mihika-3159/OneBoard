@@ -60,6 +60,9 @@ def test_owner_proxy_entrypoint_never_exposes_public_asgi_port():
         "forwarded_allow_ips": "127.0.0.1,::1",
         "reload": False,
         "workers": 1,
+        "timeout_graceful_shutdown":30,
+        "timeout_keep_alive":5,
+        "access_log":False,
     }
     assert "*" not in options["forwarded_allow_ips"]
 

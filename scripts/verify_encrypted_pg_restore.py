@@ -53,7 +53,17 @@ def verify_encrypted_roundtrip() -> dict:
         )
         restore_env = dict(os.environ, ONEBOARD_RESTORE_DRILL_APPROVED="YES",
                            ONEBOARD_RESTORE_SCRATCH_URL=scratch)
-        report = drill(archive, identity, restore_env)
+        from scripts.operations.backup_manager import DirectoryReplica
+        primary=folder/"primary";primary.mkdir(mode=0o700)
+        replica_dir=folder/"replica";replica_dir.mkdir(mode=0o700)
+        retrieved=folder/"retrieved";retrieved.mkdir(mode=0o700)
+        archive=archive.rename(primary/archive.name);manifest=manifest.rename(primary/manifest.name)
+        replica=DirectoryReplica(replica_dir,primary)
+        replica.put(archive,manifest)
+        archive.unlink();manifest.unlink()
+        recovered,_=replica.retrieve(archive.name,retrieved)
+        report = drill(recovered, identity, restore_env)
+        report["simulated_replica_recovery_verified"]=True
         if not report["restore_verified"] or report["schema_head"] != "024_batch_m_storage":
             raise RuntimeError("Encrypted decryption and restore failed")
         if report["table_count"] < 20:

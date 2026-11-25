@@ -13,6 +13,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import signal
+import ssl
+import socket
 from uuid import uuid4
 
 import httpx
@@ -158,7 +161,20 @@ def main():
             # without modifying the server's wall clock or any real data.
             with admin.begin() as conn:
                 conn.execute(text("UPDATE workflow_schedules SET next_due_at=:slot WHERE workflow_id=:wid"),{"slot":slot,"wid":scheduled_id})
-            deadline=time.monotonic()+120
+            seconds=int(os.environ.get("ONEBOARD_LOAD_SECONDS","600"))
+            assert 120<=seconds<=1800
+            deadline=time.monotonic()+seconds
+            resources=[]
+            def sample_resources():
+                # Linux CI process tree RSS from /proc; excludes the DB daemon.
+                try:
+                    children=pathlib.Path(f"/proc/{proc.pid}/task/{proc.pid}/children").read_text().split()
+                    rss=0
+                    for pid in [str(proc.pid),*children]:
+                        for line in pathlib.Path(f"/proc/{pid}/status").read_text().splitlines():
+                            if line.startswith("VmRSS:"):rss+=int(line.split()[1]);break
+                    resources.append({"elapsed":round(time.monotonic()-(deadline-seconds),1),"rss_kib":rss})
+                except OSError:pass
             def worker(record):
                 tenant,headers,wid,idem=record
                 durations=[]
@@ -194,12 +210,19 @@ def main():
                     return durations,quota,next(iter(runs))
             t0=time.monotonic()
             with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
-                results=list(pool.map(worker,tenants))
+                futures=[pool.submit(worker,row) for row in tenants]
+                while not all(f.done() for f in futures):
+                    sample_resources()
+                    time.sleep(5)
+                results=[f.result() for f in futures]
             elapsed=time.monotonic()-t0
             durations=[x for result in results for x in result[0]]
             ordered=sorted(durations)
             p95=ordered[min(len(ordered)-1,int(.95*len(ordered)))]
-            assert elapsed>=115 and len(durations)>=1000
+            assert elapsed>=seconds-5 and len(durations)>=1000
+            assert len(resources)>=seconds//10
+            assert max(x["rss_kib"] for x in resources)<2*1024*1024
+            assert resources[-1]["rss_kib"]<max(1,resources[len(resources)//3]["rss_kib"])*1.8+100000
             assert p95<5,(len(durations),p95)
             assert sum(row[1] for row in results)>0,"Expected quota saturation"
             def verify_schedule():
@@ -224,6 +247,27 @@ def main():
                     break
                 assert time.monotonic()<due_deadline,"Actual background scheduler never executed missed slot"
                 time.sleep(1)
+            # A real interrupted network response: send an authenticated request,
+            # then close the TLS socket without reading its response. Retry the
+            # same durable idempotency key and reconcile exactly one run.
+            tenant,headers,wid,idem=tenants[0]
+            request=f"POST /api/workflows/{wid}/execute HTTP/1.1\r\nHost: 127.0.0.1:8443\r\nAuthorization: {headers['Authorization']}\r\nIdempotency-Key: {idem}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            context=ssl.create_default_context(cafile=str(cert))
+            with context.wrap_socket(socket.create_connection(("127.0.0.1",8443),timeout=5),server_hostname="127.0.0.1") as sock:sock.sendall(request.encode())
+            time.sleep(1)
+            with client(headers) as c:
+                assert [x["id"] for x in c.get("/api/workflows/runs").json()]==[results[0][2]]
+            # Rolling Uvicorn worker restart, supervisor PID survives.
+            proc.send_signal(signal.SIGHUP)
+            with client(headers) as c:
+                deadline_roll=time.monotonic()+30;success=0
+                while time.monotonic()<deadline_roll and success<10:
+                    try:
+                        res=c.get("/ready")
+                        if res.status_code==200:success+=1
+                    except httpx.HTTPError:pass
+                    time.sleep(.5)
+                assert success==10 and proc.poll() is None
             # A fresh process must preserve auth, durable runs and tenant boundaries.
             stop(proc)
             proc=start()
@@ -240,7 +284,7 @@ def main():
                     "requests":len(durations),"p95_ms":round(p95*1000,1),
                     "median_ms":round(statistics.median(durations)*1000,1),
                     "expected_quota_rejections":sum(row[1] for row in results),
-                    "unexpected_errors":0,"restart_verified":True,"restricted_runtime_role":True,"direct_credential_read_denied":True,"unsigned_tenant_scope_denied":True,"restricted_role_mfa_and_key_verified":True,"scheduled_run_restart_verified":True,"environment":"disposable_loopback_https_postgresql"}
+                    "unexpected_errors":0,"restart_verified":True,"rolling_restart_verified":True,"interrupted_response_reconciled":True,"resource_samples":resources,"peak_api_rss_kib":max(x["rss_kib"] for x in resources),"restricted_runtime_role":True,"direct_credential_read_denied":True,"unsigned_tenant_scope_denied":True,"restricted_role_mfa_and_key_verified":True,"scheduled_run_restart_verified":True,"environment":"disposable_loopback_https_postgresql"}
             print("LOAD_RESULT "+json.dumps(report,sort_keys=True),flush=True)
             pathlib.Path("http-load-result.json").write_text(json.dumps(report,indent=2))
         finally:
