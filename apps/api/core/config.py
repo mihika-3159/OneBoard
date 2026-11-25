@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent.parent
     DATA_DIR: Path = BASE_DIR / "data"
     DATABASE_URL: str = f"sqlite:///{BASE_DIR}/data/oneboard.db"
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 5
+    DB_POOL_TIMEOUT_SECONDS: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 1800
+    PORTABLE_ARCHIVE_SIGNING_KEY: str = ""
     
     # Security & Authentication
     AUTH_SECRET_KEY: str = ""

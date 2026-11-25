@@ -12,7 +12,10 @@ def engine_options(database_url: str) -> dict:
     """SQLite needs a thread override; PostgreSQL must not receive SQLite-only options."""
     if database_url.startswith("sqlite:"):
         return {"connect_args": {"check_same_thread": False}}
-    return {"pool_pre_ping": True}
+    size,overflow,timeout,recycle=(settings.DB_POOL_SIZE,settings.DB_MAX_OVERFLOW,settings.DB_POOL_TIMEOUT_SECONDS,settings.DB_POOL_RECYCLE_SECONDS)
+    if not 1<=size<=32 or not 0<=overflow<=16 or size+overflow>40 or not 1<=timeout<=60 or not 60<=recycle<=86400:
+        raise ValueError("Unsafe database pool limits")
+    return {"pool_pre_ping": True,"pool_size":size,"max_overflow":overflow,"pool_timeout":timeout,"pool_recycle":recycle}
 
 
 engine = create_engine(settings.DATABASE_URL, **engine_options(settings.DATABASE_URL))

@@ -414,3 +414,41 @@ class ProviderDelivery(Base):
     error_code=Column(String(100),nullable=True)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
     updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class PortableArchive(Base):
+    __tablename__="portable_archives"
+    __table_args__=(Index("ix_portable_archive_tenant_expiry","business_id","expires_at"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    actor_id=Column(String(36),nullable=False)
+    kind=Column(String(12),nullable=False)
+    state=Column(String(20),nullable=False)
+    manifest=Column(JSON,nullable=True)
+    page_count=Column(Integer,nullable=False,default=0)
+    row_count=Column(Integer,nullable=False,default=0)
+    byte_count=Column(BigInteger,nullable=False,default=0)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    expires_at=Column(DateTime,nullable=False)
+
+class PortableArchivePage(Base):
+    __tablename__="portable_archive_pages"
+    __table_args__=(Index("ix_portable_page_tenant_archive","business_id","archive_id","page_number"),)
+    archive_id=Column(String(36),primary_key=True)
+    page_number=Column(Integer,primary_key=True)
+    business_id=Column(String(36),nullable=False)
+    table_name=Column(String(80),nullable=False)
+    content=Column(Text,nullable=False)
+    checksum=Column(String(64),nullable=False)
+    row_count=Column(Integer,nullable=False)
+    byte_count=Column(Integer,nullable=False)
+
+class DatabasePerformanceSample(Base):
+    __tablename__="database_performance_samples"
+    __table_args__=(Index("ix_database_perf_tenant_time","business_id","created_at"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    workload=Column(String(60),nullable=False)
+    rows_examined=Column(Integer,nullable=False)
+    elapsed_ms=Column(Float,nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)

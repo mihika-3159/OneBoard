@@ -445,7 +445,7 @@ def get_current_user(
     # Deletion takes the exclusive lifecycle lock from its first scoped
     # transaction; concurrent deleters must not upgrade two shared locks.
     path=getattr(getattr(request,"url",None),"path",None) or ""
-    if isinstance(db, Session) and (path == "/api/data/delete-workspace" or (path.startswith("/api/auth/security/") and request.method in ("POST","PUT","DELETE"))):
+    if isinstance(db, Session) and (path in ("/api/data/delete-workspace","/api/data/portable/restore") or (path.startswith("/api/auth/security/") and request.method in ("POST","PUT","DELETE"))):
         db.info["oneboard_exclusive_lifecycle"] = True
     token: Optional[str] = None
     if bearer and bearer.credentials:
