@@ -15,6 +15,7 @@ import {
 import { api } from '../services/api';
 import { useInferenceOperation } from './useInferenceOperation';
 import { CustomAgent } from '../types';
+import { AgentRuntimePanel } from './AgentRuntimePanel';
 
 export const AgentStudioTab: React.FC = () => {
   const inference = useInferenceOperation();
@@ -36,6 +37,7 @@ export const AgentStudioTab: React.FC = () => {
   const [systemPrompt, setSystemPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('qwen2.5:7b');
   const [allowedTools, setAllowedTools] = useState<string[]>(['read_crm', 'check_telemetry']);
+  const [memoryScopes, setMemoryScopes] = useState('');
   const [requiresApproval, setRequiresApproval] = useState<string[]>(['send_email']);
 
   // Sandbox Tester State
@@ -91,6 +93,7 @@ export const AgentStudioTab: React.FC = () => {
         system_prompt: systemPrompt,
         selected_model: selectedModel,
         allowed_tools: allowedTools,
+        allowed_memory_collections: memoryScopes.split(',').map(value=>value.trim()).filter(Boolean),
         requires_approval_for: requiresApproval,
         max_steps: 4,
       });
@@ -120,6 +123,7 @@ export const AgentStudioTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {inference.indicator}
+      <AgentRuntimePanel agents={agents} selectedAgent={selectedAgent} />
       <label className="flex gap-2 text-sm text-slate-400"><input type="checkbox" checked={cacheSandbox} onChange={e => setCacheSandbox(e.target.checked)} /> Reuse identical pinned deterministic sandbox responses for 30 seconds</label>
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -146,6 +150,9 @@ export const AgentStudioTab: React.FC = () => {
       </div>
 
       {/* Creation Modal / Drawer */}
+      {isCreating && <label className="block text-sm text-slate-300">Permitted memory document IDs (comma-separated; blank grants none)
+        <input className="block w-full bg-slate-900 border rounded p-2" value={memoryScopes} onChange={e=>setMemoryScopes(e.target.value)}/>
+      </label>}
       {isCreating && (
         <div className="p-6 rounded-2xl bg-slate-900 border border-indigo-500/30 space-y-4">
           <div className="flex items-center justify-between">

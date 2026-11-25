@@ -103,6 +103,7 @@ export const BoardroomTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {inference.indicator}
+      <button className="text-xs text-slate-300" onClick={async()=>{try{await api.reconcileCouncil();await loadData()}catch(e){console.error(e)}}}>Reconcile interrupted meetings</button>
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -312,9 +313,16 @@ export const BoardroomTab: React.FC = () => {
                   Chief of Staff Consensus Synthesis
                 </div>
                 <p className="text-slate-300 leading-relaxed">
-                  {selectedMeeting.synthesis_summary || 'Council synthesized trade-offs and aligned on recommended actions.'}
+                  {selectedMeeting.synthesis_summary || 'No completed synthesis is available.'}
                 </p>
 
+                <div className="text-xs text-slate-300">Meeting status: {selectedMeeting.stage}</div>
+                {selectedMeeting.structured_synthesis && <section className="border border-slate-700 rounded p-3 text-xs space-y-2">
+                  <p>Disposition: {selectedMeeting.structured_synthesis.disposition} · Uncertainty: {selectedMeeting.structured_synthesis.uncertainty}</p>
+                  {selectedMeeting.structured_synthesis.arguments.map(a=><p key={a.id}>{a.adviser} ({a.id}): {a.quote}</p>)}
+                  {selectedMeeting.structured_synthesis.citations.map(c=><p key={c.id}>Record {c.id}: {c.quote}</p>)}
+                  <p>References are validated against recorded text; claims and real-world outcomes remain unverified.</p>
+                </section>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                   <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-500/30 text-emerald-300">
                     <span className="font-semibold block mb-1">Areas of Consensus:</span>
@@ -362,7 +370,7 @@ export const BoardroomTab: React.FC = () => {
                     Decision Approved by Founder & Converted into Tracked Tasks
                   </div>
                   <span className="font-mono text-emerald-400 text-[11px]">
-                    Tasks: {selectedMeeting.created_tasks?.length || 3} created
+                    Tasks: {selectedMeeting.created_tasks?.length || 0} created
                   </span>
                 </div>
               ) : (
@@ -381,7 +389,7 @@ export const BoardroomTab: React.FC = () => {
                   <div className="flex justify-end gap-2">
                     <button
                       onClick={handleApprove}
-                      disabled={isApproving}
+                      disabled={isApproving || selectedMeeting.stage !== 'completed'}
                       className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl transition flex items-center gap-1.5"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5" />

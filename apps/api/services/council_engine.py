@@ -116,7 +116,24 @@ class CouncilEngine:
         if len(topic) > 8000 or not title.strip() or len(title) > 255:
             raise ValueError("Invalid meeting title or topic length")
         inventory = evidence_inventory(db, business_id)
-        evidence_text = quoted_data("tenant_evidence_inventory", json.dumps(inventory), 12000)
+        # Match the conservative byte-based inference context budget. Include
+        # complete records, not a truncated JSON object.
+        bounded = {}
+        for key, value in inventory.items():
+            trial = {**bounded, key: value}
+            if len(json.dumps(trial, ensure_ascii=True)) <= 2200:
+                bounded = trial
+        # Preserve knowledge of unresolved conflicts even if the record itself
+        # cannot fit into a model prompt.
+        conflict_present = any(v["source"] == "unresolved_conflict" for v in inventory.values())
+        inventory = bounded
+        if conflict_present and not any(v["source"] == "unresolved_conflict" for v in inventory.values()):
+            facts_conflict = True
+        else:
+            facts_conflict = False
+        evidence_text = quoted_data("tenant_evidence_inventory", json.dumps(inventory), 3000)
+        if facts_conflict:
+            evidence_text += " Unresolved conflicting records exist; do not infer consensus."
         financials = self._calculate_deterministic_financials(db, business_id)
         facts = (
             f"MRR={financials['mrr']}; monthly expenses={financials['monthly_expenses']}; "
@@ -146,7 +163,7 @@ class CouncilEngine:
         transcript = []
         try:
             return await asyncio.wait_for(self._deliberate(db, meeting, business_id, topic, selected_advisers,
-                financials, facts, inventory, evidence_text, transcript), timeout=600)
+                financials, facts, inventory, evidence_text, transcript, conflict_present), timeout=600)
         except BaseException:
             db.rollback()
             meeting.stage = "interrupted"
@@ -156,7 +173,7 @@ class CouncilEngine:
             db.commit()
             raise
 
-    async def _deliberate(self, db, meeting, business_id, topic, selected_advisers, financials, facts, inventory, evidence_text, transcript):
+    async def _deliberate(self, db, meeting, business_id, topic, selected_advisers, financials, facts, inventory, evidence_text, transcript, conflict_present):
         def checkpoint(stage):
             meeting.deliberation_transcript = list(transcript)
             meeting.stage = stage
@@ -282,6 +299,9 @@ class CouncilEngine:
                 format_json=True
             )
         structured = synthesis_record(synthesis, transcript, inventory)
+        if conflict_present:
+            structured["disposition"] = "resolve_conflict"
+            structured["uncertainty"] = "high"
         meeting.structured_synthesis = structured
         meeting.retrieved_evidence_ids = [item["id"] for item in structured["citations"]]
         if synthesis.get("simulated", False):
@@ -300,6 +320,9 @@ class CouncilEngine:
         meeting.synthesis_summary = summary
         meeting.areas_of_agreement = []
         meeting.areas_of_disagreement = disagreements
+        if conflict_present:
+            actions = [{"title": "Resolve conflicting tenant evidence before making a recommendation",
+                        "owner": owner, "priority": "high", "source": "tenant_evidence_conflict"}]
         meeting.recommended_actions = actions
         incomplete = (not synthesis.get("simulated") and bool(synthesis.get("output_limit_reached"))) or any(a["output_limit_reached"] for a in transcript)
         mixed = any(a["simulated"] for a in transcript) and any(not a["simulated"] for a in transcript)

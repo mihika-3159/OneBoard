@@ -69,6 +69,7 @@ export interface CouncilMeeting {
   advisers_present: string[];
   deliberation_transcript: DeliberationTranscriptItem[];
   synthesis_summary?: string;
+  structured_synthesis?: {status:string; disposition:string; uncertainty:string; arguments:{id:string;adviser:string;quote:string}[]; citations:{id:string;quote:string;source:string}[]};
   areas_of_agreement: string[];
   areas_of_disagreement: string[];
   recommended_actions: { title: string; owner: string; priority: string }[];
@@ -145,6 +146,7 @@ export interface CustomAgent {
   system_prompt: string;
   selected_model: string;
   allowed_tools: string[];
+  allowed_memory_collections?: string[];
   requires_approval_for: string[];
   max_steps: number;
   status: "active" | "paused";

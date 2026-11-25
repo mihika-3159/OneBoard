@@ -65,3 +65,28 @@ def verify_outcome(
         return res
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ForecastRequest(BaseModel):
+    adviser: str = Field(min_length=1,max_length=100)
+    metric: str = Field(min_length=1,max_length=255)
+    point: float = Field(allow_inf_nan=False)
+    lower: float = Field(allow_inf_nan=False)
+    upper: float = Field(allow_inf_nan=False)
+    confidence: float = Field(gt=0,lt=1,allow_inf_nan=False)
+    days: int = Field(ge=1,le=365,strict=True)
+
+
+@router.post("/decisions/{decision_id}/forecast")
+def register_forecast(decision_id: str, req: ForecastRequest, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    from apps.api.services.adviser_calibration import register_forecast
+    try:
+        return register_forecast(db,current_user.business_id,decision_id,req.adviser,req.metric,req.point,req.lower,req.upper,req.confidence,req.days)
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+
+
+@router.get("/calibration")
+def adviser_calibration(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from apps.api.services.adviser_calibration import historical_calibration
+    return {"scope":"latest 500 decisions and 2000 tasks", "rows":historical_calibration(db,current_user.business_id)}

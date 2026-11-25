@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
 } from 'lucide-react';
 import { api } from '../services/api';
+import { CalibrationPanel } from './CalibrationPanel';
 import { DecisionRecord, AdviserScorecard } from '../types';
 
 export const AccountabilityTab: React.FC = () => {
@@ -63,6 +64,7 @@ export const AccountabilityTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <CalibrationPanel decisions={decisions} />
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

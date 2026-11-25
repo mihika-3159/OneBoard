@@ -440,6 +440,17 @@ export const api = {
   exportSnapshot: async ():Promise<any> => request<any>('/data/export-snapshot'),
 
   // Custom Agents
+  getAgentRuns: async (): Promise<any[]> => request<any[]>('/agents/runs'),
+  startAgentRun: async (agentId: string, payload: any): Promise<any> =>
+    request<any>(`/agents/${agentId}/runs`, {method:'POST',body:JSON.stringify(payload)}),
+  advanceAgentRun: async (runId: string): Promise<any> =>
+    request<any>(`/agents/runs/${runId}/advance`, {method:'POST'}),
+  cancelAgentRun: async (runId: string): Promise<any> =>
+    request<any>(`/agents/runs/${runId}/cancel`, {method:'POST'}),
+  reconcileCouncil: async (): Promise<any> => request<any>('/council/meetings/reconcile-interrupted',{method:'POST'}),
+  getCalibration: async (): Promise<any> => request<any>('/accountability/calibration'),
+  recordForecast: async (decisionId: string, payload: any): Promise<any> =>
+    request<any>(`/accountability/decisions/${decisionId}/forecast`,{method:'POST',body:JSON.stringify(payload)}),
   getAgents: async (): Promise<CustomAgent[]> => {
     return request<CustomAgent[]>('/agents');
   },

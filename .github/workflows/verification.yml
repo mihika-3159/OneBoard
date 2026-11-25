@@ -133,6 +133,8 @@ jobs:
         run: python -m scripts.verify_provider_cancellation
       - name: Benchmark the real model with synthetic quality and resource cases
         run: python -m scripts.benchmark_inference --model "$ONEBOARD_CI_OLLAMA_MODEL" --output model-benchmark.json
+      - name: Paired real council versus single-agent recommendation evaluation
+        run: python -m scripts.benchmark_council --output council-benchmark.json
       - name: Start fresh authenticated local API and execute every live API test
         env:
           ONEBOARD_LIVE_API_TESTS: "1"
@@ -157,6 +159,7 @@ jobs:
             ollama-full.xml
             ollama-smoke.xml
             model-benchmark.json
+            council-benchmark.json
             live-api.xml
           retention-days: 7
       - name: Ollama diagnostics on failure

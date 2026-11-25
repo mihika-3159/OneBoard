@@ -196,14 +196,27 @@ async def execute_step(db, tenant, run, step, agent):
     # Handoffs use only previous bounded checkpoint data, quoted and explicitly
     # restricted to this run. Previous agents cannot grant tools to successors.
     previous = run.tool_results or []
-    # Raw tool payloads must not cross into a successor without its own grant.
+    # Handoff data are explicitly filtered against the receiving agent's own
+    # grants. Free-form analysis is never forwarded across agent boundaries.
     visible = [p for p in previous if p["agent_id"] == agent.id]
-    handoffs = [{"agent_id": p["agent_id"], "status": "completed"} for p in previous if p["agent_id"] != agent.id]
+    handoffs = []
+    for entry in previous:
+        if entry["agent_id"] == agent.id:
+            continue
+        item = {"agent_id": entry["agent_id"], "tool": entry["tool"], "status": "completed"}
+        source_step = run.planned_steps[entry["step"]]
+        if entry["tool"] in TOOLS - {"analyze"}:
+            try:
+                authorize(agent, source_step)
+                item["data"] = entry["data"]
+            except ValueError:
+                pass
+        handoffs.append(item)
     with inference_tenant(tenant):
         response = await ollama_gateway.chat_complete(
             messages=[{"role": "user", "content": quoted_data("goal", run.goal, 2000) + "\n" +
                        quoted_data("own_checkpoints", json.dumps(visible, default=str), 3000) + "\n" +
-                       quoted_data("handoff", json.dumps(handoffs), 1000)}],
+                       quoted_data("handoff", json.dumps(handoffs, default=str), 2000)}],
             system_prompt=quoted_data("agent_config", agent.system_prompt, 1500) + " " + DATA_BOUNDARY,
             model=agent.selected_model)
     if response.get("simulated") or response.get("output_limit_reached") or not response.get("content"):

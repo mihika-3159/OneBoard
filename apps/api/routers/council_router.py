@@ -31,7 +31,6 @@ def get_council_meetings(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    council_engine.reconcile_interrupted(db, current_user.business_id)
     return db.query(CouncilMeeting).filter(
         CouncilMeeting.business_id == current_user.business_id
     ).order_by(CouncilMeeting.created_at.desc()).all()
@@ -83,3 +82,8 @@ def approve_meeting(
         return {"status": "success", "decision": decision}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/meetings/reconcile-interrupted")
+def reconcile_interrupted_meetings(current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    return {"reconciled": council_engine.reconcile_interrupted(db, current_user.business_id)}
