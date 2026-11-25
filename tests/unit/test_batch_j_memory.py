@@ -58,6 +58,10 @@ async def test_batch_index_retry_model_change_and_progress(db,monkeypatch):
     assert (await idx.index_pending(db,"a",gateway=new))["indexed"]==first.chunk_count
     assert {v.model for v in db.query(SemanticVector).all()}=={"fixture-model-v2"}
     assert idx.progress(db,"a")["documents"][0]["status"]=="ready"
+    assert idx.retry_document(db,"a",first.id,reindex=True)["reindex_requested"]
+    assert not db.query(SemanticVector).filter_by(business_id="a").count()
+    assert await memory.search_semantic_memory(db,"a","revenue",5)
+    assert (await idx.index_pending(db,"a",gateway=new))["indexed"]==first.chunk_count
 
 @pytest.mark.asyncio
 async def test_crash_claim_retry_expiry_and_superseded_write_fence(db):
@@ -82,7 +86,9 @@ async def test_crash_claim_retry_expiry_and_superseded_write_fence(db):
 @pytest.mark.asyncio
 async def test_source_versions_dedup_offsets_and_stale_consumer(db):
     raw="--- Page 1 ---\nLegacy annual subscription price is 39.\n\n--- Page 2 ---\nA different clause applies."
-    first=doc(db,raw,file_type="pdf")
+    boundary=raw.index("--- Page 2")
+    segments=[{"start":0,"end":boundary,"location":"Page 1"},{"start":boundary,"end":len(raw),"location":"Page 2"}]
+    first=doc(db,raw,file_type="pdf",source_segments=segments)
     assert doc(db,raw,file_type="pdf").id==first.id
     hits=await memory.search_semantic_memory(db,"a","Legacy annual subscription",5)
     assert hits and hits[0]["citation"]["offset_verified"]
@@ -147,7 +153,7 @@ def test_seeded_malformed_inputs_and_lossless_csv():
         data=b"\xff"+rng.randbytes(rng.randrange(1,200))
         for ext in ("txt","md","json","csv"):
             with pytest.raises((ValueError,UnicodeError,RecursionError)):local_files_adapter.extract_text(data,"bad."+ext)
-    for data in (b'{"n":NaN}',b'{"x":',b'[[[[',b'\x00'):
+    for data in (b'{"n":NaN}',b'{"n":1e999}',b'{"n":1,"n":2}',b'{"x":',b'[[[[',b'\x00'):
         with pytest.raises(ValueError):local_files_adapter.extract_text(data,"bad.json")
     for data in (b"a,a\n1,2",b"a,b\n1",b"a,b\n1,2,3",b'a,b\n"unclosed,2'):
         with pytest.raises(ValueError):local_files_adapter.extract_text(data,"bad.csv")
@@ -169,7 +175,7 @@ def test_spreadsheet_extracts_late_rows_and_every_sheet():
     data=local_files_adapter.extract_text(buffer.getvalue(),"valid.xlsx")
     assert "record 149" in data["text"] and "secondary important record" in data["text"]
     assert data["metadata"]["row_count"]==151
-    assert any(p[3]=="Sheet Secondary" for p in split_text(data["text"],"xlsx"))
+    assert any(p[3]=="Sheet Secondary" for p in split_text(data["text"],"xlsx",data["metadata"]["segments"]))
 
 @pytest.mark.asyncio
 async def test_batch_gateway_validates_order_and_charges_every_input(monkeypatch):
@@ -192,3 +198,9 @@ async def test_batch_gateway_validates_order_and_charges_every_input(monkeypatch
     assert post.await_count==1
     post.return_value=httpx.Response(200,json={"embeddings":[[1.],[1.,2.]]})
     assert await gw.genuine_embeddings(["third","fourth"],"fixture")==[None,None]
+
+
+def test_parser_location_cannot_be_forged_by_page_marker():
+    raw="--- Page 1 ---\nContent\n--- Page 99 ---\nFalse marker"
+    assert all(p[3] is None for p in split_text(raw,"pdf"))
+    assert all(p[3]=="Page 1" for p in split_text(raw,"pdf",[{"start":0,"end":len(raw),"location":"Page 1"}]))

@@ -153,7 +153,7 @@ async def upload_document(
             business_id=current_user.business_id,
             title=filename,
             raw_content=extracted["text"],
-            file_type=extracted["file_type"], supersedes_id=supersedes_id
+            file_type=extracted["file_type"], supersedes_id=supersedes_id,source_segments=extracted.get("metadata",{}).get("segments")
         )
     except ValueError as exc:
         db.rollback()

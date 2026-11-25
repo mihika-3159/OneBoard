@@ -28,6 +28,20 @@ def _bounded_text(text: str) -> str:
     return text
 
 
+def _segments(sections, labels):
+    start=0; spans=[]
+    for section,label in zip(sections,labels):
+        spans.append({"start":start,"end":start+len(section),"location":label})
+        start+=len(section)+2
+    return spans
+
+def _unique_json(pairs):
+    result={}
+    for key,value in pairs:
+        if key in result:raise ValueError("Duplicate JSON key")
+        result[key]=value
+    return result
+
 class LocalFilesAdapter:
     """Parse supported local formats with explicit extraction limits."""
 
@@ -75,8 +89,8 @@ class LocalFilesAdapter:
             return {"file_type": ext.lstrip("."), "text": text, "metadata": metadata}
 
         if ext == ".json":
-            data = json.loads(file_bytes.decode("utf-8"),parse_constant=lambda x: (_ for _ in ()).throw(ValueError("Nonfinite JSON")))
-            text = _bounded_text(json.dumps(data, indent=2, ensure_ascii=False))
+            data = json.loads(file_bytes.decode("utf-8"),object_pairs_hook=_unique_json,parse_constant=lambda x: (_ for _ in ()).throw(ValueError("Nonfinite JSON")))
+            text = _bounded_text(json.dumps(data, indent=2, ensure_ascii=False,allow_nan=False))
             return {
                 "file_type": "json", "text": text,
                 "structured_data": data, "metadata": metadata
@@ -109,16 +123,18 @@ class LocalFilesAdapter:
                 if len(entries)>1000 or len({e.filename for e in entries})!=len(entries) or any(e.flag_bits&1 for e in entries):raise ValueError("Invalid workbook archive")
                 if sum(entry.file_size for entry in entries) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
                     raise ValueError("Spreadsheet archive exceeds extraction limit")
-            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+            wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=True)
             try:
                 if len(wb.worksheets)>20:raise ValueError("Workbook sheet limit exceeded")
                 sections=[];total_rows=0;length=0
                 for sheet in wb.worksheets:
                     if sheet.max_row and sheet.max_row>MAX_XLSX_ROWS:raise ValueError("Spreadsheet row limit exceeded")
                     if sheet.max_column and sheet.max_column>MAX_XLSX_COLUMNS:raise ValueError("Spreadsheet column limit exceeded")
+                    sheet.reset_dimensions()
                     lines=[]
-                    for row in sheet.iter_rows(values_only=True,max_row=MAX_XLSX_ROWS+1,max_col=MAX_XLSX_COLUMNS+1):
-                        if row[MAX_XLSX_COLUMNS] is not None:raise ValueError("Spreadsheet column limit exceeded")
+                    for position,row in enumerate(sheet.iter_rows(values_only=True),1):
+                        if position>MAX_XLSX_ROWS:raise ValueError("Spreadsheet row limit exceeded")
+                        if len(row)>MAX_XLSX_COLUMNS:raise ValueError("Spreadsheet column limit exceeded")
                         if not any(c is not None for c in row[:MAX_XLSX_COLUMNS]):continue
                         total_rows+=1
                         if total_rows>MAX_XLSX_ROWS:raise ValueError("Workbook row limit exceeded")
@@ -128,7 +144,7 @@ class LocalFilesAdapter:
                         lines.append(line)
                     sections.append("--- Sheet "+sheet.title+" ---\n"+"\n".join(lines))
                 return {"file_type":"xlsx","text":_bounded_text("\n\n".join(sections)),
-                        "metadata":{**metadata,"sheet_names":wb.sheetnames,"row_count":total_rows}}
+                        "metadata":{**metadata,"sheet_names":wb.sheetnames,"row_count":total_rows,"segments":_segments(sections,["Sheet "+s.title for s in wb.worksheets])}}
             finally:
                 wb.close()
 
@@ -150,7 +166,7 @@ class LocalFilesAdapter:
             return {
                 "file_type": "pdf",
                 "text": _bounded_text("\n\n".join(pages)),
-                "metadata": {**metadata, "page_count": len(reader.pages)}
+                "metadata": {**metadata, "page_count": len(reader.pages),"segments":_segments(pages,[f"Page {i+1}" for i in range(len(pages))])}
             }
 
         raise ValueError(f"Unsupported file extension: {ext}")

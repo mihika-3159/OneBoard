@@ -126,7 +126,8 @@ class SchedulerService:
             from apps.api.services.semantic_index import scheduled_index
             try:
                 with SessionLocal() as db:
-                    asyncio.run(scheduled_index(db))
+                    result=asyncio.run(scheduled_index(db))
+                    failed+=result.get("failed_tenants",0)
             except Exception as exc:
                 failed+=1
                 logger.error("Semantic backfill failed (%s)",type(exc).__name__)

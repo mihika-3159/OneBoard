@@ -109,8 +109,8 @@ class MemoryEngine:
         ]
 
     def add_document_with_chunks(self,db:Session,business_id:str,title:str,raw_content:str,
-                                 file_type:str="txt",source_connector:str="local_file",supersedes_id=None):
+                                 file_type:str="txt",source_connector:str="local_file",supersedes_id=None,source_segments=None):
         from apps.api.services.memory_sources import ingest
-        return ingest(db,business_id,title,raw_content,file_type,source_connector,supersedes_id)
+        return ingest(db,business_id,title,raw_content,file_type,source_connector,supersedes_id,source_segments)
 
 memory_engine = MemoryEngine()

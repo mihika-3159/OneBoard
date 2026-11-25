@@ -6,9 +6,21 @@ from apps.api.services.tenant_storage import _lock,check_document
 from apps.api.services.semantic_index import ensure_state
 from apps.api.core.config import settings
 
-def split_text(text,file_type):
-    markers=list(re.finditer(r"(?m)^--- (Page \d+|Sheet [^\n]+) ---\n",text)) if file_type in ("pdf","xlsx") else []
-    regions=[(0,len(text),None)] if not markers else [(m.start(),markers[i+1].start() if i+1<len(markers) else len(text),m.group(1)) for i,m in enumerate(markers)]
+def split_text(text,file_type,source_segments=None):
+    # Only parser-generated offsets may identify physical pages/sheets.
+    # A page-like string embedded in user content is not provenance.
+    regions=[(0,len(text),None)]
+    if source_segments is not None:
+        if file_type not in ("pdf","xlsx") or not isinstance(source_segments,list) or not 1<=len(source_segments)<=100:
+            raise ValueError("Invalid source locations")
+        regions=[];previous=0
+        for segment in source_segments:
+            start,end,location=segment["start"],segment["end"],segment["location"]
+            if type(start) is not int or type(end) is not int or not previous<=start<end<=len(text) or not isinstance(location,str) or not 1<=len(location)<=120:
+                raise ValueError("Invalid source locations")
+            if text[previous:start].strip():raise ValueError("Incomplete source locations")
+            regions.append((start,end,location));previous=end
+        if text[previous:].strip():raise ValueError("Incomplete source locations")
     result=[];seen=set()
     for start,end,location in regions:
         while start<end:
@@ -38,7 +50,7 @@ def citation(doc,chunk,state):
             "location":meta.get("location") if verified else None,"offset_verified":verified,
             "source_path":"/api/memory/sources/"+chunk.id}
 
-def ingest(db,tenant,title,raw,file_type,connector,supersedes_id=None):
+def ingest(db,tenant,title,raw,file_type,connector,supersedes_id=None,source_segments=None):
     if not tenant or not isinstance(title,str) or not 1<=len(title.strip())<=255:raise ValueError("Invalid document title")
     if not isinstance(raw,str) or not raw.strip() or len(raw)>1000000 or "\x00" in raw:raise ValueError("Invalid or empty extracted document")
     if not isinstance(file_type,str) or len(file_type)>20 or not isinstance(connector,str) or len(connector)>50:raise ValueError("Invalid source metadata")
@@ -62,7 +74,7 @@ def ingest(db,tenant,title,raw,file_type,connector,supersedes_id=None):
             MemoryDocument.file_type==file_type,MemoryDocument.source_connector==connector,
             (MemoryDocumentState.document_id.is_(None)|MemoryDocumentState.active.is_(True))).first()
         if existing:return existing
-    parts=split_text(raw,file_type)
+    parts=split_text(raw,file_type,source_segments)
     if not parts:raise ValueError("No extractable text")
     if settings.ONEBOARD_PRODUCTION_MODE:check_document(db,tenant,raw,[p[0] for p in parts])
     doc=MemoryDocument(business_id=tenant,title=title,file_type=file_type,source_connector=connector,content_hash=digest,
