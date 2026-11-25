@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import time
+from apps.api.services.inference_budget import inference_tenant
 from apps.api.core.database import get_db
 from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.config import settings
@@ -90,11 +91,12 @@ async def benchmark_gateway(
         consume_tenant_budget(db, current_user.business_id, "ai_benchmark")
     profile = _business_model_profile(db, current_user.business_id)
     start = time.time()
-    res = await run_request_inference(request, ollama_gateway.chat_complete(
-        messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
-        system_prompt="Return brief benchmark acknowledgment.",
-        model=ollama_gateway.get_model_for_task(profile=profile)
-    ))
+    with inference_tenant(current_user.business_id):
+        res = await run_request_inference(request, ollama_gateway.chat_complete(
+            messages=[{"role": "user", "content": "Benchmark test: Return status OK."}],
+            system_prompt="Return brief benchmark acknowledgment.",
+            model=ollama_gateway.get_model_for_task(profile=profile)
+        ))
     total_time = round((time.time() - start) * 1000, 2)
     is_simulated = res.get("simulated", False)
     
@@ -176,11 +178,12 @@ async def handle_founder_command(
     )
 
     profile = _business_model_profile(db, biz_id)
-    res = await run_request_inference(request, ollama_gateway.chat_complete(
-        messages=[{"role": "user", "content": context}],
-        system_prompt="You are OneBoard Founder Command Center. "+DATA_BOUNDARY,
-        model=ollama_gateway.get_model_for_task(profile=profile)
-    ))
+    with inference_tenant(current_user.business_id):
+        res = await run_request_inference(request, ollama_gateway.chat_complete(
+            messages=[{"role": "user", "content": context}],
+            system_prompt="You are OneBoard Founder Command Center. "+DATA_BOUNDARY,
+            model=ollama_gateway.get_model_for_task(profile=profile)
+        ))
     is_simulated = res.get("simulated", False)
     
     return {

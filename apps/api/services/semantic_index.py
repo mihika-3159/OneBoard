@@ -6,6 +6,7 @@ import math
 import random
 from functools import lru_cache
 from sqlalchemy import and_, or_, func, case
+from apps.api.services.inference_budget import inference_tenant
 from apps.api.models.memory import MemoryChunk, MemoryDocument
 from apps.api.models.operations import SemanticVector
 from apps.api.services.ollama_gateway import ollama_gateway, OllamaGateway
@@ -47,7 +48,8 @@ async def index_pending(db, tenant, limit=8, gateway=None):
     db.rollback()  # no database transaction is held over provider calls
     indexed = 0
     for chunk_id, content in work:
-        vector = await gateway.genuine_embedding(content, model)
+        with inference_tenant(tenant):
+            vector = await gateway.genuine_embedding(content, model)
         if vector is None:
             break
         bands = signatures(vector)
@@ -75,7 +77,8 @@ async def retrieve(db, tenant, query, top_k):
     model = ollama_gateway.get_model_for_task("embedding")
     if not db.query(SemanticVector.chunk_id).filter_by(business_id=tenant, model=model).first():
         return []
-    vector = await ollama_gateway.genuine_embedding(query, model)
+    with inference_tenant(tenant):
+        vector = await ollama_gateway.genuine_embedding(query, model)
     if vector is None:
         return []
     bands = signatures(vector)

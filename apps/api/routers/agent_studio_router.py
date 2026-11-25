@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
+from apps.api.services.inference_budget import inference_tenant
 from apps.api.services.untrusted_content import DATA_BOUNDARY, quoted_data
 from typing import List, Optional
 from apps.api.core.database import get_db
@@ -75,7 +76,8 @@ async def generate_agent_config(
 ):
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "agent_generate")
-    return await natural_language_builder.generate_agent_from_prompt(req.prompt)
+    with inference_tenant(current_user.business_id):
+        return await natural_language_builder.generate_agent_from_prompt(req.prompt)
 
 @router.post("/{agent_id}/test")
 async def test_agent(
@@ -92,11 +94,12 @@ async def test_agent(
 
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "agent_test")
-    res = await ollama_gateway.chat_complete(
-        messages=[{"role": "user", "content": quoted_data("agent_configuration",agent.system_prompt)+"\n"+quoted_data("test_input",req.test_input)}],
-        system_prompt="You are a text-only OneBoard sandbox. "+DATA_BOUNDARY,
-        model=agent.selected_model
-    )
+    with inference_tenant(current_user.business_id):
+        res = await ollama_gateway.chat_complete(
+            messages=[{"role": "user", "content": quoted_data("agent_configuration",agent.system_prompt)+"\n"+quoted_data("test_input",req.test_input)}],
+            system_prompt="You are a text-only OneBoard sandbox. "+DATA_BOUNDARY,
+            model=agent.selected_model
+        )
     return {
         "agent_name": agent.name,
         "tool_execution_enabled": False,

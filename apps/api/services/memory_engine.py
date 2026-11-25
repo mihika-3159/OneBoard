@@ -3,6 +3,7 @@ import hashlib
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from apps.api.services.inference_budget import inference_tenant
 from apps.api.models.memory import MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict
 from apps.api.models.entities import Product, Customer, Invoice
 from apps.api.services.ollama_gateway import ollama_gateway
@@ -92,7 +93,8 @@ class MemoryEngine:
         entries = entries[:max_candidates]
         if not entries:
             return []
-        query_vector = [] if indexed else await ollama_gateway.generate_embedding(query)
+        with inference_tenant(business_id):
+            query_vector = [] if indexed else await ollama_gateway.generate_embedding(query)
         keywords = [word for word in query.lower().split() if len(word) > 3]
         scored_results = []
         for chunk, title in entries:

@@ -6,6 +6,7 @@ from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+from apps.api.services.inference_budget import inference_tenant
 from apps.api.core.config import settings
 from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.database import get_db
@@ -166,7 +167,8 @@ async def generate_from_prompt(
 ):
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "workflow_generate")
-    generated = await natural_language_builder.generate_workflow_from_prompt(req.prompt)
+    with inference_tenant(current_user.business_id):
+        generated = await natural_language_builder.generate_workflow_from_prompt(req.prompt)
     return generated
 
 @router.post("/teach-process")
@@ -177,7 +179,8 @@ async def teach_process(
 ):
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db, current_user.business_id, "workflow_generate")
-    return await natural_language_builder.teach_a_process(req.description, req.examples)
+    with inference_tenant(current_user.business_id):
+        return await natural_language_builder.teach_a_process(req.description, req.examples)
 
 @router.get("/outbox")
 def list_local_outbox(

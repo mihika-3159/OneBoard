@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional, AsyncGenerator
 from apps.api.core.config import settings
 from apps.api.services.cluster_capacity import inference_slot
 from apps.api.services.model_identity import matches_pin
+from apps.api.services.inference_budget import TokenBudgetExceeded, charge_provider_attempt
 
 from apps.api.services.inference_controls import CircuitOpen, ProviderCircuit, fit_prompt, retry_provider
 
@@ -38,6 +39,7 @@ class OllamaGateway:
                     await asyncio.wait_for(self._verify_model(client, payload["model"]), timeout=3.0)
 
                 async def send():
+                    await charge_provider_attempt(payload)
                     return await client.post(f"{self.base_url}{path}", json=payload)
 
                 try:
@@ -212,6 +214,8 @@ class OllamaGateway:
                         reason = "provider_http_error"
                 except _CapacityExceeded:
                     reason = "capacity_exceeded"
+                except TokenBudgetExceeded:
+                    reason = "token_budget_exhausted"
                 except _ModelIdentityMismatch:
                     reason = "model_identity_unverified"
                 except CircuitOpen:

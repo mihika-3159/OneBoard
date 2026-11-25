@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from apps.api.models.operations import TenantResourceWindow
 
 POLICIES = {
+    "inference_tokens": (65_536, 60),
     "ai_command": (30, 60),
     "ai_benchmark": (6, 60),
     "memory_search": (120, 60),
@@ -32,11 +33,15 @@ POLICIES = {
 
 def consume_tenant_budget(
     db: Session, business_id: str, resource: str, *,
-    now: float | None = None,
+    now: float | None = None, cost: int = 1,
 ) -> dict:
     if resource not in POLICIES or not business_id:
         raise ValueError("Unknown tenant resource or missing tenant")
     limit, duration = POLICIES[resource]
+    if isinstance(cost, bool) or not isinstance(cost, int) or cost < 1:
+        raise ValueError("Resource cost must be a positive integer")
+    if cost > limit:
+        raise HTTPException(status_code=429, detail="Request exceeds the tenant resource budget.")
     now = time.time() if now is None else now
     if not math.isfinite(now) or now < 0:
         raise ValueError("Invalid request clock")
@@ -53,13 +58,13 @@ def consume_tenant_budget(
     if row is None:
         row = TenantResourceWindow(
             business_id=business_id, resource=resource,
-            attempt_count=1, window_started_at=now,
+            attempt_count=cost, window_started_at=now,
         )
         db.add(row)
     elif now < row.window_started_at or now - row.window_started_at >= duration:
         row.window_started_at = now
-        row.attempt_count = 1
-    elif row.attempt_count >= limit:
+        row.attempt_count = cost
+    elif row.attempt_count + cost > limit:
         retry = max(1, math.ceil(duration - (now - row.window_started_at)))
         db.rollback()
         raise HTTPException(
@@ -68,7 +73,7 @@ def consume_tenant_budget(
             headers={"Retry-After": str(retry)},
         )
     else:
-        row.attempt_count += 1
+        row.attempt_count += cost
     db.commit()
     return {"resource": resource, "remaining": limit - row.attempt_count,
             "window_seconds": duration}
