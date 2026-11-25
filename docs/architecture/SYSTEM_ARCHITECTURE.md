@@ -1,86 +1,16 @@
-# OneBoard System Architecture & Technical Specifications
+# OneBoard system architecture
 
-## Architectural Topology
+OneBoard is a local-first engineering prototype, not an independently certified production SaaS. The React 18/Vite frontend communicates with FastAPI over authenticated HTTP and newline-delimited JSON streams. There is no WebSocket or SSE requirement. SQLite supports local development; PostgreSQL is required in production with separate migration and restricted runtime roles, tenant-scoped database policies, and signed tenant context.
 
-OneBoard uses a clean layered architecture designed for local execution, low latency, robust data isolation, and high resilience:
+## Execution layers
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Presentation Layer                       │
-│    React 18 + Vite SPA · Tailwind CSS · Glassmorphism UI    │
-│  State Management · Lucide Icons · SSE Stream Processing    │
-└──────────────────────────────┬──────────────────────────────┘
-                               │ HTTP / SSE / WebSockets
-┌──────────────────────────────▼──────────────────────────────┐
-│                    FastAPI Gateway Layer                    │
-│    Request Validation · Dependency Injection · CORS Config  │
-│  Authentication · Rate Limiting · Dynamic Routing Router    │
-└───────────────┬───────────────────────────────┬─────────────┘
-                │                               │
-┌───────────────▼───────────────┐ ┌─────────────▼─────────────┐
-│    Multi-Agent Orchestration  │ │  Workflow Runtime Engine  │
-│  7 Domain Advisers (Council)  │ │  DAG Engine · Cycle Check │
-│  Adversarial Challenge Graph  │ │  HITL Approval Gates      │
-│  Synthesis & Sovereign Veto   │ │  Deterministic Tool Call  │
-└───────────────┬───────────────┘ └─────────────┬─────────────┘
-                │                               │
-┌───────────────▼───────────────────────────────▼─────────────┐
-│              Deterministic Business & Data Layer            │
-│  Financial Math (MRR/Runway) · Evidence Content Hashing     │
-│  Empirical Error Recalibration · Audit Trail Recording      │
-└───────────────┬───────────────────────────────┬─────────────┘
-                │                               │
-┌───────────────▼───────────────┐ ┌─────────────▼─────────────┐
-│     Inference Gateway Layer   │ │   Persistence Vault       │
-│  Ollama Local Daemon (Airgap) │ │   SQLite / PostgreSQL     │
-│  Multi-Provider Fallback      │ │   ChromaDB Vector Store   │
-│  Deterministic Simulation     │ │   Local File Document Hub │
-└───────────────────────────────┘ └───────────────────────────┘
-```
+- **Presentation:** eleven workspace sections, lazy-loaded views, shared recovery states, explicit permissions and accessible controls. The workflow canvas previews persisted definitions; edits are saved as versioned definitions with optimistic concurrency.
+- **Application:** FastAPI routes enforce authentication and founder/owner authorization, scoped API keys, CSRF and origin checks, session revocation, MFA and bounded request sizes.
+- **Council and agents:** nine adviser roles (Chief of Staff, Strategy, Finance, Operations, Marketing, Technology, Customer Success, Risk and Compliance, Research). Council output is advisory, not verified fact. Durable read-only agent execution uses explicit grants and checkpoints, not unbounded delegation.
+- **Workflows:** validated DAGs, version pinning, approval gates, durable runs, outbox and scheduling, idempotency and recovery of interrupted operations. External writes require explicit authorization and must not be replayed automatically if their outcome is uncertain.
+- **Financial logic:** deterministic exact monetary arithmetic, append-only journal, statement comparison, settlement evidence, forecasts and reconciliation. User-supplied evidence does not establish independent bank verification.
+- **Memory:** tenant-owned relational records, bounded chunking, genuine embeddings where available, lexical/hybrid retrieval, provenance and citation checks. No separate ChromaDB service is required.
+- **Inference:** configured Ollama models and supported provider protocols, bounded contexts, quotas, admission control, private PostgreSQL inference queue where configured, and explicit fallback labeling. Local fallback is not genuine AI.
+- **Operations:** protected provider lifecycle, encrypted portable archives, retention/deletion, scoped monitoring, readiness checks and operator-controlled deployment.
 
----
-
-## 1. Multi-Agent Council Protocol
-
-The Agent Council uses a LangGraph-inspired directed execution graph:
-1. **Context Ingestion**: Retrieves verified evidence records, current business state, and recent decision outcomes.
-2. **Independent Agent Evaluation**: The 7 domain advisers evaluate the proposal in parallel with distinct prompt boundaries:
-   - `Chief of Staff`: Strategic coherence, priority alignment.
-   - `Finance Adviser`: Unit economics, runway implications, budget limits.
-   - `Marketing Adviser`: Funnel velocity, target audience positioning, CAC.
-   - `Operations Adviser`: Capacity constraints, tool dependencies.
-   - `Product Adviser`: Feature scope, user impact.
-   - `Legal Counsel`: Contractual clauses, IP rights, regulatory liabilities.
-   - `Technology Adviser`: Scalability, architectural complexity, tech debt.
-3. **Structured Challenge Round**: Advisers cross-examine each other's claims. If a recommendation violates financial or operational constraints, counter-arguments are generated.
-4. **Synthesis Protocol**: Highlights points of unanimous agreement, contested recommendations, and trade-off matrices.
-5. **Founder Gate**: Commits decision only upon founder approval, registering expected numeric metrics.
-
----
-
-## 2. Deterministic Financial Core
-
-All business arithmetic is calculated in pure Python:
-- **MRR**: $\sum (\text{Active Monthly Subscriptions}) + \sum (\text{Annual Subscriptions} / 12)$
-- **Net Burn Rate**: $\text{Monthly Operating Expenses} - \text{Monthly Revenue}$
-- **Runway**: $\frac{\text{Current Cash Balance}}{\text{Net Monthly Burn Rate}}$
-- **Unit Economics**: Customer Acquisition Cost (CAC) vs. Customer Lifetime Value (LTV).
-
-No LLM generates or approximates financial statistics, eliminating mathematical hallucinations.
-
----
-
-## 3. Workflow Execution Runtime
-
-- **DAG Representation**: Workflows are stored as structured JSON nodes and directional edges.
-- **Cycle Detection**: Validated via depth-first search graph traversal prior to execution.
-- **Human-in-the-Loop (HITL)**: Nodes marked `approval_required: true` transition the workflow run into `awaiting_approval` status, emitting an SSE notification to the founder UI. Execution resumes only when the founder approves via the API.
-- **Sandboxed Tool Registry**: Registered tools operate on validated Python types without shell or subprocess invocation privileges.
-
----
-
-## 4. Multi-Model Gateway & Offline Airgap
-
-- **Primary Inference**: Local Ollama server (`http://localhost:11434`) running lightweight open-weight models (`qwen2.5:1.5b`, `llama3.2:1b`, `phi3.5`).
-- **Dynamic Task Routing**: Small models for quick categorizations and summarization; reasoning models for multi-agent synthesis.
-- **Deterministic Heuristic Fallback**: If Ollama or cloud connections are unavailable, OneBoard activates its rule-based heuristic generator, guaranteeing that the application remains fully testable, demonstrable, and operable anywhere without active API keys.
+See the individual Batch E–P engineering records for interfaces, test scope and external requirements. Do not infer live provider verification, independent audit, hosted capacity or offsite recovery from CI.

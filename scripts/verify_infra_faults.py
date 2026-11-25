@@ -3,7 +3,7 @@
 Never run against a deployed database. CI supplies the exact service-container
 ID; the script validates its identity and local DSN before stopping it.
 """
-import concurrent.futures,hashlib,json,os,pathlib,re,subprocess,sys,time
+import concurrent.futures,hashlib,json,os,pathlib,re,subprocess,sys,time,random
 from uuid import uuid4
 import httpx
 from sqlalchemy import create_engine,text
@@ -80,6 +80,25 @@ def main():
             with Session(admin) as session:
                 assert session.query(JournalEntry).filter_by(business_id=tenant,reference=reference).count()==1
             report.update(database_restart_verified=True,critical_transaction_rollback_verified=True,idempotent_recovery_verified=True,service_recovery_seconds=round(time.monotonic()-started,3))
+            # Seeded fault timing is reproducible; interrupt the actual disposable
+            # database service, verify fail-closed health and recovered tenant reads.
+            rng=random.Random(int(os.getenv("ONEBOARD_FAULT_SEED","70129")))
+            cycles=[]
+            for _ in range(3):
+                delay=rng.uniform(.1,.8);time.sleep(delay)
+                docker("stop",ident)
+                try:
+                    assert c.get("/ready").status_code==503
+                finally:docker("start",ident)
+                for attempt in range(60):
+                    try:
+                        if c.get("/ready").status_code==200:break
+                    except httpx.HTTPError:pass
+                    time.sleep(1)
+                else:raise RuntimeError("Randomized restart failed to recover")
+                assert c.get("/api/auth/me",headers=headers).json()["business"]["id"]==tenant
+                cycles.append({"delay_seconds":round(delay,3),"recovered":True})
+            report["seeded_restart_cycles"]=cycles
             # Saturate all four actual API DB connections on the same advisory
             # lock. Extra requests must get a bounded 503 and recover later.
             lock=int.from_bytes(hashlib.sha256(("oneboard:storage:"+tenant).encode()).digest()[:8],"big",signed=True)

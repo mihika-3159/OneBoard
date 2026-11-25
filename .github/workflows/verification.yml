@@ -57,6 +57,8 @@ jobs:
           npm ci --no-audit --no-fund
       - name: TypeScript and production build
         run: npm run build
+      - name: Enforce bundle budgets
+        run: python ../../scripts/release_checks.py bundle dist ../../frontend-budget.json
 
   ollama-live:
     name: Mandatory full local Ollama and authenticated live API

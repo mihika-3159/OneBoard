@@ -1,3 +1,4 @@
+import {LoadState} from './ScreenSupport';
 import React, { useState, useEffect } from 'react';
 import {
   Search,
@@ -16,6 +17,7 @@ import { MemoryConflict } from '../types';
 
 export const BusinessMemoryTab: React.FC = () => {
   const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
   const [activeSubTab, setActiveSubTab] = useState<'search' | 'graph' | 'conflicts' | 'upload'>('conflicts');
   const [searchQuery, setSearchQuery] = useState('pricing for growth tier');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -40,13 +42,14 @@ export const BusinessMemoryTab: React.FC = () => {
   }, []);
 
   const loadMemoryData = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const [g, c] = await Promise.all([api.getMemoryGraph(), api.getConflicts()]);
       setGraphData(g);
       setConflicts(c);
     } catch (e) {
-      console.error('Error loading memory data', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading memory data');
+    } finally {setScreenLoading(false)}
   };
 
   const handleSearch = async () => {
@@ -97,6 +100,7 @@ export const BusinessMemoryTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!conflicts.length?'No recorded conflicts. Import documents to build memory.':undefined} retry={()=>void loadMemoryData()}/>
       {inference.indicator}
       {notice&&<p role="status" className="text-xs">{notice}</p>}
       {/* Top Banner */}

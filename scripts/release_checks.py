@@ -63,9 +63,19 @@ def verify(directory,receipt):
     if any(p.is_symlink() for p in directory.rglob("*")):raise ValueError("Unexpected symlink")
     actual={p.relative_to(directory).as_posix():sha(p) for p in directory.rglob("*") if p.is_file()}
     if not actual or actual!=m["files"]:raise ValueError("Artifact content mismatch")
+def bundle(directory,out):
+    directory=Path(directory)
+    files=sorted(directory.rglob("*.js"))
+    if not files:raise ValueError("Missing frontend JavaScript")
+    sizes={p.relative_to(directory).as_posix():p.stat().st_size for p in files}
+    total=sum(sizes.values())
+    # Conservative absolute ceilings, not a fabricated historic baseline.
+    if max(sizes.values())>1_500_000 or total>3_500_000:
+        raise ValueError("Frontend JavaScript bundle budget exceeded")
+    write(out,{"total_js_bytes":total,"largest_chunk_bytes":max(sizes.values()),"chunks":sizes,"limits":{"total":3500000,"chunk":1500000}})
 def aggregate(root,out):
     root=Path(root)
-    required=["coverage.json","python-sbom.json","node-sbom.json","bandit.json","frontend-static.json","production-browser.json","build-integrity.json","property-tests.xml"]
+    required=["coverage.json","python-sbom.json","node-sbom.json","bandit.json","frontend-static.json","production-browser.json","build-integrity.json","property-tests.xml","frontend-budget.json"]
     evidence={}
     for name in required:
         matches=list(root.rglob(name))
@@ -80,8 +90,8 @@ def aggregate(root,out):
     write(out,{"schema":"oneboard-batch-p-evidence-v1","commit":os.environ["GITHUB_SHA"],"run":os.environ["GITHUB_RUN_ID"],"evidence":evidence,"external_production_gate":"NO_GO","scope":"disposable CI engineering evidence only; not independent certification"})
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument("command",choices=["lock","sbom","coverage","manifest","verify","aggregate"])
+    p.add_argument("command",choices=["lock","sbom","coverage","manifest","verify","aggregate","bundle"])
     p.add_argument("paths",nargs="*");a=p.parse_args()
-    actions={"lock":lock_check,"sbom":sbom,"coverage":coverage_gate,"manifest":manifest,"verify":verify,"aggregate":aggregate}
+    actions={"lock":lock_check,"sbom":sbom,"coverage":coverage_gate,"manifest":manifest,"verify":verify,"aggregate":aggregate,"bundle":bundle}
     actions[a.command](*a.paths)
 if __name__=="__main__":main()

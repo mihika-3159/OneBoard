@@ -1,3 +1,4 @@
+import {LoadState} from './ScreenSupport';
 import React, { useState, useEffect } from 'react';
 import {
   Bot,
@@ -19,6 +20,7 @@ import { AgentRuntimePanel } from './AgentRuntimePanel';
 
 export const AgentStudioTab: React.FC = () => {
   const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
   const [agents, setAgents] = useState<CustomAgent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<CustomAgent | null>(null);
 
@@ -53,6 +55,7 @@ export const AgentStudioTab: React.FC = () => {
   }, []);
 
   const loadAgents = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const data = await api.getAgents();
       setAgents(data);
@@ -60,8 +63,8 @@ export const AgentStudioTab: React.FC = () => {
         setSelectedAgent(data[0]);
       }
     } catch (e) {
-      console.error('Error loading custom agents', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading custom agents');
+    } finally {setScreenLoading(false)}
   };
 
   const handleGenerateNL = async () => {
@@ -123,6 +126,7 @@ export const AgentStudioTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!agents.length?'No custom agents recorded. Create one to get started.':undefined} retry={()=>void loadAgents()}/>
       {inference.indicator}
       <AgentRuntimePanel agents={agents} selectedAgent={selectedAgent} />
       <label className="flex gap-2 text-sm text-slate-400"><input type="checkbox" checked={cacheSandbox} onChange={e => setCacheSandbox(e.target.checked)} /> Reuse identical pinned deterministic sandbox responses for 30 seconds</label>
@@ -223,7 +227,7 @@ export const AgentStudioTab: React.FC = () => {
                 </div>
                 <div>
                   <label className="font-semibold text-slate-300">Department</label>
-                  <select
+                  <select aria-label="Department"
                     value={department}
                     onChange={(e) => setDepartment(e.target.value)}
                     className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none"
@@ -251,7 +255,7 @@ export const AgentStudioTab: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="font-semibold text-slate-300">Assigned Ollama Model</label>
-                  <select
+                  <select aria-label="Assigned Ollama Model"
                     value={selectedModel}
                     onChange={(e) => setSelectedModel(e.target.value)}
                     className="w-full mt-1 px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 focus:outline-none font-mono"
@@ -263,7 +267,7 @@ export const AgentStudioTab: React.FC = () => {
                 </div>
                 <div>
                   <label className="font-semibold text-slate-300">Approval Requirement Boundary</label>
-                  <input
+                  <input aria-label="Approval Requirement Boundary"
                     type="text"
                     value={requiresApproval.join(', ')}
                     onChange={(e) => setRequiresApproval(e.target.value.split(',').map((s) => s.trim()))}

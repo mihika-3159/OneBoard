@@ -1,3 +1,4 @@
+import {LoadState} from './ScreenSupport';
 import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
@@ -14,6 +15,7 @@ import { CalibrationPanel } from './CalibrationPanel';
 import { DecisionRecord, AdviserScorecard } from '../types';
 
 export const AccountabilityTab: React.FC = () => {
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
   const [decisions, setDecisions] = useState<DecisionRecord[]>([]);
   const [scorecards, setScorecards] = useState<AdviserScorecard[]>([]);
   const [selectedDecision, setSelectedDecision] = useState<DecisionRecord | null>(null);
@@ -29,6 +31,7 @@ export const AccountabilityTab: React.FC = () => {
   }, []);
 
   const loadData = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const [d, s] = await Promise.all([api.getDecisions(), api.getScorecards()]);
       setDecisions(d);
@@ -37,8 +40,8 @@ export const AccountabilityTab: React.FC = () => {
         setSelectedDecision(d[0]);
       }
     } catch (e) {
-      console.error('Error loading accountability data', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading accountability data');
+    } finally {setScreenLoading(false)}
   };
 
   const handleVerify = async () => {
@@ -64,6 +67,7 @@ export const AccountabilityTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!decisions.length?'No decisions recorded yet.':undefined} retry={()=>void loadData()}/>
       <CalibrationPanel decisions={decisions} />
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -275,7 +279,7 @@ export const AccountabilityTab: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="text-slate-400 block mb-1">Measured Actual Value</label>
-                      <input
+                      <input aria-label="Measured Actual Value"
                         type="number"
                         value={actualVal}
                         onChange={(e) => setActualVal(e.target.value)}
@@ -284,7 +288,7 @@ export const AccountabilityTab: React.FC = () => {
                     </div>
                     <div>
                       <label className="text-slate-400 block mb-1">Unverified source notes / cause</label>
-                      <input
+                      <input aria-label="Unverified source notes / cause"
                         type="text"
                         value={outcomeNotes}
                         onChange={(e) => setOutcomeNotes(e.target.value)}

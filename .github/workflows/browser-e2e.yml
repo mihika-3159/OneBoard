@@ -7,12 +7,13 @@ permissions:
   contents: read
 jobs:
   browser-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         browser: [chromium, firefox, webkit]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     env:
       AUTH_SECRET_KEY: "e2e-test-secret-only-0123456789abcdef0123456789abcdef"
       ONEBOARD_DEMO_MODE: "false"
@@ -34,7 +35,11 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           bash ../../scripts/install_browser_tools.sh
-          npx --no-install playwright install --with-deps ${{ matrix.browser }}
+          npx --no-install playwright install ${{ matrix.browser }}
+      - name: Install Linux browser system dependencies
+        if: runner.os == 'Linux'
+        working-directory: apps/web
+        run: npx --no-install playwright install-deps ${{ matrix.browser }}
       - name: Run real browser E2E tests
         working-directory: apps/web
         env:
@@ -42,11 +47,11 @@ jobs:
           ONEBOARD_TEST_BROWSER: ${{ matrix.browser }}
         run: |
           npx playwright test --config playwright.config.ts --reporter=line,json
-          python ../../scripts/require_browser_suite.py browser-required.json 29
+          python ../../scripts/require_browser_suite.py browser-required.json 31
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: playwright-results-${{ matrix.browser }}
+          name: playwright-results-${{ matrix.os }}-${{ matrix.browser }}
           path: |
             apps/web/test-results/
             apps/web/browser-required.json

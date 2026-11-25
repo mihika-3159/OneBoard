@@ -1,3 +1,4 @@
+import {LoadState,ListPager} from './ScreenSupport';
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   ReactFlow,
@@ -29,6 +30,8 @@ import { WorkflowOperationsPanel } from './WorkflowOperationsPanel';
 
 export const WorkflowStudioTab: React.FC = () => {
   const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
+  const [workflowPage,setWorkflowPage]=useState(0);
   const [workflows, setWorkflows] = useState<WorkflowDef[]>([]);
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowDef | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -100,15 +103,16 @@ export const WorkflowStudioTab: React.FC = () => {
   }, []);
 
   const loadWorkflows = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const data = await api.getWorkflows();
-      setWorkflows(data);
+      setWorkflows(data);setWorkflowPage(p=>Math.min(p,Math.max(0,Math.ceil(data.length/25)-1)));
       if (data.length > 0 && !selectedWorkflow) {
         selectWorkflow(data[0]);
       }
     } catch (e) {
-      console.error('Error loading workflows', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading workflows');
+    } finally {setScreenLoading(false)}
   };
 
   const loadApprovals = async () => {
@@ -217,6 +221,7 @@ export const WorkflowStudioTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!workflows.length?'No workflows recorded. Create one to get started.':undefined} retry={()=>void loadWorkflows()}/>
       {inference.indicator}
       <WorkflowOperationsPanel selected={selectedWorkflow} onUpdated={wf=>{setWorkflows(old=>old.map(x=>x.id===wf.id?wf:x));selectWorkflow(wf);}} />
       {/* Header bar */}
@@ -340,11 +345,12 @@ export const WorkflowStudioTab: React.FC = () => {
         <div className="space-y-3">
           <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">Saved Workflows</h2>
           <div className="space-y-2">
-            {workflows.map((w) => (
-              <div
+            <ListPager page={workflowPage} total={workflows.length} size={25} onChange={setWorkflowPage}/>
+            {workflows.slice(workflowPage*25,(workflowPage+1)*25).map((w) => (
+              <button type="button" aria-pressed={selectedWorkflow?.id===w.id}
                 key={w.id}
                 onClick={() => selectWorkflow(w)}
-                className={`p-3.5 rounded-xl border cursor-pointer transition ${
+                className={`w-full text-left p-3.5 rounded-xl border cursor-pointer transition ${
                   selectedWorkflow?.id === w.id
                     ? 'bg-indigo-600/10 border-indigo-500/50 text-white'
                     : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
@@ -358,7 +364,7 @@ export const WorkflowStudioTab: React.FC = () => {
                     {w.nodes?.length || 0} nodes
                   </span>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -369,6 +375,9 @@ export const WorkflowStudioTab: React.FC = () => {
             <ReactFlow
               nodes={nodes}
               edges={edges}
+              onlyRenderVisibleElements
+              nodesDraggable={false}
+              nodesConnectable={false}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               fitView

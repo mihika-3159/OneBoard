@@ -1,3 +1,4 @@
+import {LoadState} from './ScreenSupport';
 import React, { useState, useEffect } from 'react';
 import {
   Users,
@@ -18,6 +19,7 @@ import { CouncilRole, CouncilMeeting } from '../types';
 
 export const BoardroomTab: React.FC = () => {
   const inference = useInferenceOperation();
+  const [screenLoading,setScreenLoading]=useState(true),[screenError,setScreenError]=useState('');
   const [roles, setRoles] = useState<CouncilRole[]>([]);
   const [meetings, setMeetings] = useState<CouncilMeeting[]>([]);
   const [selectedMeeting, setSelectedMeeting] = useState<CouncilMeeting | null>(null);
@@ -46,6 +48,7 @@ export const BoardroomTab: React.FC = () => {
   }, []);
 
   const loadData = async () => {
+    setScreenLoading(true);setScreenError('');
     try {
       const [r, m] = await Promise.all([api.getCouncilRoles(), api.getCouncilMeetings()]);
       setRoles(r);
@@ -54,8 +57,8 @@ export const BoardroomTab: React.FC = () => {
         setSelectedMeeting(m[0]);
       }
     } catch (e) {
-      console.error('Error loading council data', e);
-    }
+      setScreenError(e instanceof Error?e.message:'Error loading council data');
+    } finally {setScreenLoading(false)}
   };
 
   const handleConvene = async () => {
@@ -102,6 +105,7 @@ export const BoardroomTab: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      <LoadState loading={screenLoading} error={screenError} empty={!meetings.length?'No council meetings recorded yet.':undefined} retry={()=>void loadData()}/>
       {inference.indicator}
       <button className="text-xs text-slate-300" onClick={async()=>{try{await api.reconcileCouncil();await loadData()}catch(e){console.error(e)}}}>Reconcile interrupted meetings</button>
       {/* Top Banner */}
@@ -141,7 +145,7 @@ export const BoardroomTab: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="text-xs font-semibold text-slate-300">Meeting Title</label>
-              <input
+              <input aria-label="Meeting Title"
                 type="text"
                 value={meetingTitle}
                 onChange={(e) => setMeetingTitle(e.target.value)}
@@ -150,7 +154,7 @@ export const BoardroomTab: React.FC = () => {
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-300">Review Type</label>
-              <select
+              <select aria-label="Review Type"
                 value={meetingType}
                 onChange={(e) => setMeetingType(e.target.value)}
                 className="w-full mt-1 px-3 py-2 bg-slate-800 text-white text-sm rounded-xl border border-slate-700 focus:outline-none focus:border-indigo-500"
@@ -166,7 +170,7 @@ export const BoardroomTab: React.FC = () => {
 
           <div>
             <label className="text-xs font-semibold text-slate-300">Strategic Deliberation Topic</label>
-            <textarea
+            <textarea aria-label="Strategic Deliberation Topic"
               rows={3}
               value={meetingTopic}
               onChange={(e) => setMeetingTopic(e.target.value)}

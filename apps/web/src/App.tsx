@@ -43,6 +43,7 @@ export const App: React.FC = () => {
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(null);
   const [alerts, setAlerts] = useState<ProactiveAlert[]>([]);
   const [showAlertModal, setShowAlertModal] = useState<boolean>(false);
+  const [showSetup,setShowSetup]=useState(false);
   const [isResetting, setIsResetting] = useState<boolean>(false);
 
   // Authentication State
@@ -56,7 +57,7 @@ export const App: React.FC = () => {
   const [isRegisterMode, setIsRegisterMode] = useState<boolean>(false);
 
   // Form fields
-  const [authEmail, setAuthEmail] = useState<string>('founder@northstar.studio');
+  const [authEmail, setAuthEmail] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
   const [authFactor,setAuthFactor]=useState('');
   const [recoverMode,setRecoverMode]=useState(false);
@@ -66,7 +67,7 @@ export const App: React.FC = () => {
 
   useEffect(()=>{
     const expired=(event:Event)=>{setIsRegisterMode(false);setRecoverMode(false);setIsAuthenticated(false);setCurrentUser(null);setCurrentBusiness(null);setGatewayStatus(null);setAlerts([]);setShowAlertModal(false);setAuthPassword('');setAuthFactor('');setConnectionIssue(null);setAuthError((event as CustomEvent).detail||'Your session expired. Sign in again. No interrupted write was automatically replayed.');};
-    const issue=(event:Event)=>{const detail=(event as CustomEvent).detail;setConnectionIssue(old=>detail.recovered?(old?.path===detail.path&&!old.write?null:old):detail);};
+    const issue=(event:Event)=>{const detail=(event as CustomEvent).detail;setConnectionIssue(old=>detail.recovered?(old!==null&&old.path===detail.path&&!old.write?null:old):detail);};
     window.addEventListener(sessionExpiredEvent,expired);window.addEventListener(connectionIssueEvent,issue);
     void checkSessionAndLoad();
     return()=>{window.removeEventListener(sessionExpiredEvent,expired);window.removeEventListener(connectionIssueEvent,issue)};
@@ -111,7 +112,7 @@ export const App: React.FC = () => {
           business_name: authBizName.trim() || undefined,
         });
         setCurrentUser(res.user);
-        setCurrentBusiness(res.business);
+        setCurrentBusiness(res.business);setShowSetup(true);
       } else {
         const res = await api.login(authEmail.trim(), authPassword, authFactor || undefined);
         setCurrentUser(res.user);
@@ -232,7 +233,7 @@ export const App: React.FC = () => {
               <button
                 onClick={handleLogout}
                 className="p-1.5 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition"
-                title="Log out and invalidate session"
+                aria-label="Log out and invalidate session" title="Log out and invalidate session"
               >
                 <LogOut className="w-3.5 h-3.5" />
               </button>
@@ -287,7 +288,7 @@ export const App: React.FC = () => {
             <button
               onClick={() => setShowAlertModal(!showAlertModal)}
               className="relative p-2 rounded-xl bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition"
-              title="Proactive Scheduler Alerts"
+              aria-label="Proactive Scheduler Alerts" title="Proactive Scheduler Alerts"
             >
               <Bell className="w-4 h-4" />
               {alerts.length > 0 && (
@@ -302,7 +303,7 @@ export const App: React.FC = () => {
               onClick={handleResetDemo}
               disabled={isResetting}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl border border-slate-700/60 transition"
-              title="Restore clean Northstar Studio demo scenario (Scoped to Demo Tenant)"
+              aria-label="Reset Demo" title="Restore clean Northstar Studio demo scenario (Scoped to Demo Tenant)"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isResetting ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">Reset Demo</span>
@@ -324,8 +325,9 @@ export const App: React.FC = () => {
 
         {/* Dynamic Tab Body */}
         <main id="workspace-main" tabIndex={-1} aria-label={navItems.find(n=>n.id===activeTab)?.label} className="oneboard-main flex-1 min-w-0 overflow-auto p-6">
-    {connectionIssue&&<ScreenState kind="error" message={connectionIssue.message+(connectionIssue.write?' Action outcome may be unknown. Check history before retrying; no write was replayed.':' Refresh the view to retry reads.')} retry={connectionIssue.write?undefined:()=>{setConnectionIssue(null);setScreenRevision(n=>n+1)}} dismiss={()=>setConnectionIssue(null)}/>}
-    <details className="oneboard-help"><summary>Help with {navItems.find(n=>n.id===activeTab)?.label}</summary><p>{screenHelp[activeTab]}</p></details>
+    {connectionIssue&&<ScreenState retryLabel="Reload workspace view" kind="error" message={connectionIssue.message+(connectionIssue.write?' Action outcome may be unknown. Check history before retrying; no write was replayed.':' Refresh the view to retry reads.')} retry={connectionIssue.write?undefined:()=>{setConnectionIssue(null);setScreenRevision(n=>n+1)}} dismiss={()=>setConnectionIssue(null)}/>}
+    {showSetup&&activeTab==='overview'&&<section className="glass-panel rounded-xl p-4 mb-3 space-y-2" aria-label="Workspace setup"><h2 className="font-bold">Set up your workspace</h2><p>Start with account protection, recorded financial data and your model connection. No sample records or external services are added automatically.</p><div className="flex flex-wrap gap-2">{[['settings','Security and models'],['finance','Record finances'],['integrations','Review integrations']].map(([id,label])=><button key={id} className="btn-primary px-3 py-2" onClick={()=>setActiveTab(id)}>{label}</button>)}<button className="btn-ghost px-3 py-2" onClick={()=>setShowSetup(false)}>Dismiss setup guide</button></div></section>}
+          <details className="oneboard-help"><summary>Help with {navItems.find(n=>n.id===activeTab)?.label}</summary><p>{screenHelp[activeTab]}</p></details>
     <ScreenBoundary key={activeTab+':'+screenRevision}><Suspense fallback={<ScreenState kind="loading" message="Loading workspace view…"/>}>
           {activeTab === 'overview' && <OverviewTab onNavigate={setActiveTab} />}
           {activeTab === 'command' && <FounderCommandTab />}
