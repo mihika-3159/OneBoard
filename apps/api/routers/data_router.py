@@ -177,3 +177,10 @@ def restore_portable(req:RestoreRequest,current_user:User=Depends(require_founde
     if not verify_password(req.password,password_verifier(db,current_user)) or not verify_factor(db,current_user,req.mfa_code):raise HTTPException(403,"Password verification failed")
     try:return portable.restore(db,current_user,req.archive_id,req.confirmation)
     except ValueError as exc:portable_error(db,exc)
+
+
+@router.get("/collections/{collection}")
+def browse_collection(collection:str,cursor:str|None=None,limit:int=Query(50,ge=1,le=100),current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    from apps.api.services.storage_maintenance import collection_page
+    try:return collection_page(db,current_user.business_id,collection,cursor,limit)
+    except ValueError as exc:portable_error(db,exc)

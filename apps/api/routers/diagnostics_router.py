@@ -24,3 +24,11 @@ def operations_diagnostics(user:User=Depends(require_founder_role),db:Session=De
         "indexed_vectors":db.query(SemanticVector).filter_by(business_id=tenant).count(),
         "external_delivery_verified":False,
     }
+
+
+@router.get("/database")
+def database_diagnostics(user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    from apps.api.services.storage_maintenance import report,quota_report
+    from apps.api.core.config import settings
+    return {**report(db,user.business_id),"quotas":quota_report(db,user.business_id),
+       "pool_per_process":{"size":settings.DB_POOL_SIZE,"overflow":settings.DB_MAX_OVERFLOW,"timeout_seconds":settings.DB_POOL_TIMEOUT_SECONDS,"recycle_seconds":settings.DB_POOL_RECYCLE_SECONDS}}

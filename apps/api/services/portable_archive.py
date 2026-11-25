@@ -200,7 +200,7 @@ def sanitized(name,row):
     row=dict(row)
     if name=="businesses":return row
     if name=="memory_documents":row["file_path"]=None
-    if name=="memory_document_states":row.update(status="pending" if row.get("active") else "superseded",indexed_count=0,attempts=0,model_key=None,lease_until=0,next_attempt_at=0,claim_token=None,error=None)
+    if name=="memory_document_states":row.update(status="pending",indexed_count=0,attempts=0,model_key=None,lease_until=0,next_attempt_at=0,claim_token=None,error=None)
     if name=="integration_accounts":row.update(status="disconnected",configuration={},granted_scopes=[])
     if name=="provider_connections":row.update(state="disconnected",scopes=[],encrypted_credentials=None,expires_at=None,checkpoint=None,last_error="restored_reauthorization_required",last_sync=None)
     if name=="provider_sync_jobs" and row.get("state") in ("queued","retry"):row["state"]="cancelled"
@@ -232,6 +232,8 @@ def restore(db,user,ident,confirmation):
     if archive.state!="ready":raise ValueError("Upload every archive page before restoration")
     descriptors=validate_manifest(tenant,archive.manifest)
     inserted=unchanged=0
+    from apps.api.services.tenant_storage import ROW_LIMITS,check_table_rows
+    touched=set()
     try:
         for d in descriptors:
             page=db.query(PortableArchivePage).filter_by(business_id=tenant,archive_id=ident,page_number=d["number"]).one_or_none()
@@ -259,7 +261,8 @@ def restore(db,user,ident,confirmation):
                     if stored not in (encode(value),encode(lifecycle._safe({k:v for k,v in new.items() if k in value}))):
                         raise ValueError("Existing application record differs; restore never overwrites")
                     unchanged+=1;continue
-                db.execute(insert(table).values(**new));inserted+=1
+                db.execute(insert(table).values(**new));inserted+=1;touched.add(name)
+        for name in sorted(touched & set(ROW_LIMITS)):check_table_rows(db,tenant,name,0)
         archive.state="applied";db.commit()
     except (IntegrityError,ValueError,TypeError,KeyError,OverflowError) as exc:
         db.rollback()

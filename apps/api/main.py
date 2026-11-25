@@ -81,7 +81,7 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def redact_sensitive_validation(request, exc):
-    if request.url.path.startswith(("/api/auth/","/api/integrations/providers/")) or request.url.path in ("/api/integrations/providers/credential", "/api/data/delete-workspace", "/api/business/financial/settlements"):
+    if request.url.path.startswith(("/api/auth/","/api/integrations/providers/","/api/data/portable/")) or request.url.path in ("/api/integrations/providers/credential", "/api/data/delete-workspace", "/api/business/financial/settlements"):
         return JSONResponse({"detail":"Invalid sensitive request"},status_code=422)
     return await request_validation_exception_handler(request,exc)
 

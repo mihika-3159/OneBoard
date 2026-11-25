@@ -57,6 +57,8 @@ class SchedulerService:
                 try:
                     # Discover only tenant identifiers; all content access uses
                     # a fresh, tenant-scoped transaction. Isolate failures.
+                    from apps.api.services.storage_maintenance import cleanup_global
+                    cleanup_global(db)
                     failed = self.run_tenant_jobs()
                     if failed:
                         raise RuntimeError("One or more tenant jobs failed")
@@ -97,6 +99,7 @@ class SchedulerService:
         from apps.api.services.workflow_schedule import run_due
         from apps.api.services.workflow_events import detect,drain
         from apps.api.services.integrations.provider_runtime import run_sync,dispatch_one
+        from apps.api.services.storage_maintenance import cleanup_tenant,sample
         def run_tenant(tenant):
             failed=0
             try:
@@ -104,7 +107,7 @@ class SchedulerService:
             except Exception as exc:
                 failed+=1
                 logger.error("Tenant alerts/retention job failed (%s)",type(exc).__name__)
-            for task in (lambda db: process_local_outbox(db,tenant=tenant),lambda db: run_due(db,tenant),lambda db: detect(db,tenant),lambda db: drain(db,tenant),lambda db: run_sync(db,tenant),lambda db: dispatch_one(db,tenant)):
+            for task in (lambda db: process_local_outbox(db,tenant=tenant),lambda db: run_due(db,tenant),lambda db: detect(db,tenant),lambda db: drain(db,tenant),lambda db: run_sync(db,tenant),lambda db: dispatch_one(db,tenant),lambda db: cleanup_tenant(db,tenant),lambda db: sample(db,tenant)):
                 try:
                     with SessionLocal() as db:
                         db.info.update(oneboard_request=True,oneboard_worker=True)
