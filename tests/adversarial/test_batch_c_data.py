@@ -106,7 +106,9 @@ def test_owner_export_retention_and_workspace_deletion(db):
     actor=SimpleNamespace(id="aowner",business_id="a")
     assert data_lifecycle.owner(db,actor).id=="a"
     page=data_lifecycle.export_page(db,"a","users")
-    assert len(page["rows"])==1 and "secret" not in repr(page)
+    assert len(page["rows"])==1
+    assert not {"hashed_password","api_key"} & page["rows"][0].keys()
+    assert "secret-hash" not in repr(page) and "secret-key-a" not in repr(page)
     with pytest.raises(PermissionError):
         data_lifecycle.owner(db,SimpleNamespace(id="bowner",business_id="a"))
     assert data_lifecycle.delete_documents(db,"a",[bid])==0
