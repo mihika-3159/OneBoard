@@ -1020,3 +1020,11 @@ and tenant deletion tests, and browser owner export/deletion regression.
 No external provider was registered or called by this engineering run.
 Model semantic quality/recall, real provider authorization, external backup
 erasure and independent certification remain unverified. CI pending.
+
+
+Batch C CI repair: export-secret assertion now checks actual credential
+column names and fixture values rather than matching the harmless
+secrets_excluded metadata label. Added ingestion rollback fault injection
+and scheduled-index separate event-loop gateway coverage. PostgreSQL
+migration/concurrency job had passed its tests on the preceding head;
+full final-head verification still required.

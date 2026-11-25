@@ -8,7 +8,7 @@ from functools import lru_cache
 from sqlalchemy import and_, or_, func
 from apps.api.models.memory import MemoryChunk, MemoryDocument
 from apps.api.models.operations import SemanticVector
-from apps.api.services.ollama_gateway import ollama_gateway
+from apps.api.services.ollama_gateway import ollama_gateway, OllamaGateway
 from apps.api.services.tenant_storage import _lock
 from apps.api.core.database import tenant_lifecycle_lock
 from apps.api.models.business import Business
@@ -30,10 +30,11 @@ def signatures(vector):
 def cosine(a,b):
     return sum(x*y for x,y in zip(a,b)) / (math.sqrt(sum(x*x for x in a))*math.sqrt(sum(y*y for y in b)))
 
-async def index_pending(db, tenant, limit=8):
+async def index_pending(db, tenant, limit=8, gateway=None):
     if not tenant or not 1 <= limit <= 32:
         raise ValueError("Invalid indexing request")
-    model = ollama_gateway.get_model_for_task("embedding")
+    gateway = gateway or ollama_gateway
+    model = gateway.get_model_for_task("embedding")
     rows = db.query(MemoryChunk).join(MemoryDocument, and_(
         MemoryDocument.id == MemoryChunk.document_id,
         MemoryDocument.business_id == MemoryChunk.business_id,
@@ -46,7 +47,7 @@ async def index_pending(db, tenant, limit=8):
     db.rollback()  # no database transaction is held over provider calls
     indexed = 0
     for chunk_id, content in work:
-        vector = await ollama_gateway.genuine_embedding(content, model)
+        vector = await gateway.genuine_embedding(content, model)
         if vector is None:
             break
         bands = signatures(vector)
@@ -112,4 +113,6 @@ async def scheduled_index(db):
     if not tenants:
         return {"indexed":0}
     tenant = tenants[int(time.time() // 60) % len(tenants)]
-    return await index_pending(db, tenant, limit=1)
+    # The scheduler owns a separate asyncio loop. Never reuse the API loop's
+    # asyncio semaphore; the PostgreSQL capacity locks still coordinate globally.
+    return await index_pending(db, tenant, limit=1, gateway=OllamaGateway())

@@ -121,3 +121,34 @@ def test_owner_export_retention_and_workspace_deletion(db):
     receipt=data_lifecycle.delete_workspace(db,actor,"DELETE a")
     assert not receipt["backup_copies_deleted"]
     assert db.get(Business,"a") is None and db.get(Business,"b") is not None
+
+
+def test_ingestion_rolls_back_document_when_chunk_write_fails(db):
+    from sqlalchemy import event
+    engine=db.get_bind()
+    def fail_chunk(conn,cursor,statement,params,context,many):
+        if statement.lstrip().upper().startswith("INSERT INTO MEMORY_CHUNKS"):
+            raise RuntimeError("synthetic chunk write failure")
+    event.listen(engine,"before_cursor_execute",fail_chunk)
+    try:
+        with pytest.raises(RuntimeError,match="synthetic chunk write failure"):
+            memory_engine.add_document_with_chunks(db,"a","atomic","one\n\ntwo")
+        db.rollback()
+    finally:
+        event.remove(engine,"before_cursor_execute",fail_chunk)
+    assert db.query(MemoryDocument).filter_by(business_id="a").count()==0
+    assert db.query(MemoryChunk).filter_by(business_id="a").count()==0
+
+@pytest.mark.asyncio
+async def test_scheduled_index_uses_fresh_gateway_and_only_one_chunk(db,monkeypatch):
+    db.add(Business(id="a",name="A"))
+    db.commit()
+    memory_engine.add_document_with_chunks(db,"a","queued","one\n\ntwo")
+    worker=SimpleNamespace(get_model_for_task=lambda task:"nomic-embed-text",
+                           genuine_embedding=AsyncMock(return_value=[1.,0.2]))
+    monkeypatch.setattr(semantic_index,"OllamaGateway",lambda:worker)
+    monkeypatch.setattr(semantic_index.ollama_gateway,"get_model_for_task",lambda task:"nomic-embed-text")
+    monkeypatch.setattr(semantic_index.ollama_gateway,"genuine_embedding",AsyncMock(side_effect=AssertionError("API gateway used in worker")))
+    assert (await semantic_index.scheduled_index(db))["indexed"]==1
+    worker.genuine_embedding.assert_awaited_once()
+    assert db.query(SemanticVector).count()==1
