@@ -130,7 +130,7 @@ def verify_disposable_restore():
         with src.connect() as conn:
             from alembic.migration import MigrationContext
             revision = MigrationContext.configure(conn).get_current_heads()
-            if revision != ("020_batch_i_schedule",):
+            if revision != ("021_batch_j_memory",):
                 raise RuntimeError("Disposable source must be fully migrated")
         # A preexisting empty CI database would provide weak recovery
         # evidence. Create a synthetic founder-journey canary spanning tenant,
@@ -207,7 +207,7 @@ def verify_disposable_restore():
                 restore_revision = MigrationContext.configure(
                     dest_conn
                 ).get_current_heads()
-                if restore_revision != ("020_batch_i_schedule",):
+                if restore_revision != ("021_batch_j_memory",):
                     raise RuntimeError("Restore lost the Alembic revision")
                 # Integrity constraints and lookup indexes must be present.
                 from apps.api.core.database import Base

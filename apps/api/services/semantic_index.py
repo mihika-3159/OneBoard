@@ -3,11 +3,17 @@ Four independent eight-bit random hyperplane bands give indexed candidates
 across the tenant corpus. Exact cosine reranks candidates, not every row.
 """
 import math
+import asyncio
+import hashlib
+from uuid import uuid4
+from datetime import datetime
+from apps.api.core.config import settings
+from apps.api.services.durable_jobs import _now,execution_lock
 import random
 from functools import lru_cache
 from sqlalchemy import and_, or_, func, case
 from apps.api.services.inference_budget import inference_tenant
-from apps.api.models.memory import MemoryChunk, MemoryDocument
+from apps.api.models.memory import MemoryChunk, MemoryDocument, MemoryDocumentState
 from apps.api.models.operations import SemanticVector
 from apps.api.services.ollama_gateway import ollama_gateway, OllamaGateway
 from apps.api.services.tenant_storage import _lock
@@ -31,52 +37,143 @@ def signatures(vector):
 def cosine(a,b):
     return sum(x*y for x,y in zip(a,b)) / (math.sqrt(sum(x*x for x in a))*math.sqrt(sum(y*y for y in b)))
 
-async def index_pending(db, tenant, limit=8, gateway=None):
-    if not tenant or not 1 <= limit <= 32:
-        raise ValueError("Invalid indexing request")
-    gateway = gateway or ollama_gateway
-    model = gateway.get_model_for_task("embedding")
-    rows = db.query(MemoryChunk).join(MemoryDocument, and_(
-        MemoryDocument.id == MemoryChunk.document_id,
-        MemoryDocument.business_id == MemoryChunk.business_id,
-    )).outerjoin(SemanticVector, and_(
-        SemanticVector.chunk_id == MemoryChunk.id, SemanticVector.business_id == tenant,
-        SemanticVector.model == model,
-    )).filter(MemoryChunk.business_id == tenant, SemanticVector.chunk_id.is_(None)
-    ).order_by(MemoryChunk.created_at, MemoryChunk.id).limit(limit).all()
-    work = [(row.id,row.content) for row in rows]
-    db.rollback()  # no database transaction is held over provider calls
-    indexed = 0
-    for chunk_id, content in work:
-        with inference_tenant(tenant):
-            vector = await gateway.genuine_embedding(content, model)
-        if vector is None:
-            break
-        bands = signatures(vector)
-        tenant_lifecycle_lock(db,tenant)
-        _lock(db, tenant)
-        chunk = db.query(MemoryChunk).filter_by(id=chunk_id, business_id=tenant).first()
-        if chunk is None or chunk.content != content:
-            db.rollback()
-            continue
-        row = db.get(SemanticVector, chunk_id)
-        if row is None:
-            row = SemanticVector(chunk_id=chunk_id, business_id=tenant)
-            db.add(row)
-        elif row.business_id != tenant:
-            db.rollback()
-            raise PermissionError("Vector tenant mismatch")
-        row.model, row.dimension, row.vector = model, len(vector), vector
-        row.band0, row.band1, row.band2, row.band3 = bands
-        db.commit()
-        indexed += 1
-    return {"indexed": indexed, "attempted": len(work), "model": model,
-            "provider_available": bool(indexed) if work else None}
+def model_identity(gateway):
+    model=gateway.get_model_for_task("embedding")
+    digest=settings.OLLAMA_MODEL_DIGESTS.get(model)
+    key=model if not digest else model+"@"+hashlib.sha256(str(digest).encode()).hexdigest()[:24]
+    if len(key)>150:raise ValueError("Embedding identity exceeds limit")
+    return model,key
 
-async def retrieve(db, tenant, query, top_k):
-    model = ollama_gateway.get_model_for_task("embedding")
-    if not db.query(SemanticVector.chunk_id).filter_by(business_id=tenant, model=model).first():
+
+def active_state():
+    return or_(MemoryDocumentState.document_id.is_(None),MemoryDocumentState.active.is_(True))
+
+
+def state_join():
+    return and_(MemoryDocumentState.document_id==MemoryDocument.id,
+                MemoryDocumentState.business_id==MemoryDocument.business_id)
+
+
+def pending_chunks(db,tenant,model_key):
+    return db.query(MemoryChunk).join(MemoryDocument,and_(
+        MemoryChunk.document_id==MemoryDocument.id,MemoryChunk.business_id==MemoryDocument.business_id
+    )).outerjoin(MemoryDocumentState,state_join()).outerjoin(SemanticVector,and_(
+        SemanticVector.chunk_id==MemoryChunk.id,SemanticVector.business_id==tenant,SemanticVector.model==model_key
+    )).filter(MemoryChunk.business_id==tenant,active_state(),SemanticVector.chunk_id.is_(None))
+
+
+def ensure_state(db,tenant,did):
+    row=db.query(MemoryDocumentState).filter_by(business_id=tenant,document_id=did).first()
+    if row is None:
+        row=MemoryDocumentState(business_id=tenant,document_id=did,root_id=did,version=1,active=True)
+        db.add(row);db.flush()
+    return row
+
+
+async def index_pending(db,tenant,limit=16,gateway=None):
+    if not tenant or type(limit) is not int or not 1<=limit<=64:
+        raise ValueError("Invalid indexing request")
+    gateway=gateway or ollama_gateway
+    model,key=model_identity(gateway)
+    with execution_lock(db.get_bind(),"memory-index:"+tenant) as held:
+        if not held:return {"indexed":0,"attempted":0,"model":model,"busy":True}
+        _lock(db,tenant)
+        now=_now(db)
+        # Old model rows never participate in the new model's retrieval.
+        # Model changes reset durable retry state without deleting old vectors.
+        db.query(MemoryDocumentState).filter(MemoryDocumentState.business_id==tenant,
+            MemoryDocumentState.active.is_(True),or_(MemoryDocumentState.model_key.is_(None),MemoryDocumentState.model_key!=key)
+        ).update({"model_key":key,"status":"pending","attempts":0,"indexed_count":0,
+                  "next_attempt_at":0,"lease_until":0,"claim_token":None,"error":None},synchronize_session=False)
+        db.flush()
+        rows=pending_chunks(db,tenant,key).filter(or_(MemoryDocumentState.document_id.is_(None),
+            and_(MemoryDocumentState.next_attempt_at<=now,MemoryDocumentState.lease_until<=now,
+                 MemoryDocumentState.status!="failed"))).order_by(
+            MemoryChunk.created_at,MemoryChunk.id).limit(limit).all()
+        work=[(row.id,row.document_id,row.content) for row in rows]
+        token=str(uuid4())
+        for did in set(x[1] for x in work):
+            state=ensure_state(db,tenant,did)
+            state.model_key=key;state.status="indexing";state.claim_token=token;state.lease_until=now+1800
+        db.commit()
+        if not work:return {"indexed":0,"attempted":0,"model":model,"provider_available":None}
+        sem=asyncio.Semaphore(2)
+        async def embed(item):
+            async with sem:
+                try:
+                    with inference_tenant(tenant):
+                        vector=await gateway.genuine_embedding(item[2],model)
+                    return (item,vector,signatures(vector)) if vector is not None else (item,None,None)
+                except Exception:
+                    return item,None,None
+        outcomes=await asyncio.gather(*(embed(item) for item in work))
+        tenant_lifecycle_lock(db,tenant)
+        _lock(db,tenant)
+        indexed=0
+        errors=set()
+        states={did:db.query(MemoryDocumentState).filter_by(business_id=tenant,document_id=did,active=True,claim_token=token,model_key=key).first() for did in set(x[1] for x in work)}
+        for (cid,did,content),vector,bands in outcomes:
+            if not states[did]:continue
+            if vector is None:
+                errors.add(did);continue
+            chunk=db.query(MemoryChunk).filter_by(id=cid,business_id=tenant,document_id=did).first()
+            if chunk is None or chunk.content!=content:continue
+            row=db.get(SemanticVector,cid)
+            if row is None:
+                row=SemanticVector(chunk_id=cid,business_id=tenant);db.add(row)
+            elif row.business_id!=tenant:raise PermissionError("Vector tenant mismatch")
+            row.model,row.dimension,row.vector=key,len(vector),vector
+            row.band0,row.band1,row.band2,row.band3=bands
+            indexed+=1
+        db.flush()
+        for did,state in states.items():
+            if not state:continue
+            total=db.query(MemoryChunk).filter_by(business_id=tenant,document_id=did).count()
+            remaining=pending_chunks(db,tenant,key).filter(MemoryChunk.document_id==did).count()
+            state.indexed_count=total-remaining;state.claim_token=None;state.lease_until=0
+            if not remaining:
+                state.status="ready";state.attempts=0;state.error=None;state.next_attempt_at=0
+            elif did in errors:
+                state.attempts+=1;state.status="failed" if state.attempts>=5 else "retry"
+                state.next_attempt_at=_now(db)+min(3600,30*2**state.attempts)
+                state.error="Embedding provider unavailable or invalid response"
+            else:
+                state.status="pending";state.attempts=0;state.error=None;state.next_attempt_at=0
+        db.commit()
+        return {"indexed":indexed,"attempted":len(work),"model":model,
+                "provider_available":bool(indexed),"failed_documents":len(errors)}
+
+
+def retry_document(db,tenant,did):
+    _lock(db,tenant)
+    doc=db.query(MemoryDocument).filter_by(business_id=tenant,id=did).first()
+    if not doc:raise ValueError("Document unavailable")
+    state=ensure_state(db,tenant,did)
+    if not state.active or state.lease_until>_now(db):raise ValueError("Document inactive or indexing")
+    state.attempts=0;state.next_attempt_at=0;state.lease_until=0;state.claim_token=None;state.status="pending";state.error=None
+    db.commit()
+    return {"document_id":did,"status":"pending"}
+
+
+def progress(db,tenant):
+    model,key=model_identity(ollama_gateway)
+    rows=db.query(MemoryDocument,MemoryDocumentState).outerjoin(MemoryDocumentState,state_join()).filter(
+        MemoryDocument.business_id==tenant).order_by(MemoryDocument.created_at.desc()).limit(200).all()
+    return {"model":model,"model_identity":key,"documents":[
+        {"document_id":d.id,"title":d.title,"file_type":d.file_type,"source_connector":d.source_connector,
+         "version":s.version if s else 1,"root_id":s.root_id if s else d.id,
+         "active":s.active if s else True,"total_chunks":d.chunk_count,
+         "indexed_chunks":s.indexed_count if s and s.model_key==key else 0,
+         "status":s.status if s and s.model_key==key else "pending",
+         "attempts":s.attempts if s else 0,"error":s.error if s and s.model_key==key else None}
+        for d,s in rows]}
+
+
+async def retrieve(db, tenant, query, top_k, filters=None):
+    model,key = model_identity(ollama_gateway)
+    if not db.query(SemanticVector.chunk_id).filter_by(business_id=tenant, model=key).first():
         return []
+    db.rollback()
     with inference_tenant(tenant):
         vector = await ollama_gateway.genuine_embedding(query, model)
     if vector is None:
@@ -93,10 +190,12 @@ async def retrieve(db, tenant, query, top_k):
                           MemoryChunk.business_id == SemanticVector.business_id)
     ).join(MemoryDocument, and_(MemoryDocument.id == MemoryChunk.document_id,
                                MemoryDocument.business_id == MemoryChunk.business_id)
-    ).filter(SemanticVector.business_id == tenant, SemanticVector.model == model,
+    ).outerjoin(MemoryDocumentState,state_join()).filter(active_state(),SemanticVector.business_id == tenant, SemanticVector.model == key,
              SemanticVector.dimension == len(vector),
              or_(*(col.in_(near) for col,near in zip(columns,probes)))
-    ).order_by(priority.desc(),SemanticVector.chunk_id).limit(201).all()
+    )
+    from apps.api.services.memory_ranking import filter_scope
+    rows=filter_scope(rows,filters).order_by(priority.desc(),SemanticVector.chunk_id).limit(201).all()
     scored = [{"chunk_id": c.id, "document_id": c.document_id, "source_title": title,
                "content": c.content, "score": round(cosine(vector, v.vector),4),
                "score_kind": "genuine_model_cosine_not_verified_relevance",
@@ -129,4 +228,4 @@ async def scheduled_index(db):
     with Session(bind=db.get_bind()) as scoped:
         scoped.info.update(oneboard_request=True,oneboard_worker=True)
         scope_tenant_session(scoped,tenant)
-        return await index_pending(scoped,tenant,limit=1,gateway=OllamaGateway())
+        return await index_pending(scoped,tenant,limit=16,gateway=OllamaGateway())

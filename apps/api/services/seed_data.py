@@ -6,7 +6,7 @@ from apps.api.models.entities import Product, Customer, Lead, Invoice, Expense, 
 from apps.api.models.goals_tasks import Goal, Task, Project
 from apps.api.models.decision_evidence import Decision, Evidence
 from apps.api.models.agent_council import CouncilMeeting, AdviserScorecard
-from apps.api.models.memory import MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict
+from apps.api.models.memory import MemoryDocument, MemoryChunk, EntityRelationship, MemoryConflict, MemoryDocumentState, MemoryRelevanceFeedback
 from apps.api.models.workflow import CustomAgent, WorkflowDefinition, WorkflowRun, ApprovalRequest
 from apps.api.models.integrations import IntegrationAccount
 from apps.api.services.memory_engine import memory_engine
@@ -25,8 +25,8 @@ def seed_northstar_studio(db: Session, reset: bool = False):
         if demo_doc_ids:
             db.query(MemoryChunk).filter(MemoryChunk.document_id.in_(demo_doc_ids)).delete(synchronize_session=False)
 
-        from apps.api.models.operations import SideEffectOutbox, WorkflowRevision, WorkflowTriggerState, WorkflowEvent
-        for model in [WorkflowEvent, WorkflowTriggerState, WorkflowRevision, SideEffectOutbox, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
+        from apps.api.models.operations import SemanticVector, SideEffectOutbox, WorkflowRevision, WorkflowTriggerState, WorkflowEvent
+        for model in [MemoryRelevanceFeedback, MemoryDocumentState, SemanticVector, WorkflowEvent, WorkflowTriggerState, WorkflowRevision, SideEffectOutbox, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
                       Goal, Task, Project, Decision, Evidence, CouncilMeeting, AdviserScorecard,
                       MemoryDocument, EntityRelationship, MemoryConflict,
                       CustomAgent, ApprovalRequest, WorkflowRun, WorkflowDefinition, IntegrationAccount,

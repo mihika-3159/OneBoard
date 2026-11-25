@@ -5,7 +5,7 @@ from sqlalchemy import select,delete
 from apps.api.core.database import Base,tenant_lifecycle_lock
 from apps.api.models.business import Business,User,BusinessMembership,UserSession
 from apps.api.models.integrations import IntegrationAccount
-from apps.api.models.memory import MemoryDocument,MemoryChunk
+from apps.api.models.memory import MemoryDocument,MemoryChunk,MemoryDocumentState,MemoryRelevanceFeedback
 from apps.api.models.operations import SemanticVector,DataRetentionPolicy,AlertSnapshot
 from apps.api.services.tenant_storage import _lock
 
@@ -101,6 +101,8 @@ def delete_documents(db,tenant,ids):
     _lock(db,tenant)
     selected=select(MemoryDocument.id).where(MemoryDocument.business_id==tenant,MemoryDocument.id.in_(ids))
     chunks=select(MemoryChunk.id).where(MemoryChunk.business_id==tenant,MemoryChunk.document_id.in_(selected))
+    db.execute(delete(MemoryRelevanceFeedback).where(MemoryRelevanceFeedback.business_id==tenant,MemoryRelevanceFeedback.chunk_id.in_(chunks)))
+    db.execute(delete(MemoryDocumentState).where(MemoryDocumentState.business_id==tenant,MemoryDocumentState.document_id.in_(selected)))
     db.execute(delete(SemanticVector).where(SemanticVector.business_id==tenant,SemanticVector.chunk_id.in_(chunks)))
     db.execute(delete(MemoryChunk).where(MemoryChunk.business_id==tenant,MemoryChunk.document_id.in_(selected)))
     result=db.execute(delete(MemoryDocument).where(MemoryDocument.business_id==tenant,MemoryDocument.id.in_(ids)))
