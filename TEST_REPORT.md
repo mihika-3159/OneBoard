@@ -1092,3 +1092,32 @@ must supply actual resolution. Audit reported vulnerable cryptography
 48.0.1, pip 24.0 and setuptools 79.0.1; minimum fixed versions from its
 advisory output are cryptography 50, pip 26.2 and setuptools 84.1.
 No advisory ignored. Mandatory exact-head rerun required.
+
+
+### Batch D verified intermediate evidence and final repairs
+
+On 8068c38 the mandatory live gateway suite passed 20/20, separate
+smoke/embedding suite 5/5, and authenticated live API suite 11/11,
+including the nine modernized tests and two negative auth/tenant tests.
+All three suites had zero skips (verification run 45548545205).
+
+On d9f582b28c2124e3280fbe5733b85a2a29d11d86, browser run
+45549050635 passed all 18 tests with zero skips/flakes. Verification
+45549050568 recorded 593 offline Python tests passed, 51 skipped
+(infrastructure suites separately gated), 27/27 PostgreSQL tests,
+49-table/49-record SHA-256 checked plaintext and encrypted restore at
+Alembic 011, and 2,072 actual local HTTPS requests over 20.15 s with
+six tenants, two workers, p95 33 ms, median 19.9 ms, 338 expected
+quota denials, zero unexpected errors, and restart persistence.
+Tracked-file scan: 214 files, zero high-confidence credential hits.
+Python audit: no known vulnerabilities after dependency repairs.
+Node audit was NOT green: high-severity Vite and associated advisories
+remained. Fixed on 9dec40c by regenerating the npm lock with Vite 8.3.8,
+compatible React plugin, patched selector parser and Node 22; removed
+unused react-router dependency. No advisory suppression. Windows and
+browser/build workflows use the new supported Node version.
+37c5c6a additionally prevents a backup manifest collision from deleting
+a pre-existing manifest and rejects symlink verification, with regression
+tests. Final exact-head CI must pass before accepting Batch D.
+No production deployment, real customer data, provider signup,
+paid resource, external delivery or independent certification.
