@@ -300,6 +300,8 @@ class WorkflowEngine:
                 with db.begin_nested():
                     result = (condition_result(resolved) if node_type == "condition" else
                               self._dispatch_node_tool(db, run.business_id, node_type, resolved))
+                    if node_type=="trigger" and (run.verification_details or {}).get("event_payload") is not None:
+                        result={**result,"event":run.verification_details["event_payload"]}
                     if isinstance(result, dict) and result.get("success") is False:
                         raise ValueError("Workflow tool reported failure")
                     self._record_draft_intent(db, run, node_id, node_type, resolved, result)
@@ -366,6 +368,7 @@ class WorkflowEngine:
         trigger_source: str = "manual",
         dry_run: bool = False,
         idempotency_key: Optional[str] = None,
+        event_payload: Optional[dict] = None,
     ) -> WorkflowRun:
         # A key is a non-secret client-supplied request identity. PostgreSQL
         # advisory transaction locking serializes first-use checks across
@@ -390,7 +393,8 @@ class WorkflowEngine:
             ).first()
             if previous:
                 if (previous.workflow_id != workflow_id or
-                        (previous.verification_details or {}).get("dry_run") != dry_run):
+                        (previous.verification_details or {}).get("dry_run") != dry_run or
+                        (previous.verification_details or {}).get("event_payload") != event_payload):
                     raise ValueError("Workflow idempotency key conflicts with a different request")
                 return previous
 
@@ -418,6 +422,7 @@ class WorkflowEngine:
                 "definition_digest": self._definition_digest(wf),
                 "reason": "Execution started, outcome not yet verified",
                 "execution_token": str(uuid4()), "checkpoint_protocol": 1, "recovery_count": 0,
+                "event_payload":event_payload,
             },
         )
         db.add(run)

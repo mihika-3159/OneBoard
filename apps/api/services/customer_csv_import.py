@@ -109,6 +109,9 @@ def import_customer_csv(
             "customer_ids": previous.customer_ids,
             "written": False,
         }
+    from apps.api.services.tenant_storage import _lock
+    from apps.api.services.workflow_events import customer_created
+    _lock(db,business_id)
     ids = []
     for row in parsed:
         customer = Customer(
@@ -119,6 +122,7 @@ def import_customer_csv(
         db.add(customer)
         db.flush()
         ids.append(customer.id)
+        customer_created(db,business_id,customer)
     batch = LocalCustomerImport(
         business_id=business_id, idempotency_key=idempotency_key,
         content_sha256=digest, source_name=source_name,

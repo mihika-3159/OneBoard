@@ -69,7 +69,8 @@ def upgrade():
 
 def downgrade():
     if op.get_bind().dialect.name!="postgresql": return
-    for table in tables():
+    import sqlalchemy as sa
+    for table in set(tables()) & set(sa.inspect(op.get_bind()).get_table_names()):
         op.execute(f"DROP POLICY oneboard_tenant_scope ON public.{table}")
         if table in DIRECTORY:
             op.execute(f"ALTER TABLE public.{table} NO FORCE ROW LEVEL SECURITY")

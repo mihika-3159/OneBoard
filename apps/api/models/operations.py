@@ -170,3 +170,46 @@ class SchedulerCursor(Base):
     __tablename__ = "scheduler_cursors"
     key = Column(String(60), primary_key=True)
     last_tenant = Column(String(36), nullable=False, default="")
+
+
+class WorkflowRevision(Base):
+    __tablename__ = "workflow_revisions"
+    __table_args__ = (UniqueConstraint("business_id","workflow_id","version",name="uq_workflow_revision_version"),)
+    id = Column(String(36), primary_key=True, default=lambda:str(uuid.uuid4()))
+    business_id = Column(String(36), nullable=False)
+    workflow_id = Column(String(36), nullable=False)
+    version = Column(Integer, nullable=False)
+    definition = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class WorkflowTriggerState(Base):
+    __tablename__ = "workflow_trigger_states"
+    workflow_id = Column(String(36), primary_key=True)
+    business_id = Column(String(36), nullable=False)
+    config_digest = Column(String(64), nullable=False)
+    activated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    state = Column(JSON, nullable=False, default=dict)
+
+
+class WorkflowEvent(Base):
+    __tablename__ = "workflow_events"
+    __table_args__ = (
+        UniqueConstraint("business_id","workflow_id","event_key",name="uq_workflow_event_key"),
+        Index("ix_workflow_event_due","business_id","status","next_attempt_at"),
+    )
+    id = Column(String(36), primary_key=True, default=lambda:str(uuid.uuid4()))
+    business_id = Column(String(36), nullable=False)
+    workflow_id = Column(String(36), nullable=False)
+    event_key = Column(String(64), nullable=False)
+    kind = Column(String(30), nullable=False)
+    payload = Column(JSON, nullable=False)
+    definition_digest = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False, default="queued")
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(Float, nullable=False, default=0)
+    lease_until = Column(Float, nullable=False, default=0)
+    owner_token = Column(String(36), nullable=True)
+    run_id = Column(String(36), nullable=True)
+    error = Column(String(200), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
