@@ -46,12 +46,12 @@ class AdviserScorecard(Base):
     
     # Empirical accuracy
     predictions_tracked = Column(Integer, default=0)
-    average_prediction_error_pct = Column(Float, default=0.0)
-    evidence_completeness_score = Column(Float, default=0.92) # 0.0 to 1.0
-    action_completion_rate = Column(Float, default=0.88)
-    verified_outcome_rate = Column(Float, default=0.85)
+    average_prediction_error_pct = Column(Float, nullable=True, default=None)
+    evidence_completeness_score = Column(Float, nullable=True, default=None) # Only with independently assessed evidence
+    action_completion_rate = Column(Float, nullable=True, default=None)
+    verified_outcome_rate = Column(Float, nullable=True, default=None)
     
-    last_evaluated_at = Column(DateTime, default=datetime.utcnow)
+    last_evaluated_at = Column(DateTime, nullable=True, default=None)
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"

@@ -129,6 +129,7 @@ jobs:
       - name: Verify full PostgreSQL 16 logical backup and restore in disposable CI
         env:
           ONEBOARD_CI_DISPOSABLE_RESTORE: "1"
+          ONEBOARD_CI_ENCRYPTED_RESTORE: "1"
         run: |
           # Runner packages can omit PG16. Use the already-pulled official
           # postgres:16 service image for both dump and restore. No external
@@ -137,7 +138,7 @@ jobs:
           for command in pg_dump pg_restore; do
             cat > "$RUNNER_TEMP/oneboard-pg16-client/$command" <<'WRAPPER'
           #!/bin/sh
-          exec docker run --rm --pull never --network host --volume /tmp:/tmp --env PGPASSWORD --entrypoint "$(basename "$0")" postgres:16 "$@"
+          exec docker run --rm --pull never --network host --volume /tmp:/tmp --env PGPASSWORD --env PGHOST --env PGPORT --env PGUSER --env PGDATABASE --env PGSSLMODE --entrypoint "$(basename "$0")" postgres:16 "$@"
           WRAPPER
             chmod 700 "$RUNNER_TEMP/oneboard-pg16-client/$command"
           done
@@ -145,3 +146,8 @@ jobs:
           pg_dump --version
           pg_restore --version
           python scripts/verify_postgres_restore.py
+          # Test the separately protected age encryption/decryption path on
+          # disposable PostgreSQL and an ephemeral, private CI-only key.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age
+          python scripts/verify_encrypted_pg_restore.py

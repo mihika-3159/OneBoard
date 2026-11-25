@@ -199,6 +199,12 @@ export const api = {
     return request<DashboardMetrics>('/business/metrics');
   },
 
+  getOperationsOverview: async (): Promise<any> => {
+    // Real tenant-owned commitments, customers and leads.
+    // The demo CRM adapter intentionally remains unavailable to real tenants.
+    return request<any>('/business/operations');
+  },
+
   resetDemo: async (): Promise<any> => {
     return request<any>('/business/seed-demo', { method: 'POST' });
   },
@@ -488,8 +494,8 @@ export const api = {
     });
   },
 
-  getCRMContacts: async (): Promise<any> => {
-    return request<any>('/integrations/crm/contacts');
+  getCRMContacts: async (): Promise<{ is_simulated: boolean; source: string; contacts: any[] }> => {
+    return request<{ is_simulated: boolean; source: string; contacts: any[] }>('/integrations/crm/contacts');
   },
 
   getFinanceLedger: async (): Promise<any> => {

@@ -31,7 +31,7 @@ class Customer(Base):
     mrr = Column(Float, default=0.0)
     status = Column(String(50), default="active") # active, onboarding, churn_risk, churned
     contract_price = Column(Float, nullable=True) # Specific contractual custom price if applicable
-    health_score = Column(Integer, default=85) # 0 to 100
+    health_score = Column(Integer, nullable=True, default=None) # Unknown until evidence-backed
     last_contact_at = Column(DateTime, nullable=True)
     custom_notes = Column(Text, nullable=True)
     

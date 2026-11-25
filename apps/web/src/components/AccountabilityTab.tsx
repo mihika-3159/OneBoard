@@ -18,8 +18,9 @@ export const AccountabilityTab: React.FC = () => {
   const [selectedDecision, setSelectedDecision] = useState<DecisionRecord | null>(null);
 
   // Outcome Verification Form
-  const [actualVal, setActualVal] = useState<number>(14);
-  const [outcomeNotes, setOutcomeNotes] = useState('Observed 14 qualified leads from developer newsletter sponsorship.');
+  const [actualVal, setActualVal] = useState<string>('');
+  const [outcomeNotes, setOutcomeNotes] = useState('');
+  const [outcomeError, setOutcomeError] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
 
   useEffect(() => {
@@ -40,12 +41,13 @@ export const AccountabilityTab: React.FC = () => {
   };
 
   const handleVerify = async () => {
-    if (!selectedDecision) return;
+    if (!selectedDecision || !selectedDecision.expected_outcomes?.[0] || !actualVal.trim() || !Number.isFinite(Number(actualVal))) return;
+    setOutcomeError(null);
     setIsVerifying(true);
     try {
       await api.verifyOutcome({
         decision_id: selectedDecision.id,
-        metric_name: selectedDecision.expected_outcomes?.[0]?.metric || 'Qualified Leads',
+        metric_name: selectedDecision.expected_outcomes[0].metric,
         actual_value: Number(actualVal),
         notes: outcomeNotes,
       });
@@ -53,7 +55,7 @@ export const AccountabilityTab: React.FC = () => {
       const updated = (await api.getDecisions()).find((d) => d.id === selectedDecision.id);
       if (updated) setSelectedDecision(updated);
     } catch (e) {
-      console.error('Outcome verification failed', e);
+      setOutcomeError(e instanceof Error ? e.message : 'Recording the observation failed');
     } finally {
       setIsVerifying(false);
     }
@@ -75,7 +77,7 @@ export const AccountabilityTab: React.FC = () => {
 
         <div className="flex items-center gap-2 text-xs font-mono text-purple-400 bg-purple-500/10 px-3 py-1.5 rounded-lg border border-purple-500/20">
           <ShieldCheck className="w-4 h-4" />
-          <span>Immutable Closed-Loop Verification</span>
+          <span>Founder-recorded outcome tracking</span>
         </div>
       </div>
 
@@ -83,9 +85,9 @@ export const AccountabilityTab: React.FC = () => {
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-            Adviser Empirical Performance Track Record ({scorecards.length} Council Roles)
+            Adviser Record Summaries ({scorecards.length} Council Roles)
           </h2>
-          <span className="text-[11px] text-slate-500">Evaluated on empirical outcome fidelity, not model self-rating</span>
+          <span className="text-[11px] text-slate-500">Scores require independent evidence; no automatic credibility percentages</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -102,12 +104,12 @@ export const AccountabilityTab: React.FC = () => {
                 <div className="text-right">
                   <span
                     className={`font-mono font-semibold px-2 py-0.5 rounded text-[11px] ${
-                      sc.average_prediction_error_pct > 25
+                      (sc.average_prediction_error_pct ?? 0) > 25
                         ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                         : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                     }`}
                   >
-                    {sc.average_prediction_error_pct > 0 ? `${sc.average_prediction_error_pct}% Err` : '9.2% Err'}
+                    {sc.average_prediction_error_pct !== null ? `${sc.average_prediction_error_pct}% recorded error (unverified)` : 'Unverified'}
                   </span>
                 </div>
               </div>
@@ -115,15 +117,15 @@ export const AccountabilityTab: React.FC = () => {
               <div className="grid grid-cols-3 gap-1 pt-1 border-t border-slate-800 text-[10px] text-slate-400">
                 <div>
                   <span className="block text-slate-500">Predictions</span>
-                  <span className="font-mono text-slate-300">{sc.predictions_tracked || 1} tracked</span>
+                  <span className="font-mono text-slate-300">{sc.predictions_tracked} recorded</span>
                 </div>
                 <div>
                   <span className="block text-slate-500">Evidence</span>
-                  <span className="font-mono text-slate-300">{sc.evidence_completeness_score}%</span>
+                  <span className="font-mono text-slate-300">{sc.evidence_completeness_score !== null ? `${sc.evidence_completeness_score}% (unverified)` : 'Not assessed'}</span>
                 </div>
                 <div>
                   <span className="block text-slate-500">Completion</span>
-                  <span className="font-mono text-slate-300">{sc.action_completion_rate}%</span>
+                  <span className="font-mono text-slate-300">{sc.action_completion_rate !== null ? `${sc.action_completion_rate}% (unverified)` : 'Not assessed'}</span>
                 </div>
               </div>
             </div>
@@ -161,8 +163,8 @@ export const AccountabilityTab: React.FC = () => {
                 </div>
                 <div className="text-[11px] text-slate-400 line-clamp-2 mt-1">{d.business_context}</div>
                 <div className="text-[10px] text-slate-500 mt-2 font-mono flex items-center justify-between">
-                  <span>Advisers: {d.advisers_consulted?.length || 3}</span>
-                  <span className="text-indigo-400">Target: {d.expected_outcomes?.[0]?.predicted_value || 50}</span>
+                  <span>Advisers: {d.advisers_consulted?.length ?? 0}</span>
+                  <span className="text-indigo-400">Target: {d.expected_outcomes?.[0]?.predicted_value ?? 'Not recorded'}</span>
                 </div>
               </div>
             ))}
@@ -191,30 +193,30 @@ export const AccountabilityTab: React.FC = () => {
                   <div className="p-3 rounded-lg bg-indigo-950/20 border border-indigo-500/30">
                     <span className="text-slate-400 block text-[11px]">Original Prediction</span>
                     <span className="text-xl font-bold font-mono text-indigo-300">
-                      {selectedDecision.expected_outcomes?.[0]?.predicted_value || 50}
+                      {selectedDecision.expected_outcomes?.[0]?.predicted_value ?? 'Not recorded'}
                     </span>
                     <span className="text-[10px] text-slate-400 block mt-0.5">
-                      Metric: {selectedDecision.expected_outcomes?.[0]?.metric || 'Qualified Leads'}
+                      Metric: {selectedDecision.expected_outcomes?.[0]?.metric ?? 'Not recorded'}
                     </span>
                   </div>
 
                   <div className="p-3 rounded-lg bg-purple-950/20 border border-purple-500/30">
                     <span className="text-slate-400 block text-[11px]">Observed Actual</span>
                     <span className="text-xl font-bold font-mono text-purple-300">
-                      {selectedDecision.actual_outcomes?.[0]?.actual_value ?? actualVal}
+                      {selectedDecision.actual_outcomes?.[selectedDecision.actual_outcomes.length - 1]?.actual_value ?? 'Not recorded'}
                     </span>
                     <span className="text-[10px] text-slate-400 block mt-0.5">
-                      Empirically verified
+                      Founder-reported observation, not independently verified
                     </span>
                   </div>
 
                   <div className="p-3 rounded-lg bg-rose-950/20 border border-rose-500/30">
                     <span className="text-slate-400 block text-[11px]">Prediction Variance</span>
                     <span className="text-xl font-bold font-mono text-rose-400">
-                      {selectedDecision.actual_outcomes?.[0]?.percentage_error ?? 72.0}%
+                      {selectedDecision.actual_outcomes?.[selectedDecision.actual_outcomes.length - 1]?.percentage_error != null ? `${selectedDecision.actual_outcomes[selectedDecision.actual_outcomes.length - 1].percentage_error}%` : 'Unavailable'}
                     </span>
                     <span className="text-[10px] text-rose-300/80 block mt-0.5">
-                      Absolute Error: {selectedDecision.actual_outcomes?.[0]?.absolute_error ?? 36}
+                      Absolute Error: {selectedDecision.actual_outcomes?.[selectedDecision.actual_outcomes.length - 1]?.absolute_error ?? 'Unavailable'}
                     </span>
                   </div>
                 </div>
@@ -256,7 +258,7 @@ export const AccountabilityTab: React.FC = () => {
                       </div>
                     ))
                   ) : (
-                    <span className="text-[11px] text-slate-500">Unanimous council alignment.</span>
+                    <span className="text-[11px] text-slate-500">No objections recorded; agreement is not verified.</span>
                   )}
                 </div>
               </div>
@@ -266,7 +268,7 @@ export const AccountabilityTab: React.FC = () => {
                 <div className="p-4 rounded-xl bg-slate-900 border border-indigo-500/30 space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="font-bold text-white">Record Observed Business Outcome</span>
-                    <span className="text-[11px] text-slate-400">Updates scorecards empirically</span>
+                    <span className="text-[11px] text-slate-400">Does not independently verify outcomes or update scorecards</span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
@@ -274,12 +276,12 @@ export const AccountabilityTab: React.FC = () => {
                       <input
                         type="number"
                         value={actualVal}
-                        onChange={(e) => setActualVal(Number(e.target.value))}
+                        onChange={(e) => setActualVal(e.target.value)}
                         className="w-full px-3 py-2 bg-slate-800 text-white rounded-lg border border-slate-700 font-mono"
                       />
                     </div>
                     <div>
-                      <label className="text-slate-400 block mb-1">Audit Notes / Cause</label>
+                      <label className="text-slate-400 block mb-1">Unverified source notes / cause</label>
                       <input
                         type="text"
                         value={outcomeNotes}
@@ -288,14 +290,15 @@ export const AccountabilityTab: React.FC = () => {
                       />
                     </div>
                   </div>
+                  {outcomeError && <p role="alert" className="text-xs text-rose-300">{outcomeError}</p>}
                   <div className="flex justify-end">
                     <button
                       onClick={handleVerify}
-                      disabled={isVerifying}
+                      disabled={isVerifying || !selectedDecision.expected_outcomes?.length || !actualVal.trim() || !Number.isFinite(Number(actualVal))}
                       className="px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white font-semibold rounded-xl transition flex items-center gap-1.5 shadow-md shadow-purple-600/20"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      Commit Outcome & Update Scorecards
+                      Record Unverified Outcome
                     </button>
                   </div>
                 </div>

@@ -87,11 +87,12 @@ export interface AdviserScorecard {
   approved_recommendations: number;
   overridden_recommendations: number;
   predictions_tracked: number;
-  average_prediction_error_pct: number;
-  evidence_completeness_score: number;
-  action_completion_rate: number;
-  verified_outcome_rate: number;
-  last_evaluated: string;
+  average_prediction_error_pct: number | null;
+  evidence_completeness_score: number | null;
+  action_completion_rate: number | null;
+  verified_outcome_rate: number | null;
+  last_evaluated: string | null;
+  verification_status?: string;
 }
 
 export interface DecisionRecord {
@@ -104,8 +105,9 @@ export interface DecisionRecord {
   dissenting_opinions: any[];
   founder_decision: string;
   expected_outcomes: { metric: string; predicted_value: number; timeframe_days: number }[];
-  actual_outcomes: { metric: string; predicted_value: number; actual_value: number; absolute_error: number; percentage_error: number; verified_at: string; notes?: string }[];
+  actual_outcomes: { metric: string; predicted_value: number; actual_value: number; absolute_error: number; percentage_error: number | null; recorded_at?: string; verified_at?: string; source?: string; independently_verified?: boolean; notes?: string }[];
   outcome_verified: boolean;
+  outcome_data_quality?: 'fictional_demo' | 'founder_reported_unverified';
   outcome_notes?: string;
   created_at: string;
 }

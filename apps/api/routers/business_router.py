@@ -7,7 +7,7 @@ from apps.api.core.database import get_db
 from apps.api.services.tenant_resource_budget import consume_tenant_budget
 from apps.api.core.auth import get_current_user, require_founder_role
 from apps.api.models.business import Business, User
-from apps.api.models.entities import Customer, Product, Invoice, Expense
+from apps.api.models.entities import Customer, Product, Invoice, Expense, Commitment, Lead
 from apps.api.models.goals_tasks import Goal, Task
 from apps.api.services.seed_data import seed_northstar_studio, DEMO_BUSINESS_ID
 from apps.api.services.financial_metrics import calculate_business_financials
@@ -106,6 +106,60 @@ def reconcile_financial_records(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/operations")
+def get_operations_overview(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Actual tenant-owned operations. Never fabricate client counts or deadlines."""
+    business_id = current_user.business_id
+    biz = db.query(Business).filter(Business.id == business_id).first()
+    if biz is None:
+        raise HTTPException(status_code=404, detail="Business not found")
+    max_rows = 100
+    commitments = db.query(Commitment).filter(
+        Commitment.business_id == business_id
+    ).order_by(Commitment.deadline.asc(), Commitment.id.asc()).limit(max_rows + 1).all()
+    customers = db.query(Customer).filter(
+        Customer.business_id == business_id
+    ).order_by(Customer.created_at.desc(), Customer.id.asc()).limit(max_rows + 1).all()
+    leads = db.query(Lead).filter(
+        Lead.business_id == business_id
+    ).order_by(Lead.created_at.desc(), Lead.id.asc()).limit(max_rows + 1).all()
+    return {
+        "source": "tenant_application_records_unverified",
+        "is_demo": bool(settings.ONEBOARD_DEMO_MODE and business_id == DEMO_BUSINESS_ID),
+        "currency": biz.currency or "USD",
+        "limits": {"per_category": max_rows, "truncated": {
+            "commitments": len(commitments) > max_rows,
+            "customers": len(customers) > max_rows,
+            "leads": len(leads) > max_rows,
+        }},
+        "counts": {
+            "commitments": db.query(Commitment).filter(Commitment.business_id == business_id).count(),
+            "customers": db.query(Customer).filter(Customer.business_id == business_id).count(),
+            "leads": db.query(Lead).filter(Lead.business_id == business_id).count(),
+        },
+        "commitments": [{
+            "id": c.id, "title": c.title, "counterparty": c.counterparty,
+            "description": c.description, "deadline": c.deadline.isoformat(),
+            "status": c.status, "risk_level": c.risk_level,
+            "evidence_source": c.evidence_source,
+        } for c in commitments[:max_rows]],
+        "customers": [{
+            "id": c.id, "name": c.name, "company": c.company, "tier": c.tier,
+            "mrr": c.mrr, "status": c.status,
+            # A legacy hard-coded health_score default is not source-backed.
+            "health_score": None,
+        } for c in customers[:max_rows]],
+        "leads": [{
+            "id": l.id, "name": l.name, "company": l.company,
+            "pipeline_stage": l.pipeline_stage, "source": l.source,
+            "estimated_value": l.estimated_value,
+        } for l in leads[:max_rows]],
+    }
 
 
 @router.get("/metrics")

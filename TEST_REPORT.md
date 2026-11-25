@@ -841,3 +841,44 @@ action was used.
 **Exact-head caution:** this report-only commit changes the PR SHA and
 must pass all five applicable workflows again before any further batch
 can begin. Keep PR #8 draft, unmerged and Level 3 release NO-GO.
+
+
+## 25 November 2026: Batch A correctness, truthful UI, outcome provenance and encrypted restore
+
+**Strict batch-start gate:** prior PR #8 SHA
+3bc4d70237e0e744e9278ecacad8a5d4b2cb5763 had all FIVE
+applicable workflows completed/success. Work remained on the draft
+fix/p0-auth-tenant-isolation branch.
+
+- Fixed encrypted operator restore drill's stale revision requirement
+  from Alembic 008 to current 009. Added CI-only ephemeral age key,
+  encrypted PostgreSQL custom dump, real decrypt/pg_restore into a
+  new local scratch database, schema-head verification and cleanup.
+  Synthetic CI is NOT offsite disaster recovery.
+- Fixed duplicate execution from Workflow Studio approval handler:
+  it now displays the already resumed run returned by the approval API
+  and never triggers a fresh executeWorkflow call.
+- Replaced static Operations commitments, customer/pipeline counts,
+  fake deadline claims and hard-coded customer details with
+  authenticated tenant-owned /api/business/operations results.
+  The legacy mock CRM response remains an object with a contacts
+  list and is never reused for real workspace operations.
+- Removed false outcome-verification claims and scorecard increments
+  from founder-supplied observations, requiring an exact prediction
+  metric, finite value, bounded history and explicit
+  founder_reported_unverified provenance. Historical unverified
+  outcomes cannot advertise independent verification to real users.
+- Removed fabricated adviser performance, confidence and customer
+  health defaults, and removed UI placeholders such as 9.2% error,
+  72% prediction error, 50 qualified leads and at least one tracked
+  prediction. Unknown performance is explicitly unknown.
+- Added adversarial data-boundary and no-fabrication tests, UI
+  execution invariants, and a Playwright new-founder real Operations
+  empty-state test. See docs/BATCH_A_CORRECTNESS.md.
+
+**CI for the exact Batch A commit:** PENDING. Re-run all five workflows
+and repair failures rather than treating the previous green commit as
+proof. No production deploy, real customer data, offsite storage, provider
+enrollment or payment used. PR remains draft and unmerged. External
+financial authenticity and independent production acceptance are open.
+
