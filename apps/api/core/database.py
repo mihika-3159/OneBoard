@@ -1,5 +1,5 @@
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import create_engine, text, event
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from apps.api.core.config import settings
 import os
 
@@ -17,6 +17,29 @@ engine = create_engine(settings.DATABASE_URL, **engine_options(settings.DATABASE
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+def scope_tenant_session(db, tenant):
+    """Pin an authenticated session to one tenant, including after commit."""
+    if not isinstance(db, Session):
+        return  # unit-test doubles do not own database connections
+    if not tenant:
+        raise ValueError("Tenant required")
+    previous = db.info.get("oneboard_tenant")
+    if previous is not None and previous != tenant:
+        raise PermissionError("Cannot switch tenant on authenticated session")
+    db.info["oneboard_tenant"] = tenant
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
+                   {"tenant": tenant})
+
+
+@event.listens_for(Session, "after_begin")
+def _restore_tenant_scope(session, transaction, connection):
+    tenant = session.info.get("oneboard_tenant")
+    if tenant and connection.dialect.name == "postgresql":
+        connection.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
+                           {"tenant": tenant})
+
 
 def get_db():
     db = SessionLocal()

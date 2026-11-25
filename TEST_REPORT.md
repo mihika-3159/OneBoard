@@ -953,3 +953,18 @@ foreign keys for document chunks, workflow runs, approvals and draft intents.
 Legacy violations are not deleted or certified; constraints apply to new
 writes. Full RLS/read isolation and external provider delivery remain open.
 Migration 010 and restore checks updated. All new CI evidence pending.
+
+
+### Batch B increment 3: scoped RLS, adversarial and browser coverage
+
+All five workflows passed on increment 1 (96825d19f27bf2a9f90ad308a77681d2f02178bb).
+Adds transaction-local tenant context after authentication, restored after
+commit/rollback, and PostgreSQL row policies for tenant-owned application
+tables. These are defense in depth for scoped requests: authentication and
+unscoped maintenance sessions are not subject to tenant filtering, and
+superusers/BYPASSRLS roles bypass PostgreSQL RLS. Deployment must verify a
+non-superuser/non-BYPASSRLS runtime role and separate maintenance privileges.
+New tests cover stale lease fencing, concurrent claims, rollback of draft
+intent, quota bytes and tenant separation, cross-tenant FK denial, restricted
+role RLS, and browser tenant outbox isolation. All new tests are unexecuted
+at authoring. No independent certification, real provider effects, or deployment.

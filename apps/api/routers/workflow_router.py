@@ -156,6 +156,20 @@ async def teach_process(
         consume_tenant_budget(db, current_user.business_id, "workflow_generate")
     return await natural_language_builder.teach_a_process(req.description, req.examples)
 
+@router.get("/outbox")
+def list_local_outbox(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from apps.api.models.operations import SideEffectOutbox
+    rows = db.query(SideEffectOutbox).filter(
+        SideEffectOutbox.business_id == current_user.business_id
+    ).order_by(SideEffectOutbox.created_at.desc()).limit(100).all()
+    return [{"id": row.id, "run_id": row.run_id, "step_id": row.step_id,
+             "kind": row.kind, "state": row.state, "delivered": False}
+            for row in rows]
+
+
 @router.get("/approvals")
 def get_pending_approvals(
     current_user: User = Depends(get_current_user),

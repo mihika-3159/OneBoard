@@ -1154,3 +1154,91 @@ def test_22_cluster_inference_slots_reject_third_and_release_on_error():
             assert first and second
     finally:
         engine.dispose()
+
+
+def test_23_postgres_lease_claim_is_exclusive_and_recovers():
+    from uuid import uuid4
+    from apps.api.services.durable_jobs import claim_job, finish_job
+    from apps.api.models.operations import ScheduledJobLease
+    engine = _engine()
+    factory = sessionmaker(bind=engine)
+    job = str(uuid4())
+    barrier = Barrier(4)
+    def attempt(_):
+        with factory() as db:
+            barrier.wait(timeout=10)
+            return claim_job(db, job, lease_seconds=10, now=100)
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            claims = list(pool.map(attempt, range(4)))
+        tokens = [token for token in claims if token]
+        assert len(tokens) == 1
+        with factory() as db:
+            recovered = claim_job(db, job, now=110)
+            assert recovered and recovered != tokens[0]
+            assert not finish_job(db, job, tokens[0], True, now=111)
+            assert finish_job(db, job, recovered, True, now=112)
+    finally:
+        with factory() as db:
+            db.query(ScheduledJobLease).filter_by(job_key=job).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_24_postgres_rejects_cross_tenant_document_reference():
+    from uuid import uuid4
+    from sqlalchemy.exc import IntegrityError
+    from apps.api.models.memory import MemoryDocument, MemoryChunk
+    engine = _engine()
+    factory = sessionmaker(bind=engine)
+    tenant, other, doc = (str(uuid4()) for _ in range(3))
+    try:
+        with factory() as db:
+            db.add(MemoryDocument(id=doc, business_id=tenant, title="Synthetic",
+                                  content_hash="a"*64))
+            db.commit()
+            db.add(MemoryChunk(document_id=doc, business_id=other, content="synthetic"))
+            with pytest.raises(IntegrityError):
+                db.commit()
+            db.rollback()
+    finally:
+        with factory() as db:
+            db.query(MemoryDocument).filter_by(id=doc).delete()
+            db.commit()
+        engine.dispose()
+
+
+def test_25_postgres_rls_scoped_reads_and_writes_with_non_superuser():
+    from uuid import uuid4
+    from sqlalchemy.exc import DBAPIError
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.memory import MemoryDocument
+    engine = _engine()
+    factory = sessionmaker(bind=engine)
+    role = "oneboard_rls_ci_" + uuid4().hex[:12]
+    a, b = str(uuid4()), str(uuid4())
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            conn.execute(text(f"GRANT SELECT, INSERT, UPDATE ON memory_documents TO {role}"))
+        with factory() as db:
+            db.add_all([MemoryDocument(business_id=t, title="Synthetic",
+                                       content_hash="a"*64) for t in (a,b)])
+            db.commit()
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            scope_tenant_session(db, a)
+            assert [row.business_id for row in db.query(MemoryDocument).all()] == [a]
+            db.add(MemoryDocument(business_id=b, title="Rejected", content_hash="b"*64))
+            with pytest.raises(DBAPIError):
+                db.flush()
+            db.rollback()
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            # SQLAlchemy transaction hook restores scope after rollback.
+            assert [row.business_id for row in db.query(MemoryDocument).all()] == [a]
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM memory_documents WHERE business_id IN (:a,:b)"), {"a":a,"b":b})
+            conn.execute(text(f"DROP OWNED BY {role}"))
+            conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()

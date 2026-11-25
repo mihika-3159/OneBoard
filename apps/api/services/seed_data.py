@@ -25,7 +25,8 @@ def seed_northstar_studio(db: Session, reset: bool = False):
         if demo_doc_ids:
             db.query(MemoryChunk).filter(MemoryChunk.document_id.in_(demo_doc_ids)).delete(synchronize_session=False)
 
-        for model in [Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
+        from apps.api.models.operations import SideEffectOutbox
+        for model in [SideEffectOutbox, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
                       Goal, Task, Project, Decision, Evidence, CouncilMeeting, AdviserScorecard,
                       MemoryDocument, EntityRelationship, MemoryConflict,
                       CustomAgent, ApprovalRequest, WorkflowRun, WorkflowDefinition, IntegrationAccount,

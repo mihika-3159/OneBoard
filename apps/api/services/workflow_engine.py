@@ -141,6 +141,8 @@ class WorkflowEngine:
             node_id = node.get("id")
             if not isinstance(node_id, str) or not node_id.strip():
                 raise ValueError("Workflow node IDs must be nonempty strings")
+            if len(node_id) > 100:
+                raise ValueError("Workflow node ID exceeds 100 characters")
             if node_id != node_id.strip():
                 raise ValueError("Workflow node IDs must not have surrounding whitespace")
             if node_id in by_id:

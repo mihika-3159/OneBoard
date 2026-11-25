@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from apps.api.core.config import settings
-from apps.api.core.database import get_db
+from apps.api.core.database import get_db, scope_tenant_session
 from apps.api.models.business import Business, BusinessMembership, LoginThrottleState, User, UserSession
 
 logger = logging.getLogger(__name__)
@@ -488,6 +488,7 @@ def get_current_user(
         if user.business_id != payload.get("biz"):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session tenant mismatch.")
         _require_active_membership(user, db)
+        scope_tenant_session(db, user.business_id)
         return user
 
     # 2. X-API-Key Header Authentication
@@ -516,6 +517,7 @@ def get_current_user(
             ).first()
         if user:
             _require_active_membership(user, db)
+            scope_tenant_session(db, user.business_id)
             return user
         raise invalid_key
 
@@ -528,6 +530,7 @@ def get_current_user(
             .first()
         )
         if demo_user:
+            scope_tenant_session(db, demo_user.business_id)
             return demo_user
 
     # 4. Fail Closed: Unauthenticated
