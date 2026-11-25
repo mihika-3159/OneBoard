@@ -1527,3 +1527,45 @@ def test_31_repeatable_read_export_excludes_concurrent_inserts(monkeypatch):
             db.query(Business).filter_by(id=tenant).delete()
             db.commit()
         engine.dispose()
+
+
+def test_32_agent_plan_and_claim_are_fenced_across_postgres_workers():
+    from uuid import uuid4
+    from sqlalchemy.orm import Session
+    from apps.api.models.business import Business
+    from apps.api.models.workflow import CustomAgent
+    from apps.api.services import agent_runtime
+    engine = _engine()
+    try:
+        with Session(engine) as db:
+            tenant=Business(name="Batch H concurrency "+str(uuid4()))
+            db.add(tenant);db.commit()
+            agent=CustomAgent(business_id=tenant.id,name="Reader",role_title="Reader",
+                              system_prompt="Review records",allowed_tools=["read_crm"],max_steps=2)
+            db.add(agent);db.commit()
+            tenant_id,agent_id=tenant.id,agent.id
+        key="batch-h-"+str(uuid4())
+        gate=Barrier(2)
+        def plan(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return agent_runtime.plan_run(db,tenant_id,agent_id,"Review",
+                    [{"agent_id":agent_id,"tool":"read_crm"}],key).id
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ids=list(pool.map(plan,range(2)))
+        assert ids[0]==ids[1]
+        gate=Barrier(2)
+        def claim(_):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return agent_runtime.claim(db,tenant_id,ids[0])[1]
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            owners=list(pool.map(claim,range(2)))
+        assert sum(owner is not None for owner in owners)==1
+        with Session(engine) as db:
+            owner=next(owner for owner in owners if owner)
+            done=agent_runtime.checkpoint(db,tenant_id,ids[0],owner,0,result={"fixture":True})
+            assert done.status=="completed" and len(done.tool_results)==1
+            assert agent_runtime.claim(db,tenant_id,ids[0])[1] is None
+    finally:
+        engine.dispose()

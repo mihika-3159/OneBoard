@@ -56,6 +56,7 @@ def member_with_forged_role_claim():
     ("/api/agents/nonexistent/toggle-status", None, False),
     ("/api/agents/nonexistent/runs", {"goal":"Read records","idempotency_key":"member-run-123","steps":[{"agent_id":"nonexistent","tool":"analyze"}]}, False),
     ("/api/agents/runs/nonexistent/advance", None, False),
+    ("/api/agents/runs/nonexistent/run-remaining", None, False),
     ("/api/agents/runs/nonexistent/cancel", None, False),
     ("/api/council/meetings/reconcile-interrupted", None, False),
     ("/api/accountability/decisions/nonexistent/forecast", {"adviser":"Finance Adviser","metric":"revenue","point":1,"lower":0,"upper":2,"confidence":0.8,"days":30}, False),

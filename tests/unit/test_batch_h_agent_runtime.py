@@ -65,3 +65,12 @@ def test_permission_change_fails_closed(setup):
     agent = db.get(CustomAgent,one)
     agent.allowed_tools = []; db.commit()
     assert asyncio.run(runtime.advance(db,a,run.id)).status == "failed"
+
+
+def test_run_remaining_advances_only_approved_checkpoints(setup):
+    db,a,_,(one,two,foreign)=setup
+    run=runtime.plan_run(db,a,one,"Review",[step(one),step(two)],"request-4")
+    result=asyncio.run(runtime.run_remaining(db,a,run.id))
+    assert result.status=="completed" and result.next_step==2
+    assert len(result.tool_results)==2
+    assert asyncio.run(runtime.run_remaining(db,a,run.id)).next_step==2

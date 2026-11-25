@@ -199,3 +199,15 @@ def cancel_agent_run(run_id: str, current_user: User = Depends(require_founder_r
     if not run:
         raise HTTPException(404, "Run unavailable")
     return agent_runtime.serialize(run)
+
+
+@router.post("/runs/{run_id}/run-remaining")
+async def run_remaining_agent_steps(run_id: str, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db), request: Request = None):
+    if not agent_runtime.get_run(db, current_user.business_id, run_id):
+        raise HTTPException(404, "Run unavailable")
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "agent_run", cost=agent_runtime.MAX_STEPS)
+    async def work():
+        run = await agent_runtime.run_remaining(db, current_user.business_id, run_id)
+        return agent_runtime.serialize(run)
+    return await stream_or_wait(request, work, provider_stream=False)

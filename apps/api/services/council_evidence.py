@@ -6,6 +6,7 @@ not that the source is true or that an inferred recommendation is correct.
 import hashlib
 import json
 from math import isfinite
+from apps.api.models.entities import Customer, Invoice, Expense, Product
 from apps.api.models.decision_evidence import Evidence
 from apps.api.models.memory import MemoryChunk, MemoryConflict, MemoryDocument
 
@@ -25,7 +26,23 @@ def evidence_inventory(db, tenant):
     for row in conflicts:
         records["conflict:" + row.id] = {"text": (row.source_a_value + " versus " + row.source_b_value)[:450],
                                        "source": "unresolved_conflict"}
+    for kind, model, attributes in RECORD_TYPES:
+        for row in db.query(model).filter_by(business_id=tenant).order_by(model.id).limit(8):
+            records[kind + ":" + row.id] = record_snapshot(kind, row, attributes)
     return records
+
+
+RECORD_TYPES = (
+    ("invoice", Invoice, ("invoice_number", "amount", "status")),
+    ("expense", Expense, ("category", "amount", "billing_period")),
+    ("product", Product, ("name", "price", "billing_interval")),
+    ("customer", Customer, ("tier", "mrr", "status")),
+)
+
+
+def record_snapshot(kind, row, attributes):
+    return {"text": json.dumps({name: getattr(row, name) for name in attributes},
+            sort_keys=True, ensure_ascii=True, default=str)[:450], "source": "tenant_" + kind}
 
 
 def current_record(db, tenant, ref):
@@ -44,6 +61,10 @@ def current_record(db, tenant, ref):
         row = db.query(MemoryConflict).filter_by(business_id=tenant,id=ident,status="unresolved").first()
         return {"text": (row.source_a_value+" versus "+row.source_b_value)[:450],
                 "source": "unresolved_conflict"} if row else None
+    for prefix, model, attributes in RECORD_TYPES:
+        if prefix == kind:
+            row = db.query(model).filter_by(business_id=tenant,id=ident).first()
+            return record_snapshot(kind,row,attributes) if row else None
     return None
 
 
@@ -138,7 +159,8 @@ def synthesis_record(result, transcript, inventory):
             return default
         arguments.append({"id": key, "adviser": usable[key]["adviser"], "quote": quote})
     permitted = {c["id"] for a in arguments for c in usable[a["id"]]["citations"]}
-    if any(c["id"] not in permitted for c in refs):
+    cited = {c["id"] for c in refs}
+    if not cited <= permitted or any(not (cited & {c["id"] for c in usable[a["id"]]["citations"]}) for a in arguments):
         return default
     conflict = any(row["source"] == "unresolved_conflict" for row in inventory.values())
     return {"status": "linked_review", "arguments": arguments, "citations": refs,

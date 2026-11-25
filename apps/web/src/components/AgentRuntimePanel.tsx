@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {api} from '../services/api';
 import {CustomAgent} from '../types';
 type Step={agent_id:string;tool:string;document_id?:string};
@@ -7,6 +7,14 @@ export function AgentRuntimePanel({agents,selectedAgent}:{agents:CustomAgent[];s
   const [steps,setSteps]=useState<Step[]>([]);
   const [runs,setRuns]=useState<any[]>([]);
   const [busy,setBusy]=useState(false);
+  const active=useRef<AbortController|null>(null);
+  useEffect(()=>()=>active.current?.abort(),[]);
+  async function runAll(id:string){
+    if(active.current)return;
+    const controller=new AbortController();active.current=controller;
+    await act(()=>api.runRemainingAgentSteps(id,controller.signal));
+    active.current=null;
+  }
   const [error,setError]=useState('');
   const [key,setKey]=useState(()=>crypto.randomUUID());
   async function refresh(){try{setRuns(await api.getAgentRuns())}catch(e){setError(e instanceof Error?e.message:'Unable to load runs')}}
@@ -35,7 +43,8 @@ export function AgentRuntimePanel({agents,selectedAgent}:{agents:CustomAgent[];s
       <div>{run.goal} · <strong>{run.status}</strong> · {run.next_step}/{run.steps} steps</div>
       <div className="flex gap-3">{['ready','running','recoverable'].includes(run.status)&&<>
         <button disabled={busy} onClick={()=>void act(()=>api.advanceAgentRun(run.id))}>Advance or recover checkpoint</button>
-        <button onClick={()=>void act(()=>api.cancelAgentRun(run.id))}>Cancel run</button></>}</div>
+        <button disabled={busy} onClick={()=>void runAll(run.id)}>Run remaining approved steps</button>
+        <button onClick={()=>{active.current?.abort();void act(()=>api.cancelAgentRun(run.id))}}>Cancel run</button></>}</div>
       <details><summary>Recorded checkpoint results</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify({results:run.results,errors:run.errors},null,2)}</pre></details>
     </article>)}
   </section>

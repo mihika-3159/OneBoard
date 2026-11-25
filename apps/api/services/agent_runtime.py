@@ -229,10 +229,10 @@ async def execute_step(db, tenant, run, step, agent):
         handoffs.append(item)
     with inference_tenant(tenant):
         response = await ollama_gateway.chat_complete(
-            messages=[{"role": "user", "content": quoted_data("goal", run.goal, 2000) + "\n" +
-                       quoted_data("own_checkpoints", json.dumps(visible, default=str), 3000) + "\n" +
-                       quoted_data("handoff", json.dumps(handoffs, default=str), 2000)}],
-            system_prompt=quoted_data("agent_config", agent.system_prompt, 1500) + " " + DATA_BOUNDARY,
+            messages=[{"role": "user", "content": quoted_data("goal", run.goal, 1500) + "\n" +
+                       quoted_data("own_checkpoints", json.dumps(visible, default=str), 1800) + "\n" +
+                       quoted_data("handoff", json.dumps(handoffs, default=str), 1200)}],
+            system_prompt=quoted_data("agent_config", agent.system_prompt, 1000) + " " + DATA_BOUNDARY,
             model=agent.selected_model)
     if response.get("simulated") or response.get("output_limit_reached") or not response.get("content"):
         raise ValueError("No complete genuine model result")
@@ -264,3 +264,16 @@ async def advance(db, tenant, run_id):
     except Exception:
         db.rollback()
         return checkpoint(db, tenant, run_id, owner, index, error="Step failed or permission changed")
+
+
+async def run_remaining(db, tenant, run_id):
+    """Advance only the persisted founder plan; do not spin on another lease."""
+    run = get_run(db, tenant, run_id)
+    for _ in range(MAX_STEPS):
+        if not run or run.status in TERMINAL:
+            break
+        before = run.next_step
+        run = await advance(db, tenant, run_id)
+        if not run or run.status in TERMINAL or run.next_step == before:
+            break
+    return run

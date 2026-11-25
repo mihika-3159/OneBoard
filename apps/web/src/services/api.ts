@@ -445,6 +445,8 @@ export const api = {
     request<any>(`/agents/${agentId}/runs`, {method:'POST',body:JSON.stringify(payload)}),
   advanceAgentRun: async (runId: string): Promise<any> =>
     request<any>(`/agents/runs/${runId}/advance`, {method:'POST'}),
+  runRemainingAgentSteps: async (runId: string, signal: AbortSignal): Promise<any> =>
+    api.streamInference(`/agents/runs/${runId}/run-remaining`, undefined, signal, ()=>{}),
   cancelAgentRun: async (runId: string): Promise<any> =>
     request<any>(`/agents/runs/${runId}/cancel`, {method:'POST'}),
   reconcileCouncil: async (): Promise<any> => request<any>('/council/meetings/reconcile-interrupted',{method:'POST'}),

@@ -44,6 +44,7 @@ FOUNDER_MUTATIONS = {
     "/api/agents/{agent_id}/toggle-status",
     "/api/agents/{agent_id}/runs",
     "/api/agents/runs/{run_id}/advance",
+    "/api/agents/runs/{run_id}/run-remaining",
     "/api/agents/runs/{run_id}/cancel",
     "/api/council/meetings/reconcile-interrupted",
     "/api/accountability/decisions/{decision_id}/forecast",
