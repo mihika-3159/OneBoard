@@ -116,7 +116,9 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
                     rows=by_invoice[invoice.id]
                     if any(r.base_currency!=business.currency for r in rows):raise ValueError("Ledger currency mismatch")
                     overdue_total += _money(major(receivable(rows),business.currency),"invoice.balance")
-                else:overdue_total += _money(invoice.amount, "invoice.amount")
+                else:
+                    from apps.api.services.finance_ledger import legacy_balance
+                    overdue_total += _money(legacy_balance(db,business_id,invoice), "invoice.amount")
             except ValueError:
                 issues.append(f"invalid_overdue_invoice_amount:{invoice.id}")
 

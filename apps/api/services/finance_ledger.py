@@ -104,7 +104,20 @@ def invoice_balance(db,tenant,invoice):
         base=rows[0].base_currency
         if any(r.base_currency!=base for r in rows):raise ValueError("Invoice currency history is inconsistent")
         return Decimal(major(receivable(rows),base))
-    return decimal_value(invoice.amount)
+    return legacy_balance(db,tenant,invoice)
+
+
+def legacy_balance(db,tenant,invoice):
+    amount=decimal_value(invoice.amount)
+    if amount<0:raise ValueError("invoice.amount must be nonnegative")
+    if invoice.status=="paid":return Decimal(0)
+    settlements=db.query(SettlementEvidence).filter_by(business_id=tenant,invoice_id=invoice.id).all()
+    if not settlements:return amount
+    biz=workspace(db,tenant)
+    if any(r.base_currency!=biz.currency for r in settlements):raise ValueError("Legacy settlement currency mismatch")
+    paid=sum((decimal_value(r.base_amount) for r in settlements),Decimal(0))
+    if paid<0 or paid>amount:raise ValueError("Legacy settlement exceeds invoice amount")
+    return amount-paid
 
 def post(db,tenant,actor,*,reference,kind,amount,currency,fx_rate,fx_source,booked_on,evidence_text,invoice_id=None,related_entry_id=None,commit=True):
     if kind not in ACCOUNTS:raise ValueError("Unsupported journal transaction")
@@ -132,8 +145,10 @@ def post(db,tenant,actor,*,reference,kind,amount,currency,fx_rate,fx_source,book
         entries=invoice_entries(db,tenant,invoice_id)
         if kind in RECOGNITION:
             if entries or invoice.status=="paid" or related_entry_id:raise ValueError("Invoice already recognized or historically paid")
-            if db.query(SettlementEvidence.id).filter_by(business_id=tenant,invoice_id=invoice_id).first():raise ValueError("Legacy settlement history requires explicit migration before ledger enrollment")
-            if currency!=base or converted!=minor(invoice.amount,base):raise ValueError("Recognition must equal recorded base invoice amount")
+            legacy=db.query(SettlementEvidence.id).filter_by(business_id=tenant,invoice_id=invoice_id).first()
+            if legacy and kind!="opening_invoice":raise ValueError("Legacy settlement history requires opening-balance recognition")
+            target=legacy_balance(db,tenant,invoice) if kind=="opening_invoice" else decimal_value(invoice.amount)
+            if currency!=base or converted!=minor(target,base):raise ValueError("Recognition must equal recorded outstanding base invoice amount")
         else:
             if not entries or not any(r.kind in RECOGNITION for r in entries):raise ValueError("Recognize the invoice first")
             if booked_on<min(r.booked_on for r in entries):raise ValueError("Transaction predates invoice recognition")
