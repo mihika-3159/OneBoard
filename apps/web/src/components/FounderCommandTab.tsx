@@ -79,7 +79,7 @@ export const FounderCommandTab: React.FC = () => {
 
         <div className="flex items-center gap-2 text-xs font-mono text-slate-400 bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-800">
           <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Gateway: Ollama (Balanced Profile: qwen2.5:7b)</span>
+          <span>Gateway: configured inference providers</span>
         </div>
       </div>
 

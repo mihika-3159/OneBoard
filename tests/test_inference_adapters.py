@@ -50,3 +50,31 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         clock[0] = 3
         self.assertIsNone(cache.get(key))
         self.assertIsNone(cache.key("a", "origin", None, payload))
+
+
+    async def test_compatible_nonstream_normalizes_validated_completion(self):
+        digest = "a" * 64
+        def handler(req):
+            if req.url.path == "/oneboard/models":
+                return httpx.Response(200, json={"models": [{"name": "m", "digest": digest}]})
+            return httpx.Response(200, json={"model": "m", "choices": [{"message": {"content": "answer"},
+                "finish_reason": "stop"}], "usage": {"prompt_tokens": 2, "completion_tokens": 1}})
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            result = await CompatibleAdapter({"m": digest}).send(client, "http://localhost:8080", "/api/chat",
+                {"model": "m", "messages": [], "options": {"num_predict": 64}}, None)
+        self.assertEqual(result.json()["provider_protocol"], "local_openai_compatible")
+        self.assertEqual(result.json()["eval_count"], 1)
+
+    def test_sidecar_verifies_artifact_and_rejects_tampering(self):
+        import hashlib
+        import tempfile
+        from pathlib import Path
+        from scripts.inference_capacity_server import verified_models
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "test.gguf"
+            path.write_bytes(b"verified")
+            digest = hashlib.sha256(b"verified").hexdigest()
+            entries = {"test": {"path": str(path), "digest": digest}}
+            self.assertEqual(verified_models(entries), [{"name": "test", "digest": "sha256:" + digest}])
+            path.write_bytes(b"tampered")
+            self.assertEqual(verified_models(entries), [])

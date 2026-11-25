@@ -13,6 +13,10 @@ class ProviderUnavailable(Exception):
     """An operator-approved provider cannot accept this request."""
 
 
+class ProviderIdentityUnavailable(ProviderUnavailable):
+    """Configured model cannot be identified."""
+
+
 class ProviderAdapter(Protocol):
     protocol: str
 
@@ -40,10 +44,14 @@ class CompatibleAdapter:
             return httpx.Response(404)
         model = payload["model"]
         if model not in self.pins:
-            raise ProviderUnavailable("Unpinned compatible model")
+            raise ProviderIdentityUnavailable("Unpinned compatible model")
         pins = await client.get(origin + "/oneboard/models", timeout=2.0)
-        if pins.status_code != 200 or not matches_pin(pins.json().get("models"), model, self.pins[model]):
-            raise ProviderUnavailable("Compatible model identity unavailable")
+        try:
+            valid = pins.status_code == 200 and matches_pin(pins.json().get("models"), model, self.pins[model])
+        except (ValueError, AttributeError, TypeError):
+            valid = False
+        if not valid:
+            raise ProviderIdentityUnavailable("Compatible model identity unavailable")
         request = {"model": model, "messages": payload["messages"],
                    "max_tokens": payload["options"]["num_predict"], "stream": emit is not None}
         if payload.get("format") == "json":
@@ -56,6 +64,8 @@ class CompatibleAdapter:
             if res.status_code != 200:
                 return res
             body = res.json()
+            if len(body.get("choices", [])) != 1:
+                raise ValueError("Unexpected compatible completion count")
             choice = body["choices"][0]
             if body.get("model") != model or choice.get("finish_reason") not in ("stop", "length"):
                 raise ValueError("Incomplete compatible response")
@@ -79,7 +89,10 @@ class CompatibleAdapter:
                 if event.get("error") or event.get("model") != model:
                     raise ValueError("Invalid compatible stream")
                 usage = event.get("usage") or usage
-                for choice in event.get("choices", []):
+                choices = event.get("choices", [])
+                if len(choices) > 1:
+                    raise ValueError("Unexpected extra completion")
+                for choice in choices:
                     if choice.get("index", 0) != 0:
                         raise ValueError("Unexpected extra completion")
                     delta = choice.get("delta", {}).get("content")

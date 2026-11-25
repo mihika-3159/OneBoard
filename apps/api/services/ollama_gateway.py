@@ -13,7 +13,7 @@ from apps.api.services.embedding_cache import EmbeddingCache
 from apps.api.services.inference_resources import has_headroom
 from apps.api.services.inference_routing import route
 from apps.api.services.inference_stream import on_text
-from apps.api.services.inference_adapters import (OllamaAdapter, CompatibleAdapter, ProviderUnavailable,
+from apps.api.services.inference_adapters import (OllamaAdapter, CompatibleAdapter, ProviderUnavailable, ProviderIdentityUnavailable,
     is_remote, verify_remote_capacity)
 from apps.api.services.generation_cache import GenerationCache
 
@@ -25,7 +25,7 @@ class _CapacityExceeded(Exception):
     pass
 
 
-class _ModelIdentityMismatch(Exception):
+class _ModelIdentityMismatch(ProviderIdentityUnavailable):
     pass
 
 
@@ -69,12 +69,22 @@ class OllamaGateway:
             settings.INFERENCE_MIN_FREE_MIB * 1024 * 1024, settings.INFERENCE_MAX_LOAD_PER_CPU
         ):
             raise _CapacityExceeded()
+        published = False
+        emit = on_text.get()
+        async def guarded_emit(fragment):
+            nonlocal published
+            published = True
+            await emit(fragment)
         async def operation(origin):
             return await self._post_to_origin(origin, path, payload, timeout)
 
         origins = tuple(origin for origin, adapter in self._adapters.items()
                         if path == "/api/chat" or isinstance(adapter, OllamaAdapter))
-        return await route(operation, origins, timeout)
+        token = on_text.set(guarded_emit if emit is not None else None)
+        try:
+            return await route(operation, origins, timeout, can_failover=lambda: not published)
+        finally:
+            on_text.reset(token)
 
     async def _post_to_origin(self, origin, path, payload, timeout):
         with self._circuits[origin].attempt() as record_failure:
@@ -86,15 +96,26 @@ class OllamaGateway:
                 if settings.OLLAMA_MODEL_DIGESTS and isinstance(adapter, OllamaAdapter):
                     await asyncio.wait_for(self._verify_model(client, origin, payload["model"]), timeout=3.0)
 
+                published = False
+                emit = on_text.get()
+                async def guarded_emit(fragment):
+                    nonlocal published
+                    published = True
+                    await emit(fragment)
                 async def send():
                     await charge_provider_attempt(payload)
-                    return await adapter.send(client, origin, path, payload, on_text.get())
+                    try:
+                        return await adapter.send(client, origin, path, payload, guarded_emit if emit is not None else None)
+                    except httpx.TransportError as exc:
+                        if published:
+                            raise ValueError("Interrupted provider response") from exc
+                        raise
 
                 try:
                     response = await asyncio.wait_for(
                         retry_provider(
                             send,
-                            lambda reply: reply.status_code in (502, 503, 504),
+                            lambda reply: not published and reply.status_code in (502, 503, 504),
                             (httpx.ConnectError, httpx.ConnectTimeout),
                         ),
                         timeout=timeout,
@@ -103,6 +124,14 @@ class OllamaGateway:
                     record_failure(True)
                     raise
                 record_failure(response.status_code >= 500)
+                if response.status_code == 200:
+                    try:
+                        body = response.json()
+                        if isinstance(body, dict):
+                            body["provider_protocol"] = "remote_ollama" if is_remote(origin) else adapter.protocol
+                            return httpx.Response(200, json=body)
+                    except (ValueError, TypeError):
+                        pass
                 return response
 
     async def _verify_model(self, client, origin, model):
@@ -122,6 +151,8 @@ class OllamaGateway:
     async def check_health(self) -> Dict[str, Any]:
         """Check if local Ollama daemon is reachable and list downloaded models."""
         start = time.time()
+        if len(self._adapters) > 1 or (settings.ONEBOARD_PRODUCTION_MODE and is_remote(self.base_url)):
+            return await self._configured_health(start)
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
                 res = await client.get(f"{self.base_url}/api/tags")
@@ -161,6 +192,41 @@ class OllamaGateway:
             "offline_mode": True,
             "message": "Ollama is offline or not installed. Only a clearly labeled deterministic fallback is available; no model has generated an answer."
         }
+
+    async def _configured_health(self, start):
+        """Report only reachable, admitted and verified configured model providers."""
+        async def probe(origin, adapter):
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    if settings.ONEBOARD_PRODUCTION_MODE and is_remote(origin):
+                        await verify_remote_capacity(client, origin, settings.INFERENCE_MIN_FREE_MIB * 1024 * 1024,
+                            settings.INFERENCE_MAX_LOAD_PER_CPU, settings.INFERENCE_REMOTE_ACCELERATOR_MIN_MIB * 1024 * 1024)
+                    compatible = isinstance(adapter, CompatibleAdapter)
+                    response = await client.get(origin + ("/oneboard/models" if compatible else "/api/tags"))
+                    response.raise_for_status()
+                    models = response.json().get("models", [])
+                    pins = adapter.pins if compatible else settings.OLLAMA_MODEL_DIGESTS
+                    available = {m.get("name") for m in models if isinstance(m, dict)
+                                 and isinstance(m.get("name"), str) and m.get("name")
+                                 and (not pins or matches_pin(models, m["name"], pins.get(m["name"])))}
+                    if compatible:
+                        catalog = await client.get(origin + "/v1/models")
+                        catalog.raise_for_status()
+                        available &= {m.get("id") for m in catalog.json().get("data", []) if isinstance(m, dict)}
+                    return {"protocol": "remote_ollama" if is_remote(origin) else adapter.protocol,
+                            "status": "connected", "models": sorted(available)}
+            except Exception:
+                return {"protocol": "remote_ollama" if is_remote(origin) else adapter.protocol,
+                        "status": "unavailable", "models": []}
+        providers = await asyncio.gather(*(probe(origin, adapter) for origin, adapter in self._adapters.items()))
+        available = sorted({model for provider in providers for model in provider["models"]})
+        connected = any(provider["status"] == "connected" for provider in providers)
+        return {"status": "connected" if connected else "offline", "base_url": self.base_url,
+                "latency_ms": int((time.time() - start) * 1000), "available_models": available,
+                "inference_available": bool(available), "offline_mode": not connected,
+                "message": None if available else "No admitted, verified model is available.",
+                "active_profile": self.active_profile, "profile_details": settings.MODEL_PROFILES.get(self.active_profile, {}),
+                "providers": providers}
 
     def get_model_for_task(self, task_type: str = "chat", profile: Optional[str] = None) -> str:
         # Request-scoped profiles prevent one tenant from changing another's model.
@@ -274,12 +340,12 @@ class OllamaGateway:
                         reason = "model_unavailable"
                     else:
                         reason = "provider_http_error"
+                except ProviderIdentityUnavailable:
+                    reason = "model_identity_unverified"
                 except (_CapacityExceeded, ProviderUnavailable):
                     reason = "capacity_exceeded"
                 except TokenBudgetExceeded:
                     reason = "token_budget_exhausted"
-                except _ModelIdentityMismatch:
-                    reason = "model_identity_unverified"
                 except CircuitOpen:
                     reason = "provider_circuit_open"
                 except (httpx.TimeoutException, asyncio.TimeoutError):

@@ -86,3 +86,26 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(frames), 1)
         self.assertNotIn("unvalidated", frames[0])
         self.assertIn('"validated": true', frames[0])
+
+
+    async def test_timeout_can_fail_over_without_replaying_partial_output(self):
+        async def slow_first(origin):
+            if origin == "first":
+                await asyncio.Future()
+            return SimpleNamespace(status_code=200)
+        result = await route(slow_first, ["first", "second"], 0.2)
+        self.assertEqual(result.status_code, 200)
+        send = AsyncMock(side_effect=[httpx.ConnectError("connection lost"), SimpleNamespace(status_code=200)])
+        with self.assertRaises(httpx.ConnectError):
+            await route(send, ["first", "second"], 1, can_failover=lambda: False)
+        self.assertEqual(send.await_count, 1)
+
+    async def test_producer_cancellation_does_not_leave_stream_open(self):
+        async def operation():
+            raise asyncio.CancelledError()
+        frames = await asyncio.wait_for(self._collect(stream_events(operation, expose_text=False)), 2)
+        self.assertIn("Generation interrupted", frames[-1])
+
+    @staticmethod
+    async def _collect(events):
+        return [frame async for frame in events]

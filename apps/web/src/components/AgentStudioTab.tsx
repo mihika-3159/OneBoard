@@ -109,7 +109,7 @@ export const AgentStudioTab: React.FC = () => {
     setIsTesting(true);
     try {
       const res = await inference.run(`/agents/${selectedAgent.id}/test`, {test_input: testInput, cache_text: cacheSandbox});
-      setTestOutput(res.output);
+      setTestOutput((res.cache_hit ? "[Cached deterministic result] " : "") + res.output);
     } catch (e) {
       console.error('Testing failed', e);
     } finally {
