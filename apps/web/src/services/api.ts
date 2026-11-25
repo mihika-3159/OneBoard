@@ -565,9 +565,14 @@ export const api = {
     });
   },
 
-  uploadDocument: async (file: File): Promise<any> => {
+  memoryDocuments: async ():Promise<any>=>request<any>('/memory/documents'),
+  retryMemoryDocument: async (id:string):Promise<any>=>request<any>(`/memory/documents/${id}/retry`,{method:'POST'}),
+  memorySource: async (id:string):Promise<any>=>request<any>(`/memory/sources/${id}`),
+  memoryFeedback: async (query:string,chunk_id:string,helpful:boolean):Promise<any>=>request<any>('/memory/feedback',{method:'POST',body:JSON.stringify({query,chunk_id,helpful})}),
+  uploadDocument: async (file: File,supersedesId?:string): Promise<any> => {
     const formData = new FormData();
     formData.append('file', file);
+    if(supersedesId)formData.append('supersedes_id',supersedesId);
     return request<any>('/memory/upload', {
       method: 'POST',
       body: formData,

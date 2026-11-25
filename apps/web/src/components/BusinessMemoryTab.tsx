@@ -19,6 +19,9 @@ export const BusinessMemoryTab: React.FC = () => {
   const [activeSubTab, setActiveSubTab] = useState<'search' | 'graph' | 'conflicts' | 'upload'>('conflicts');
   const [searchQuery, setSearchQuery] = useState('pricing for growth tier');
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [documents,setDocuments]=useState<any[]>([]),[model,setModel]=useState(''),[replacement,setReplacement]=useState(''),[fileType,setFileType]=useState(''),[sourceFilter,setSourceFilter]=useState(''),[lastQuery,setLastQuery]=useState(''),[notice,setNotice]=useState('');
+  const refreshDocuments=async()=>{try{const r=await api.memoryDocuments();setDocuments(r.documents);setModel(r.model_identity)}catch(e){setNotice(e instanceof Error?e.message:'Document status unavailable')}};
+  useEffect(()=>{void refreshDocuments();const timer=setInterval(()=>void refreshDocuments(),10000);return()=>clearInterval(timer)},[]);
   const [isSearching, setIsSearching] = useState(false);
 
   const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
@@ -50,8 +53,8 @@ export const BusinessMemoryTab: React.FC = () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     try {
-      const res = await inference.run("/memory/search", {query: searchQuery, top_k: 5});
-      setSearchResults(res.results || []);
+      const res = await inference.run("/memory/search", {query: searchQuery, top_k: 5,file_type:fileType||null,document_id:sourceFilter||null});
+      setSearchResults(res.results || []);setLastQuery(searchQuery);
     } catch (e) {
       console.error('Search failed', e);
     } finally {
@@ -81,9 +84,9 @@ export const BusinessMemoryTab: React.FC = () => {
     setIsUploading(true);
     setUploadStatus(null);
     try {
-      const data = await api.uploadDocument(uploadFile);
+      const data = await api.uploadDocument(uploadFile,replacement||undefined);
       setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks stored; semantic embeddings are indexed separately).`);
-      setUploadFile(null);
+      setUploadFile(null);setReplacement('');await refreshDocuments();
       await loadMemoryData();
     } catch (err: any) {
       setUploadStatus(`Upload failed: ${err.message}`);
@@ -95,6 +98,7 @@ export const BusinessMemoryTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {inference.indicator}
+      {notice&&<p role="status" className="text-xs">{notice}</p>}
       {/* Top Banner */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -230,14 +234,14 @@ export const BusinessMemoryTab: React.FC = () => {
               {graphData.links?.map((lnk, idx) => (
                 <div key={idx} className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-slate-200">{lnk.source}</span>
+                    <span className="font-semibold text-slate-200">{graphData.nodes.find(n=>n.id===lnk.source)?.label||lnk.source}</span>
                     <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 font-mono text-[10px]">
                       {lnk.relationship}
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
                     <ArrowRight className="w-3 h-3 text-slate-500" />
-                    <span>{lnk.target}</span>
+                    <span>{graphData.nodes.find(n=>n.id===lnk.target)?.label||lnk.target}</span>
                   </div>
                 </div>
               ))}
@@ -268,6 +272,7 @@ export const BusinessMemoryTab: React.FC = () => {
             </button>
           </div>
 
+          <div className="flex gap-2 text-xs"><select aria-label="File type filter" value={fileType} onChange={e=>setFileType(e.target.value)}><option value="">All file types</option>{["txt","md","pdf","csv","xlsx","json"].map(t=><option key={t}>{t}</option>)}</select><select aria-label="Source document filter" value={sourceFilter} onChange={e=>setSourceFilter(e.target.value)}><option value="">All current sources</option>{documents.filter(d=>d.active).map(d=><option key={d.document_id} value={d.document_id}>{d.title} (v{d.version})</option>)}</select></div>
           <div className="space-y-3">
             {searchResults.map((res, i) => (
               <div key={i} className="p-4 rounded-xl glass-panel space-y-1.5 text-xs">
@@ -279,6 +284,9 @@ export const BusinessMemoryTab: React.FC = () => {
                   <span className="font-mono text-slate-500 text-[10px]">Score: {res.score} · {res.search_strategy || 'local retrieval'}</span>
                 </div>
                 <p className="text-slate-300 leading-relaxed whitespace-pre-wrap">{res.content}</p>
+                {res.citation&&<p className="text-slate-400">Version {res.citation.version} · {res.citation.location||`Chunk ${res.citation.chunk_index+1}`} · {res.citation.offset_verified?`Extracted characters ${res.citation.char_start}–${res.citation.char_end}`:"Legacy source offset unavailable"}</p>}
+                <button onClick={async()=>{try{const source=await api.memorySource(res.chunk_id);setNotice(source.active?`Source checked: ${source.citation.title}, SHA-256 ${source.citation.chunk_sha256}`:"Source is superseded; run search again")}catch(e){setNotice(String(e))}}}>Check citation</button>
+                {["Helpful","Not helpful"].map((label,i)=><button key={label} className="ml-3" onClick={async()=>{try{await api.memoryFeedback(lastQuery,res.chunk_id,i===0);setNotice("Relevance feedback recorded for this query")}catch(e){setNotice(String(e))}}}>{label}</button>)}
               </div>
             ))}
           </div>
@@ -295,7 +303,10 @@ export const BusinessMemoryTab: React.FC = () => {
             </p>
           </div>
 
+          <div className="space-y-2"><h4 className="font-bold">Indexing progress</h4><p>Model: {model||"Unavailable"}</p><button onClick={async()=>{try{const r=await inference.run("/memory/index",{});setNotice(`${r.indexed||0} chunks indexed`);await refreshDocuments()}catch(e){setNotice(String(e))}}}>Index pending documents</button>
+          {documents.map(d=><div key={d.document_id} className="border border-slate-700 p-2 rounded"><p>{d.title} · v{d.version} · {d.active?d.status:"superseded"} · {d.indexed_chunks}/{d.total_chunks}</p>{d.error&&<p>{d.error}</p>}{d.active&&["failed","retry"].includes(d.status)&&<button onClick={async()=>{try{await api.retryMemoryDocument(d.document_id);await refreshDocuments()}catch(e){setNotice(String(e))}}}>Retry indexing</button>}</div>)}</div>
           <form onSubmit={handleFileUpload} className="space-y-3">
+            <label>Replace a source (optional)<select className="block w-full bg-slate-900" value={replacement} onChange={e=>setReplacement(e.target.value)}><option value="">Add new document</option>{documents.filter(d=>d.active).map(d=><option key={d.document_id} value={d.document_id}>{d.title} v{d.version}</option>)}</select></label>
             <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center space-y-2">
               <Upload className="w-8 h-8 text-indigo-400 mx-auto" />
               <input
@@ -304,7 +315,7 @@ export const BusinessMemoryTab: React.FC = () => {
                 onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                 className="text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer"
               />
-              <span className="block text-[11px] text-slate-500">Max size 25MB. Local parsing only.</span>
+              <span className="block text-[11px] text-slate-500">Max size 10MB. Local parsing only.</span>
             </div>
 
             {uploadStatus && (
