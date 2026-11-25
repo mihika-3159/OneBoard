@@ -155,7 +155,7 @@ export const WorkflowStudioTab: React.FC = () => {
   const handleApprovePending = async (requestId: string) => {
     try {
       // The API has ALREADY resumed the existing run during approval.
-      // Starting a second executeWorkflow() here caused duplicate actions.
+      // Starting a separate execution here would duplicate actions.
       const resolution = await api.resolveApproval(requestId, 'approve');
       if (resolution.run) setExecutionOutput(resolution.run);
       await loadApprovals();

@@ -138,7 +138,7 @@ jobs:
           for command in pg_dump pg_restore; do
             cat > "$RUNNER_TEMP/oneboard-pg16-client/$command" <<'WRAPPER'
           #!/bin/sh
-          exec docker run --rm --pull never --network host --volume /tmp:/tmp --env PGPASSWORD --env PGHOST --env PGPORT --env PGUSER --env PGDATABASE --env PGSSLMODE --entrypoint "$(basename "$0")" postgres:16 "$@"
+          exec docker run -i --rm --pull never --network host --volume /tmp:/tmp --env PGPASSWORD --env PGHOST --env PGPORT --env PGUSER --env PGDATABASE --env PGSSLMODE --entrypoint "$(basename "$0")" postgres:16 "$@"
           WRAPPER
             chmod 700 "$RUNNER_TEMP/oneboard-pg16-client/$command"
           done
