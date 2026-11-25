@@ -7,15 +7,24 @@ test('restricted PostgreSQL HTTPS browser journey and unauthorized access',async
   const pages=await Promise.all(contexts.map(c=>c.newPage()));
   const ids:string[]=[];
   for(const [i,page] of pages.entries()){
-   await page.goto('https://127.0.0.1:8443/');
+   const root=await page.goto('https://127.0.0.1:8443/');
+   expect(root?.headers()['content-security-policy']).toContain("script-src 'self'");
    await expect(page.getByText('Founder Login')).toBeVisible();
+   const blocked=await page.evaluate(()=>new Promise<boolean>(resolve=>{
+    const timer=setTimeout(()=>resolve(false),3000);
+    document.addEventListener('securitypolicyviolation',e=>{if(e.violatedDirective.startsWith('script-src')){clearTimeout(timer);resolve(true)}},{once:true});
+    const s=document.createElement('script');s.textContent='window.__oneboardInlineProbe = true';document.head.append(s);
+   }));
+   expect(blocked).toBeTruthy();
+   expect(await page.evaluate(()=>Boolean((window as any).__oneboardInlineProbe))).toBeFalsy();
    expect((await page.request.get('/api/business/metrics')).status()).toBe(401);
    await page.getByRole('button',{name:/Register/}).click();
    await page.getByLabel('Your Full Name').fill('Production CI '+i);
    await page.getByLabel('Workspace / Business Name').fill('Disposable CI '+i);
    await page.getByLabel('Founder Email').fill(randomUUID()+'@example.test');
    await page.getByLabel('Password',{exact:true}).fill('Synthetic-test-password123!');
-   await page.getByRole('button',{name:'Create Workspace & Sign In'}).click();
+   const [registration]=await Promise.all([page.waitForResponse(r=>r.url().endsWith('/api/auth/register')&&r.request().method()==='POST'),page.getByRole('button',{name:'Create Workspace & Sign In'}).click()]);
+   expect(registration.status()).toBe(201);expect(await registration.json()).not.toHaveProperty('token');
    await expect(page.getByRole('navigation',{name:'Workspace sections'})).toBeVisible();
    const me=await page.request.get('/api/auth/me');expect(me.ok()).toBeTruthy();
    ids.push((await me.json()).business.id);

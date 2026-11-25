@@ -16,6 +16,9 @@ test('founder registers, sees workspace, logs out and cannot reuse session', asy
     page.getByRole('button', { name: 'Create Workspace & Sign In' }).click(),
   ]);
   expect(registered.status()).toBe(201);
+  expect(await registered.json()).not.toHaveProperty('token');
+  expect((await page.context().cookies()).some(c=>c.name==='oneboard_session'&&c.httpOnly)).toBeTruthy();
+  expect(await page.evaluate(()=>document.cookie.includes('oneboard_session='))).toBe(false);
   // Cold-start WebKit on macOS can take several seconds to paint the shell.
   // Registration must actually succeed, and the authenticated shell must appear.
   await expect(page.getByRole('navigation',{name:'Workspace sections'})).toBeVisible({timeout:15000});

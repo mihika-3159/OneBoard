@@ -188,7 +188,7 @@ def register(
             "industry": business.industry,
             "current_cash_balance": float(business.current_cash_balance or 0)
         },
-        "token": token,
+        **({} if request.headers.get("X-OneBoard-Session-Mode") == "cookie" else {"token": token}),
         "csrf_token": csrf_token
     }
 
@@ -333,7 +333,7 @@ def login(
             "industry": business.industry if business else "B2B SaaS",
             "current_cash_balance": float(business.current_cash_balance or 0) if business else 0.0
         },
-        "token": token,
+        **({} if request.headers.get("X-OneBoard-Session-Mode") == "cookie" else {"token": token}),
         "csrf_token": csrf_token
     }
 

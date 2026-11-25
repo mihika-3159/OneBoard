@@ -91,7 +91,10 @@ app = FastAPI(
     title="OneBoard API",
     description="AI Operating System for a Company of One. Local-first executive council, visual workflows, and accountable business management.",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None if settings.ONEBOARD_PRODUCTION_MODE else "/docs",
+    redoc_url=None if settings.ONEBOARD_PRODUCTION_MODE else "/redoc",
+    openapi_url=None if settings.ONEBOARD_PRODUCTION_MODE else "/openapi.json",
 )
 
 @app.exception_handler(OperationalError)
@@ -170,8 +173,13 @@ async def security_response_headers(request, call_next):
     # Never permit browser/shared HTTP caches to retain these responses.
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
-    if settings.ONEBOARD_PRODUCTION_MODE and secure_external_request:
-        response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        # Vite emits same-origin scripts and styles. React Flow and charts use
+        # runtime style attributes, so only style-src retains unsafe-inline.
+        # API responses and static documents share a restrictive origin boundary.
+        response.headers["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        if secure_external_request:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
 
 # Minimal public health endpoint

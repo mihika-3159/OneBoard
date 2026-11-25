@@ -45,13 +45,12 @@ export class ForbiddenError extends ApiError {
   }
 }
 
-// In-memory CSRF and session token state (avoiding localStorage for tokens)
+// Browser authentication is cookie-only; the session JWT never enters application JavaScript.
 let inMemoryCsrfToken: string | null = null;
-let inMemoryBearerToken: string | null = null;
 let authEpoch=0;
 export const sessionExpiredEvent='oneboard:session-expired';
 export const connectionIssueEvent='oneboard:connection-issue';
-export function resetClientSession(){authEpoch++;inMemoryCsrfToken=null;inMemoryBearerToken=null;}
+export function resetClientSession(){authEpoch++;inMemoryCsrfToken=null;}
 
 function getCookie(name: string): string | null {
   if (typeof document === 'undefined') return null;
@@ -63,10 +62,6 @@ export function setCsrfToken(token: string | null): void {
   inMemoryCsrfToken = token;
 }
 
-export function setBearerToken(token: string | null): void {
-  inMemoryBearerToken = token;
-}
-
 // ---------------------------------------------------------------------------
 // Central HTTP Request Handler
 // ---------------------------------------------------------------------------
@@ -76,11 +71,6 @@ async function checkedResponse(path: string, options: RequestInit = {}): Promise
 
   // Send credentials (HttpOnly session cookie)
   options.credentials = 'include';
-
-  // Attach in-memory bearer token if present
-  if (inMemoryBearerToken && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${inMemoryBearerToken}`);
-  }
 
   // Attach CSRF token on state-changing requests
   const method = (options.method || 'GET').toUpperCase();
@@ -222,10 +212,10 @@ export const api = {
   login: async (email: string, password: string, mfa_code?: string): Promise<AuthResponse> => {
     const res = await request<AuthResponse>('/auth/login', {
       method: 'POST',
+      headers: {'X-OneBoard-Session-Mode':'cookie'},
       body: JSON.stringify({ email, password, mfa_code }),
     });
     if (res.csrf_token) setCsrfToken(res.csrf_token);
-    if (res.token) setBearerToken(res.token);
     return res;
   },
 
@@ -238,10 +228,10 @@ export const api = {
   }): Promise<AuthResponse> => {
     const res = await request<AuthResponse>('/auth/register', {
       method: 'POST',
+      headers: {'X-OneBoard-Session-Mode':'cookie'},
       body: JSON.stringify(payload),
     });
     if (res.csrf_token) setCsrfToken(res.csrf_token);
-    if (res.token) setBearerToken(res.token);
     return res;
   },
 
@@ -250,7 +240,6 @@ export const api = {
       await request<void>('/auth/logout', { method: 'POST' });
     } finally {
       setCsrfToken(null);
-      setBearerToken(null);
     }
   },
 
@@ -267,7 +256,7 @@ export const api = {
   securityList: (path:string) => request<any>("/auth/security"+path),
   recoverAccount: async(email:string,recovery_code:string,new_password:string) => {
     const result=await request<any>("/auth/security/recover",{method:"POST",body:JSON.stringify({email,recovery_code,new_password})});
-    setBearerToken(null);setCsrfToken(null);return result;
+    setCsrfToken(null);return result;
   },
 
   // Business & Metrics

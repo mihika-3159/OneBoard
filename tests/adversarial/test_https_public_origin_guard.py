@@ -83,3 +83,12 @@ def test_insecure_sensitive_auth_endpoint_denied_before_auth(production_scope):
     )
     assert response.status_code == 403
     assert response.headers["cache-control"] == "no-store"
+
+def test_production_csp_is_restrictive_and_applies_to_rejections(production_scope):
+    for path,code in (("/health",200),("/api/business/metrics",401)):
+        response=production_scope.get(path)
+        assert response.status_code==code
+        directives=dict((part.strip().split(None,1) for part in response.headers["content-security-policy"].split(";") if part.strip()))
+        for name,value in {"default-src":"'none'","script-src":"'self'","connect-src":"'self'","frame-ancestors":"'none'","object-src":"'none'","base-uri":"'none'","form-action":"'self'"}.items():
+            assert directives[name]==value
+        if path.startswith("/api/"):assert response.headers["cache-control"]=="no-store"

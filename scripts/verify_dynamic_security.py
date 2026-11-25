@@ -17,6 +17,7 @@ def verify(base,cert,out):
         assert response.headers.get("X-Content-Type-Options")=="nosniff",label
         assert response.headers.get("X-Frame-Options")=="DENY",label
         assert response.headers.get("Strict-Transport-Security"),label
+        assert "script-src 'self'" in response.headers.get("Content-Security-Policy",""),label
         if response.status_code==200 and response.request.url.path.startswith("/api/"):
             assert response.headers.get("Cache-Control")=="no-store",label
         checks.append({"check":label,"status":response.status_code})
