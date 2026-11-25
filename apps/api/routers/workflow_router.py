@@ -342,6 +342,8 @@ class WebhookEventRequest(BaseModel):
 
 @router.get("/{workflow_id}/versions")
 def versions(workflow_id:str,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    parent=db.query(WorkflowDefinition.id).filter_by(business_id=current_user.business_id,id=workflow_id).first()
+    if parent is None:raise HTTPException(404,"Workflow not found")
     rows=db.query(WorkflowRevision).filter_by(business_id=current_user.business_id,workflow_id=workflow_id).order_by(WorkflowRevision.version.desc()).limit(100).all()
     return [{"version":r.version,"definition":r.definition,"created_at":r.created_at} for r in rows]
 

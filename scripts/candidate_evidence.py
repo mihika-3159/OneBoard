@@ -12,7 +12,7 @@ from urllib.request import Request,urlopen
 import re
 
 REQUIRED={
- ".github/workflows/verification.yml": {"api-test-evidence","mandatory-live-test-reports","postgres-required-and-load","dependency-audit-reports","infrastructure-fault-report","measured-capacity-report"},
+ ".github/workflows/verification.yml": {"api-test-evidence","synthetic-finance-provider-review","mandatory-live-test-reports","postgres-required-and-load","dependency-audit-reports","infrastructure-fault-report","measured-capacity-report"},
  ".github/workflows/browser-e2e.yml": {"playwright-results-"+osname+"-"+browser for osname in ("ubuntu-latest","windows-latest","macos-latest") for browser in ("chromium","firefox","webkit")},
  ".github/workflows/container-verification.yml":{"container-build-identities"},
  ".github/workflows/windows-startup.yml":{"oneboard-windows-startup"},

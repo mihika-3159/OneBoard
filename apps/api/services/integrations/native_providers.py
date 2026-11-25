@@ -40,7 +40,11 @@ def native_configuration(provider,raw):
     if u.scheme!="https" or not u.hostname or u.username or u.password or u.path or u.query or u.fragment:raise ValueError("Native OAuth requires a public HTTPS origin")
     if provider=="notion" and (raw.get("notion_read_only_app") is not True or not isinstance(raw.get("native_scope"),str) or not 1<=len(raw["native_scope"])<=2000):
         raise ValueError("Notion requires a read-only app registration and exact introspection scope")
-    if provider=="finance" and type(raw.get("stripe_livemode")) is not bool:raise ValueError("Stripe test/live mode must be selected explicitly")
+    if provider=="finance":
+        if type(raw.get("stripe_livemode")) is not bool:raise ValueError("Stripe test/live mode must be selected explicitly")
+        # Prevent accidental use of live credentials for a sandbox configuration.
+        prefix="sk_live_" if raw["stripe_livemode"] else "sk_test_"
+        if not secret.startswith(prefix):raise ValueError("Stripe secret key mode does not match configured test/live mode")
     return {**raw,"mode":"native","authorize_url":NATIVE[provider][2],"token_url":NATIVE[provider][3],
             "redirect_uri":origin+"/api/integrations/providers/oauth/callback"}
 

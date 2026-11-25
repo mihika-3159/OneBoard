@@ -166,7 +166,9 @@ async def security_response_headers(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith(("/api/auth/", "/api/data/", "/api/integrations/providers/", "/api/business/financial/", "/api/diagnostics/")):
+    # API responses can contain tenant-owned records, including metrics and memory.
+    # Never permit browser/shared HTTP caches to retain these responses.
+    if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     if settings.ONEBOARD_PRODUCTION_MODE and secure_external_request:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"

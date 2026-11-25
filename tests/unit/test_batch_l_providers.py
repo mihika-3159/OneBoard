@@ -222,7 +222,7 @@ def test_disabled_and_unsafe_endpoint_configuration(db,monkeypatch):
 def test_native_read_only_vendor_contract(db,monkeypatch,provider):
     from apps.api.services.integrations.native_providers import NATIVE,GOOGLE_FAMILY
     scope,native_scope,_,token_url=NATIVE[provider]
-    cfg={"enabled":True,"mode":"native","client_id":"fixture-client","client_secret":"fixture-secret",
+    cfg={"enabled":True,"mode":"native","client_id":"fixture-client","client_secret":("sk_test_"+"fixture" if provider=="finance" else "fixture-secret"),
          "stripe_livemode":False,"notion_read_only_app":True,"native_scope":"fixture-read"}
     monkeypatch.setattr(settings,"PROVIDER_CONNECTORS",{provider:cfg})
     calls=[];challenge=None;revoked=False
@@ -313,3 +313,22 @@ def test_malformed_sensitive_page_is_atomic(db,monkeypatch):
     rt.enqueue(db,"a","github","malformed-job")
     assert rt.run_sync(db,"a")["state"]=="failed"
     assert row.checkpoint is None and db.query(ProviderRecord).count()==0
+
+def test_stripe_sandbox_mode_rejects_mismatched_key_and_token_without_network(monkeypatch):
+    from apps.api.services.integrations.native_providers import native_configuration,NativeAdapter
+    monkeypatch.setattr(settings,"PUBLIC_API_ORIGIN","https://oneboard.example")
+    raw={"enabled":True,"mode":"native","client_id":"fixture-client","client_secret":"sk_test_"+"fixture","stripe_livemode":False}
+    for key in ("sk_live_"+"fixture","untyped-fixture"):
+        with pytest.raises(ValueError,match="mode"):
+            native_configuration("finance",{**raw,"client_secret":key})
+    cfg=native_configuration("finance",raw)
+    adapter=NativeAdapter("finance",cfg)
+    assert adapter.actions=={}
+    calls=[]
+    def fake_call(url,**kw):
+        calls.append(url)
+        return {"token_type":"bearer","scope":"read_only","stripe_user_id":"acct_fixture","livemode":True}
+    monkeypatch.setattr(adapter,"call",fake_call)
+    with pytest.raises(ValueError,match="mode mismatch"):
+        adapter.exchange("synthetic-code",None)
+    assert calls==[cfg["token_url"]]

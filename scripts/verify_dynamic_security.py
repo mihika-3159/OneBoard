@@ -17,6 +17,8 @@ def verify(base,cert,out):
         assert response.headers.get("X-Content-Type-Options")=="nosniff",label
         assert response.headers.get("X-Frame-Options")=="DENY",label
         assert response.headers.get("Strict-Transport-Security"),label
+        if response.status_code==200 and response.request.url.path.startswith("/api/"):
+            assert response.headers.get("Cache-Control")=="no-store",label
         checks.append({"check":label,"status":response.status_code})
         return response
     def client():return httpx.Client(base_url=base,verify=cert,timeout=30,trust_env=False)

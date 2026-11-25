@@ -25,6 +25,8 @@ def probe(origin: str, client) -> dict:
         raise RuntimeError("HTTPS health probe failed")
     if "max-age=" not in normal.headers.get("strict-transport-security", ""):
         raise RuntimeError("HTTPS response is missing HSTS")
+    for name,expected in (("x-content-type-options","nosniff"),("x-frame-options","DENY"),("referrer-policy","no-referrer")):
+        if normal.headers.get(name)!=expected:raise RuntimeError("HTTPS response missing expected header: "+name)
     bad_host = client.get(origin + "/health", headers={"Host": "invalid-oneboard-host.invalid"})
     if bad_host.status_code not in (400, 421):
         raise RuntimeError("Unrecognized Host was not rejected")

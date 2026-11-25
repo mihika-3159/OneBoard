@@ -250,3 +250,30 @@ def test_dashboard_cash_switches_only_after_explicit_opening_balance(db):
     assert after["cash_balance"]==115 and after["journal_cash_balance"]=="115.00"
     assert after["profile_cash_balance"]=="123.45"
     assert after["financial_sources"]["cash_balance"]=="journal_with_recorded_opening_balance"
+
+def test_hackathon_review_fixed_independent_cash_receivables_and_profit_oracle(db):
+    """Amounts in the oracle are computed from a hand-specified synthetic business,
+    not from OneBoard's financial helpers. No bank, provider or real records."""
+    inv=invoice(db,"1000.00",ident="review-invoice")
+    post(db,"opening_cash","5000.00","review-opening")
+    post(db,"invoice_issue","1000.00","review-issue",inv.id)
+    payment=post(db,"payment","600.00","review-payment",inv.id)
+    post(db,"credit","100.00","review-credit",inv.id)
+    post(db,"refund","50.00","review-refund",inv.id,related=payment.id)
+    post(db,"cogs","200.00","review-cogs")
+    post(db,"expense","150.00","review-expense")
+    # Cash: 5000 + 600 - 50 - 200 - 150 = 5200
+    # Receivables: 1000 - 600 - 100 + 50 = 350
+    # Net sales: 1000 - 100 = 900; gross profit: 900 - 200 = 700.
+    expected={"cash":520000,"opening_equity":-500000,"receivables":35000,
+              "revenue":-100000,"sales_returns":10000,"cost_of_sales":20000,
+              "operating_expense":15000}
+    rows=db.query(JournalEntry).filter_by(business_id="a").all()
+    assert ledger.trial_balance(rows,"AED")==expected
+    assert ledger.invoice_balance(db,"a",inv)==Decimal("350.00")
+    data=calculate_business_financials(db,"a")
+    assert Decimal(data["exact_amounts"]["cash_balance"])==Decimal("5200.00")
+    assert Decimal(data["exact_amounts"]["overdue_receivables"])==Decimal("350.00")
+    assert data["financial_data_verified"] is False
+    assert data["financial_provenance"]["independent_ledger_reconciliation"] is False
+    assert sum(expected.values())==0

@@ -212,3 +212,15 @@ def test_scheduler_bounded_backlog_no_duplicate_dispatch(db):
     runs=db.query(WorkflowRun).all()
     assert len(runs)==45 and len({r.workflow_id for r in runs})==45
     with pytest.raises(ValueError):schedules.run_due(db,"a",now=now,limit=101)
+
+def test_revision_list_requires_owned_parent(db):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
+    from apps.api.routers.workflow_router import versions as list_revisions
+    wf=workflow(db,tenant="a")
+    assert len(list_revisions(wf.id,SimpleNamespace(business_id="a"),db))==1
+    for identity in (wf.id,"missing-workflow"):
+        with pytest.raises(HTTPException) as failure:
+            list_revisions(identity,SimpleNamespace(business_id="b"),db)
+        assert failure.value.status_code==404
+        assert failure.value.detail=="Workflow not found"
