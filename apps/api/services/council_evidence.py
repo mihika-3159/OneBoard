@@ -5,6 +5,7 @@ not that the source is true or that an inferred recommendation is correct.
 """
 import hashlib
 import json
+from math import isfinite
 from apps.api.models.decision_evidence import Evidence
 from apps.api.models.memory import MemoryChunk, MemoryConflict, MemoryDocument
 
@@ -25,6 +26,34 @@ def evidence_inventory(db, tenant):
         records["conflict:" + row.id] = {"text": (row.source_a_value + " versus " + row.source_b_value)[:450],
                                        "source": "unresolved_conflict"}
     return records
+
+
+def current_record(db, tenant, ref):
+    if not isinstance(ref, str) or ":" not in ref:
+        return None
+    kind, ident = ref.split(":", 1)
+    if kind == "evidence":
+        row = db.query(Evidence).filter_by(business_id=tenant, id=ident).first()
+        return {"text": row.snippet[:450], "source": "tenant_evidence"} if row else None
+    if kind == "chunk":
+        row = db.query(MemoryChunk).join(MemoryDocument,
+            (MemoryChunk.document_id == MemoryDocument.id) & (MemoryDocument.business_id == tenant)
+            ).filter(MemoryChunk.business_id == tenant, MemoryChunk.id == ident).first()
+        return {"text": row.content[:450], "source": "tenant_document"} if row else None
+    if kind == "conflict":
+        row = db.query(MemoryConflict).filter_by(business_id=tenant,id=ident,status="unresolved").first()
+        return {"text": (row.source_a_value+" versus "+row.source_b_value)[:450],
+                "source": "unresolved_conflict"} if row else None
+    return None
+
+
+def references_current(db, tenant, citations):
+    for citation in citations:
+        row = current_record(db, tenant, citation.get("id"))
+        if (not row or not exact_quote(row["text"], citation.get("quote"))
+                or hashlib.sha256(row["text"].encode()).hexdigest() != citation.get("snapshot_sha256")):
+            return False
+    return True
 
 
 def exact_quote(text, quote):
@@ -65,7 +94,18 @@ def adviser_record(result, inventory):
     refs = validate_citations(obj.get("citations"), inventory)
     if refs is None:
         return None
-    return {"position": obj["position"], "citations": refs,
+    forecast = obj.get("forecast")
+    proposal = None
+    if refs and isinstance(forecast, dict):
+        metric = forecast.get("metric")
+        values = [forecast.get(k) for k in ("point", "lower", "upper", "confidence")]
+        days = forecast.get("days")
+        if (isinstance(metric, str) and 1 <= len(metric.strip()) <= 100
+                and all(type(v) in (int, float) and abs(v) <= 1e15 and isfinite(v) for v in values)
+                and values[1] <= values[0] <= values[2] and 0 < values[3] < 1
+                and type(days) is int and 1 <= days <= 365):
+            proposal = {k: forecast[k] for k in ("metric", "point", "lower", "upper", "confidence", "days")}
+    return {"position": obj["position"], "citations": refs, "forecast_proposal": proposal,
             "evidence_status": "reference_verified_not_claim_verified" if refs else "unsupported"}
 
 

@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 import asyncio
-from apps.api.services.council_evidence import evidence_inventory, adviser_record, synthesis_record
+from apps.api.services.council_evidence import evidence_inventory, adviser_record, synthesis_record, references_current
 import json
 from apps.api.models.agent_council import CouncilMeeting, AdviserScorecard
 from apps.api.models.decision_evidence import Decision
@@ -119,7 +119,11 @@ class CouncilEngine:
         # Match the conservative byte-based inference context budget. Include
         # complete records, not a truncated JSON object.
         bounded = {}
-        for key, value in inventory.items():
+        terms = set(topic.lower().split())
+        ranked = sorted(inventory.items(), key=lambda pair: (
+            pair[1]["source"] != "unresolved_conflict",
+            -sum(term in pair[1]["text"].lower() for term in terms if len(term)>3), pair[0]))
+        for key, value in ranked:
             trial = {**bounded, key: value}
             if len(json.dumps(trial, ensure_ascii=True)) <= 2200:
                 bounded = trial
@@ -189,8 +193,9 @@ class CouncilEngine:
                         f"Topic: {topic}\nRecorded financial facts: {facts}\n"
                         f"Focus: {role['focus']}.\n"
                         f"{evidence_text}\n"
-                        'Return JSON {"position":"at most 100 words", "citations":[{"id":"inventory id","quote":"exact text"}]}. '
-                        "Cite only supplied records, use [] when unsupported, label assumptions. Do not invent numeric targets."
+                        'Return JSON {"position":"at most 80 words", "citations":[{"id":"inventory id","quote":"exact text"}], "forecast":null}. '
+                        'Only if records support a measurable prospective forecast, optionally give forecast={"metric":"name","point":1,"lower":0,"upper":2,"confidence":0.8,"days":30}; '
+                        "otherwise use null. Label assumptions. Do not invent numeric targets."
                     )}],
                     system_prompt=f"Act as {name}; use only supplied facts. "+DATA_BOUNDARY,
                     format_json=True
@@ -210,6 +215,8 @@ class CouncilEngine:
             transcript.append({
                 "argument_id": f"argument-{len(transcript)+1}",
                 "citations": verified["citations"] if verified else [],
+                "forecast_proposal": verified["forecast_proposal"] if verified else None,
+                "provider_model": res.get("model"),
                 "evidence_status": verified["evidence_status"] if verified else "unsupported",
                 "adviser": name, "role": role["title"],
                 "department": role["department"], "stage": "independent_analysis",
@@ -282,16 +289,19 @@ class CouncilEngine:
                 })
 
         visible_positions = "\n".join(
-            f"{name}: {quoted_data('adviser_position',positions[name],1500)}" for name in selected_advisers
+            f"{a['argument_id']} {a['adviser']}: {quoted_data('adviser_position',a['content'],300)}"
+            for a in transcript if a.get("argument_id")
         )
+        argument_links = [{"id":a["argument_id"],"citations":[c["id"] for c in a.get("citations",[])]}
+                          for a in transcript if a.get("argument_id")]
         checkpoint("synthesis")
         with inference_tenant(business_id):
             synthesis = await ollama_gateway.chat_complete(
                 messages=[{"role": "user", "content": (
                     f"Topic: {topic}\nRecorded facts: {facts}\n"
                     f"Actual adviser positions:\n{visible_positions}\n"
-                    f"Challenges: {'; '.join(challenge_summaries) if challenge_summaries else 'Not performed'}\n"
-                    f"{evidence_text}\nArguments with stable IDs: {quoted_data('argument_inventory',json.dumps([{'id':a.get('argument_id'),'content':a['content'],'citations':a.get('citations',[])} for a in transcript if a.get('argument_id')]),12000)}\n"
+                    f"Challenges: {'; '.join(challenge_summaries)[:600] if challenge_summaries else 'Not performed'}\n"
+                    f"{evidence_text}\nArgument evidence links: {quoted_data('argument_inventory',json.dumps(argument_links),1200)}\n"
                     'Return JSON {"arguments":[{"id":"argument ID","quote":"exact adviser words"}],"citations":[{"id":"record ID","quote":"exact record words"}]}. '
                     "Select only linked evidence; no invented claims, numeric targets or consensus."
                 )}],
@@ -302,6 +312,9 @@ class CouncilEngine:
         if conflict_present:
             structured["disposition"] = "resolve_conflict"
             structured["uncertainty"] = "high"
+        structured["simulated"] = bool(synthesis.get("simulated"))
+        structured["output_limit_reached"] = bool(synthesis.get("output_limit_reached"))
+        structured["fallback_reason"] = synthesis.get("fallback_reason")
         meeting.structured_synthesis = structured
         meeting.retrieved_evidence_ids = [item["id"] for item in structured["citations"]]
         if synthesis.get("simulated", False):
@@ -326,7 +339,9 @@ class CouncilEngine:
         meeting.recommended_actions = actions
         incomplete = (not synthesis.get("simulated") and bool(synthesis.get("output_limit_reached"))) or any(a["output_limit_reached"] for a in transcript)
         mixed = any(a["simulated"] for a in transcript) and any(not a["simulated"] for a in transcript)
-        meeting.stage = "partial" if incomplete or mixed or (synthesis.get("simulated") and any(not a["simulated"] for a in transcript)) else "completed"
+        all_offline = bool(synthesis.get("simulated")) and all(a["simulated"] for a in transcript)
+        meeting.stage = "partial" if incomplete or mixed or (bool(synthesis.get("simulated")) != all(a["simulated"] for a in transcript)) else "completed"
+        meeting.structured_synthesis = {**structured, "execution_status": "deterministic_review" if all_offline else meeting.stage}
         if meeting.stage == "partial":
             meeting.recommended_actions = []
         meeting.checkpoint_at = datetime.utcnow()
@@ -362,6 +377,12 @@ class CouncilEngine:
         if meeting.stage != "completed" or meeting.founder_decision is not None:
             raise ValueError("Meeting is not eligible for approval")
 
+        structured = meeting.structured_synthesis or {}
+        if not references_current(db, business_id, structured.get("citations", [])):
+            raise ValueError("Cited evidence changed or was deleted; convene a new meeting")
+        from apps.api.models.memory import MemoryConflict
+        if db.query(MemoryConflict.id).filter_by(business_id=business_id,status="unresolved").first() and structured.get("disposition") != "resolve_conflict":
+            raise ValueError("Unresolved evidence conflict; convene a new meeting")
         meeting.founder_decision = "approved"
         meeting.founder_notes = decision_notes or "Approved plan as synthesized by Chief of Staff."
 
@@ -385,6 +406,7 @@ class CouncilEngine:
         try:
             db.add(decision)
             db.flush()
+            meeting.structured_synthesis = {**structured,"decision_id":decision.id}
             created_task_ids = []
             for action in (meeting.recommended_actions or []):
                 task = Task(
