@@ -1,0 +1,217 @@
+"""Tenant-scoped append-only double-entry journal, exact currency units and close controls.
+
+A balanced journal is an internal accounting record, not an authenticated bank feed.
+Existing invoices enter the ledger only by explicit founder recognition; no fabricated
+opening balance or historical revenue is inferred.
+"""
+from datetime import date,datetime
+from decimal import Decimal,ROUND_HALF_UP
+import hashlib,json,re
+from sqlalchemy import func
+from apps.api.core.money import decimal_value
+from apps.api.models.business import Business
+from apps.api.models.entities import Invoice,Expense
+from apps.api.models.operations import JournalEntry,AccountingClose,BankStatementLine,SettlementEvidence
+from apps.api.services.tenant_storage import _lock
+
+# Explicit supported ISO currency precision; unsupported currencies fail closed.
+SCALES={**dict.fromkeys("AED USD EUR GBP CAD SGD INR AUD NZD CHF CNY HKD SAR QAR ZAR SEK NOK DKK MXN BRL PLN TRY ILS THB MYR PHP IDR TWD".split(),2),
+        **dict.fromkeys("JPY KRW VND CLP ISK XAF XOF".split(),0),
+        **dict.fromkeys("KWD BHD OMR JOD TND".split(),3)}
+ACCOUNTS={
+ "invoice_issue":("receivables","revenue"),
+ "opening_invoice":("receivables","opening_equity"),
+ "payment":("cash","receivables"),
+ "refund":("receivables","cash"),
+ "credit":("sales_returns","receivables"),
+ "debit_adjustment":("receivables","revenue"),
+ "credit_reversal":("receivables","sales_returns"),
+ "expense":("operating_expense","cash"),
+ "cogs":("cost_of_sales","cash"),
+ "acquisition":("acquisition_expense","cash"),
+ "opening_cash":("cash","opening_equity"),
+ "opening_overdraft":("opening_equity","cash"),
+ "capital":("cash","capital"),
+ "distribution":("capital","cash"),
+}
+INVOICE_KINDS={"invoice_issue","opening_invoice","payment","refund","credit","debit_adjustment","credit_reversal"}
+RECOGNITION={"invoice_issue","opening_invoice"}
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=False,default=str).encode()).hexdigest()
+
+def period_key(value):
+    if not isinstance(value,str) or not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])",value) or value.startswith("0000"):
+        raise ValueError("Accounting period must be YYYY-MM")
+    return value
+
+def date_key(value):
+    try:d=date.fromisoformat(value)
+    except (ValueError,TypeError):raise ValueError("Booking date must be YYYY-MM-DD") from None
+    if d.isoformat()!=value or d>date.today():raise ValueError("Booking date cannot be future or malformed")
+    return value
+
+def precision(currency):
+    if currency not in SCALES:raise ValueError("Unsupported accounting currency")
+    return SCALES[currency]
+
+def minor(value,currency,signed=False):
+    d=decimal_value(value);scale=10**precision(currency)
+    if not signed and d<=0:raise ValueError("Amount must be positive")
+    if d*scale!=(d*scale).to_integral_value():raise ValueError("Amount exceeds currency precision")
+    return int(d*scale)
+
+def major(value,currency):
+    return format(Decimal(value).scaleb(-precision(currency)),f".{precision(currency)}f")
+
+def fx_amount(amount,currency,base,rate,source):
+    original=minor(amount,currency)
+    rate=decimal_value(rate)
+    if rate<=0 or rate>Decimal("100000000") or rate!=rate.quantize(Decimal("0.00000001")):raise ValueError("Invalid FX rate")
+    if not isinstance(source,str) or not 1<=len(source.strip())<=200:raise ValueError("FX source required")
+    if currency==base and (rate!=1 or source!="same_currency"):raise ValueError("Same currency requires rate 1")
+    if currency!=base and source=="same_currency":raise ValueError("Foreign currency needs a dated FX source")
+    converted=(Decimal(original).scaleb(-precision(currency))*rate*10**precision(base)).quantize(Decimal(1),rounding=ROUND_HALF_UP)
+    if not 0<converted<=Decimal("100000000000")*10**precision(base):raise ValueError("Converted amount out of bounds")
+    return original,int(converted),str(rate.normalize())
+
+def workspace(db,tenant):
+    row=db.query(Business).filter_by(id=tenant).first()
+    if not row:raise ValueError("Workspace unavailable")
+    precision(row.currency)
+    return row
+
+def ensure_open(db,tenant,period):
+    if db.query(AccountingClose.id).filter_by(business_id=tenant,period=period).first():raise ValueError("Accounting period is closed")
+
+def serialize(row):
+    return {"id":row.id,"reference":row.reference,"kind":row.kind,"invoice_id":row.invoice_id,"related_entry_id":row.related_entry_id,
+      "debit_account":row.debit_account,"credit_account":row.credit_account,"currency":row.currency,"amount":major(row.original_minor,row.currency),
+      "base_currency":row.base_currency,"base_amount":major(row.base_minor,row.base_currency),"fx_rate":row.fx_rate,"fx_source":row.fx_source,
+      "booked_on":row.booked_on,"period":row.period,"evidence_sha256":row.evidence_hash,"actor_id":row.actor_id,
+      "provenance":"user_recorded_not_bank_verified","recorded_at":row.recorded_at.isoformat()}
+
+def invoice_entries(db,tenant,invoice_id):
+    return db.query(JournalEntry).filter_by(business_id=tenant,invoice_id=invoice_id).order_by(JournalEntry.booked_on,JournalEntry.id).all()
+
+def receivable(entries):
+    return sum((r.base_minor if r.debit_account=="receivables" else -r.base_minor if r.credit_account=="receivables" else 0) for r in entries)
+
+def invoice_balance(db,tenant,invoice):
+    """Legacy records remain explicitly unreconciled; enrolled invoices use the journal."""
+    rows=invoice_entries(db,tenant,invoice.id)
+    if rows:
+        base=rows[0].base_currency
+        if any(r.base_currency!=base for r in rows):raise ValueError("Invoice currency history is inconsistent")
+        return Decimal(major(receivable(rows),base))
+    return decimal_value(invoice.amount)
+
+def post(db,tenant,actor,*,reference,kind,amount,currency,fx_rate,fx_source,booked_on,evidence_text,invoice_id=None,related_entry_id=None,commit=True):
+    if kind not in ACCOUNTS:raise ValueError("Unsupported journal transaction")
+    if not isinstance(reference,str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}",reference):raise ValueError("Invalid reference")
+    if not actor:raise ValueError("Actor required")
+    if not isinstance(evidence_text,str) or not 1<=len(evidence_text.encode("utf-8"))<=262144 or not evidence_text.strip():raise ValueError("Evidence is required")
+    booked_on=date_key(booked_on);period=booked_on[:7]
+    _lock(db,tenant)
+    biz=workspace(db,tenant);base=biz.currency
+    original,converted,rate=fx_amount(amount,currency,base,fx_rate,fx_source)
+    evidence_hash=hashlib.sha256(evidence_text.encode()).hexdigest()
+    request=digest([kind,invoice_id,related_entry_id,original,currency,converted,base,rate,fx_source,booked_on,evidence_hash])
+    existing=db.query(JournalEntry).filter_by(business_id=tenant,reference=reference).first()
+    if existing:
+        if existing.request_hash!=request:raise ValueError("Journal reference already used with different transaction")
+        return existing
+    ensure_open(db,tenant,period)
+    if db.query(JournalEntry).filter_by(business_id=tenant).count()>=20000:raise ValueError("Journal capacity reached")
+    # A currency switch must be implemented as an explicit migration, never a mixed base sum.
+    if db.query(JournalEntry.id).filter(JournalEntry.business_id==tenant,JournalEntry.base_currency!=base).first():raise ValueError("Ledger base currency changed; migration required")
+    invoice=None;entries=[]
+    if kind in INVOICE_KINDS:
+        invoice=db.query(Invoice).filter_by(business_id=tenant,id=invoice_id).first()
+        if not invoice or invoice.status in ("draft","cancelled"):raise ValueError("Invoice missing, draft or cancelled")
+        entries=invoice_entries(db,tenant,invoice_id)
+        if kind in RECOGNITION:
+            if entries or invoice.status=="paid" or related_entry_id:raise ValueError("Invoice already recognized or historically paid")
+            if db.query(SettlementEvidence.id).filter_by(business_id=tenant,invoice_id=invoice_id).first():raise ValueError("Legacy settlement history requires explicit migration before ledger enrollment")
+            if currency!=base or converted!=minor(invoice.amount,base):raise ValueError("Recognition must equal recorded base invoice amount")
+        else:
+            if not entries or not any(r.kind in RECOGNITION for r in entries):raise ValueError("Recognize the invoice first")
+            if booked_on<min(r.booked_on for r in entries):raise ValueError("Transaction predates invoice recognition")
+            if kind in ("payment","credit") and converted>receivable(entries):raise ValueError("Transaction exceeds outstanding receivable")
+            if kind in ("refund","credit_reversal"):
+                expected="payment" if kind=="refund" else "credit"
+                parent=next((r for r in entries if r.id==related_entry_id and r.kind==expected),None)
+                if not parent or booked_on<parent.booked_on or parent.currency!=currency or parent.fx_rate!=rate:raise ValueError("Reversal requires original entry currency and FX rate")
+                prior=[r for r in entries if r.related_entry_id==parent.id and r.kind==kind]
+                if sum(r.original_minor for r in prior)+original>parent.original_minor or sum(r.base_minor for r in prior)+converted>parent.base_minor:raise ValueError("Reversal exceeds original transaction")
+            elif related_entry_id:raise ValueError("Unexpected reversal reference")
+    elif invoice_id or related_entry_id:raise ValueError("Unexpected invoice or reversal reference")
+    if kind in ("opening_cash","opening_overdraft"):
+        if db.query(JournalEntry.id).filter(JournalEntry.business_id==tenant,JournalEntry.kind.in_(["opening_cash","opening_overdraft"])).first():raise ValueError("Opening cash already recorded")
+        if currency!=base:raise ValueError("Opening cash must use base currency")
+    debit,credit=ACCOUNTS[kind]
+    row=JournalEntry(business_id=tenant,reference=reference,request_hash=request,kind=kind,invoice_id=invoice_id,
+        related_entry_id=related_entry_id,debit_account=debit,credit_account=credit,currency=currency,original_minor=original,
+        base_currency=base,base_minor=converted,fx_rate=rate,fx_source=fx_source,booked_on=booked_on,period=period,evidence_hash=evidence_hash,actor_id=actor)
+    db.add(row);db.flush()
+    if invoice:
+        remaining=receivable(entries+[row])
+        if remaining<0:raise ValueError("Negative receivable")
+        if remaining==0:invoice.status="paid";invoice.paid_at=datetime.utcnow()
+        else:
+            invoice.status="overdue" if invoice.due_date.date()<date.today() else "sent"
+            invoice.paid_at=None
+    if commit:db.commit()
+    return row
+
+def trial_balance(rows,base):
+    balances={}
+    for row in rows:
+        if row.base_currency!=base or row.base_minor<=0 or row.debit_account==row.credit_account:raise ValueError("Invalid journal entry")
+        for account,sign in ((row.debit_account,1),(row.credit_account,-1)):
+            balances[account]=balances.get(account,0)+sign*row.base_minor
+    if sum(balances.values())!=0:raise ValueError("Unbalanced journal")
+    return balances
+
+def statement(db,tenant,period):
+    period=period_key(period);biz=workspace(db,tenant)
+    rows=db.query(JournalEntry).filter_by(business_id=tenant,period=period).order_by(JournalEntry.booked_on,JournalEntry.id).all()
+    all_rows=db.query(JournalEntry).filter(JournalEntry.business_id==tenant,JournalEntry.period<=period).order_by(JournalEntry.booked_on,JournalEntry.id).all()
+    balances=trial_balance(rows,biz.currency);cumulative=trial_balance(all_rows,biz.currency)
+    cash_lines=db.query(BankStatementLine).filter_by(business_id=tenant,period=period).all()
+    cash_entries=[r for r in rows if "cash" in (r.debit_account,r.credit_account) and r.kind not in ("opening_cash","opening_overdraft")]
+    matched={r.journal_id for r in cash_lines if r.journal_id}
+    revenue=-balances.get("revenue",0)-balances.get("sales_returns",0)
+    cogs=balances.get("cost_of_sales",0)
+    operating=balances.get("operating_expense",0)+balances.get("acquisition_expense",0)
+    return {"period":period,"currency":biz.currency,"entry_count":len(rows),
+      "trial_balance":{k:major(v,biz.currency) for k,v in sorted(balances.items())},
+      "closing_balances":{k:major(v,biz.currency) for k,v in sorted(cumulative.items())},
+      "revenue":major(revenue,biz.currency),"cost_of_sales":major(cogs,biz.currency),"operating_expenses":major(operating,biz.currency),
+      "gross_profit":major(revenue-cogs,biz.currency),"operating_result":major(revenue-cogs-operating,biz.currency),
+      "cash_balance":major(cumulative.get("cash",0),biz.currency),
+      "gross_margin_pct":str((Decimal(revenue-cogs)*100/revenue).quantize(Decimal("0.01"))) if revenue>0 else None,
+      "unmatched_bank_lines":sum(not r.journal_id for r in cash_lines),
+      "unmatched_cash_entries":sum(r.id not in matched for r in cash_entries),
+      "source_entry_ids":[r.id for r in rows],"source_digest":digest([serialize(r) for r in all_rows]),
+      "bank_verified":False,"basis":"recorded_journal_not_independent_audit"}
+
+def close_period(db,tenant,actor,period,confirmation):
+    period=period_key(period)
+    if confirmation!="CLOSE "+period:raise ValueError("Exact close confirmation required")
+    if period>=date.today().isoformat()[:7]:raise ValueError("Only completed months may close")
+    _lock(db,tenant)
+    old=db.query(AccountingClose).filter_by(business_id=tenant,period=period).first()
+    if old:return serialize_close(old)
+    if db.query(AccountingClose.id).filter(AccountingClose.business_id==tenant,AccountingClose.period>period).first():raise ValueError("Cannot close before an already closed later period")
+    snapshot=statement(db,tenant,period)
+    if not snapshot["entry_count"]:raise ValueError("Cannot close an empty journal period")
+    if snapshot["unmatched_bank_lines"] or snapshot["unmatched_cash_entries"]:raise ValueError("Reconcile all statement and cash entries before close")
+    row=AccountingClose(business_id=tenant,period=period,snapshot=snapshot,snapshot_hash=digest(snapshot),actor_id=actor)
+    db.add(row);db.commit()
+    return serialize_close(row)
+
+def serialize_close(row):
+    if digest(row.snapshot)!=row.snapshot_hash:raise ValueError("Closed snapshot integrity failure")
+    return {"id":row.id,"period":row.period,"snapshot":row.snapshot,"snapshot_sha256":row.snapshot_hash,
+      "closed_at":row.closed_at.isoformat(),"closed_by":row.actor_id,"bank_verified":False}
