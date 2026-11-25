@@ -12,7 +12,10 @@ from apps.api.services.inference_budget import TokenBudgetExceeded, charge_provi
 from apps.api.services.embedding_cache import EmbeddingCache
 from apps.api.services.inference_resources import has_headroom
 from apps.api.services.inference_routing import route
-from apps.api.services.inference_stream import on_text, read_chat_stream
+from apps.api.services.inference_stream import on_text
+from apps.api.services.inference_adapters import (OllamaAdapter, CompatibleAdapter, ProviderUnavailable,
+    is_remote, verify_remote_capacity)
+from apps.api.services.generation_cache import GenerationCache
 
 from apps.api.services.inference_controls import CircuitOpen, ProviderCircuit, fit_prompt, retry_provider
 
@@ -40,7 +43,15 @@ class OllamaGateway:
         if settings.OLLAMA_LOCAL_REPLICA_PORT:
             replica = f"http://127.0.0.1:{settings.OLLAMA_LOCAL_REPLICA_PORT}"
             self._circuits.setdefault(replica, ProviderCircuit())
+        self._adapters = {origin: OllamaAdapter() for origin in self._circuits}
+        if settings.INFERENCE_COMPATIBLE_LOCAL_PORT:
+            origin = f"http://127.0.0.1:{settings.INFERENCE_COMPATIBLE_LOCAL_PORT}"
+            if origin in self._adapters:
+                raise ValueError("Compatible provider needs a distinct port")
+            self._circuits[origin] = ProviderCircuit()
+            self._adapters[origin] = CompatibleAdapter(settings.INFERENCE_COMPATIBLE_DIGESTS)
         self._embedding_cache = EmbeddingCache()
+        self._generation_cache = GenerationCache()
         
     def _queued(self):
         return bool(settings.INFERENCE_QUEUE_URL and current_inference_tenant())
@@ -61,19 +72,23 @@ class OllamaGateway:
         async def operation(origin):
             return await self._post_to_origin(origin, path, payload, timeout)
 
-        return await route(operation, tuple(self._circuits), timeout)
+        origins = tuple(origin for origin, adapter in self._adapters.items()
+                        if path == "/api/chat" or isinstance(adapter, OllamaAdapter))
+        return await route(operation, origins, timeout)
 
     async def _post_to_origin(self, origin, path, payload, timeout):
         with self._circuits[origin].attempt() as record_failure:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                if settings.OLLAMA_MODEL_DIGESTS:
+                adapter = self._adapters[origin]
+                if settings.ONEBOARD_PRODUCTION_MODE and is_remote(origin):
+                    await verify_remote_capacity(client, origin, settings.INFERENCE_MIN_FREE_MIB * 1024 * 1024,
+                        settings.INFERENCE_MAX_LOAD_PER_CPU, settings.INFERENCE_REMOTE_ACCELERATOR_MIN_MIB * 1024 * 1024)
+                if settings.OLLAMA_MODEL_DIGESTS and isinstance(adapter, OllamaAdapter):
                     await asyncio.wait_for(self._verify_model(client, origin, payload["model"]), timeout=3.0)
 
                 async def send():
                     await charge_provider_attempt(payload)
-                    if path == "/api/chat" and on_text.get() is not None:
-                        return await read_chat_stream(client, f"{origin}{path}", payload, on_text.get())
-                    return await client.post(f"{origin}{path}", json=payload)
+                    return await adapter.send(client, origin, path, payload, on_text.get())
 
                 try:
                     response = await asyncio.wait_for(
@@ -163,7 +178,8 @@ class OllamaGateway:
         system_prompt: Optional[str] = None,
         model: Optional[str] = None,
         task_type: str = "chat",
-        format_json: bool = False
+        format_json: bool = False,
+        cache_text: bool = False
     ) -> Dict[str, Any]:
         """Run bounded local server-side inference, with explicit fallback status.
 
@@ -189,6 +205,15 @@ class OllamaGateway:
         context_window = settings.OLLAMA_CONTEXT_WINDOW
         fitted = fit_prompt(payload["messages"], context_window - payload["options"]["num_predict"] - 64)
         payload["options"]["num_ctx"] = context_window
+        cache_key = None
+        if cache_text and not format_json and fitted is not None and on_text.get() is None and len(self._adapters) == 1:
+            payload["options"]["temperature"] = 0
+            payload["messages"] = fitted
+            cache_key = self._generation_cache.key(current_inference_tenant(), self.base_url,
+                settings.OLLAMA_MODEL_DIGESTS.get(target_model), payload)
+            cached = self._generation_cache.get(cache_key)
+            if cached is not None:
+                return cached
         reason = "context_budget_exceeded"
         acquired = False
         try:
@@ -231,7 +256,7 @@ class OllamaGateway:
                         except (ValueError, TypeError, AttributeError):
                             reason = "invalid_model_response"
                         else:
-                            return {
+                            result = {
                                 "content": content,
                                 "model": target_model,
                                 "simulated": False,
@@ -241,12 +266,15 @@ class OllamaGateway:
                                 "provider_eval_ns": data.get("eval_duration"),
                                 "output_limit_reached": data.get("done_reason") == "length",
                                 "duration_ms": int((time.monotonic() - start_time) * 1000),
+                                "provider_protocol": data.get("provider_protocol", "local_ollama"),
                             }
+                            self._generation_cache.put(cache_key, result)
+                            return result
                     elif response.status_code == 404:
                         reason = "model_unavailable"
                     else:
                         reason = "provider_http_error"
-                except _CapacityExceeded:
+                except (_CapacityExceeded, ProviderUnavailable):
                     reason = "capacity_exceeded"
                 except TokenBudgetExceeded:
                     reason = "token_budget_exhausted"

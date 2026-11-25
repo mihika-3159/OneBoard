@@ -59,15 +59,24 @@ async def run(model, samples):
     for sample in range(samples):
         for name, (question, expected) in CASES.items():
             start = time.monotonic()
-            result = await gateway.chat_complete(
-                [{"role": "user", "content": question}],
-                system_prompt="Follow the request and return a valid JSON object only.",
-                model=model,
-                format_json=True,
-            )
+            # A transient provider restart after the cancellation check must not
+            # invalidate the entire benchmark without a bounded recovery attempt.
+            attempts = 0
+            while True:
+                attempts += 1
+                result = await gateway.chat_complete(
+                    [{"role": "user", "content": question}],
+                    system_prompt="Follow the request and return a valid JSON object only.",
+                    model=model,
+                    format_json=True,
+                )
+                if attempts >= 3 or result.get("fallback_reason") not in ("provider_http_error", "provider_unavailable", "timeout", "provider_circuit_open"):
+                    break
+                await asyncio.sleep(1)
             runs.append({
                 "sample": sample + 1,
                 "case": name,
+                "attempts": attempts,
                 "correct": grade(result, expected),
                 "fallback_reason": result.get("fallback_reason"),
                 "wall_ms": round((time.monotonic() - start) * 1000, 2),

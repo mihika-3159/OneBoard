@@ -5,6 +5,7 @@ from typing import Awaitable, Callable, Protocol
 import httpx
 
 from apps.api.services.inference_controls import CircuitOpen
+from apps.api.services.inference_adapters import ProviderUnavailable
 
 
 class Reply(Protocol):
@@ -17,11 +18,11 @@ async def route(operation: Callable[[str], Awaitable[Reply]], origins, timeout):
             last = index == len(origins) - 1
             try:
                 result = await operation(origin)
-            except (CircuitOpen, httpx.ConnectError, httpx.ConnectTimeout):
+            except (CircuitOpen, ProviderUnavailable, httpx.ConnectError, httpx.ConnectTimeout):
                 if last:
                     raise
                 continue
-            if last or result.status_code not in (502, 503, 504):
+            if last or result.status_code not in (404, 429, 502, 503, 504):
                 return result
         raise RuntimeError("An inference provider is required")
 
