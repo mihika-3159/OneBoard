@@ -2,6 +2,8 @@ from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from apps.api.core.config import settings
 import os
+import hashlib
+from fastapi import HTTPException
 
 # Ensure data directory exists
 os.makedirs(settings.DATA_DIR, exist_ok=True)
@@ -18,6 +20,18 @@ engine = create_engine(settings.DATABASE_URL, **engine_options(settings.DATABASE
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+def tenant_lifecycle_lock(db, tenant, exclusive=False):
+    if db.get_bind().dialect.name == "postgresql":
+        key = int.from_bytes(hashlib.sha256(("oneboard:lifecycle:" + tenant).encode()).digest()[:8], "big", signed=True)
+        sql = "SELECT pg_advisory_xact_lock(:key)" if exclusive else "SELECT pg_advisory_xact_lock_shared(:key)"
+        db.execute(text(sql), {"key":key})
+
+def _request_lifecycle_scope(connection, tenant):
+    key = int.from_bytes(hashlib.sha256(("oneboard:lifecycle:" + tenant).encode()).digest()[:8], "big", signed=True)
+    connection.execute(text("SELECT pg_advisory_xact_lock_shared(:key)"), {"key":key})
+    if not connection.execute(text("SELECT id FROM businesses WHERE id=:tenant"),{"tenant":tenant}).first():
+        raise HTTPException(status_code=401, detail="Workspace no longer exists")
+
 def scope_tenant_session(db, tenant):
     """Pin an authenticated session to one tenant, including after commit."""
     if not isinstance(db, Session):
@@ -31,6 +45,8 @@ def scope_tenant_session(db, tenant):
     if db.get_bind().dialect.name == "postgresql":
         db.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
                    {"tenant": tenant})
+        if db.info.get("oneboard_request"):
+            _request_lifecycle_scope(db.connection(), tenant)
 
 
 @event.listens_for(Session, "after_begin")
@@ -39,10 +55,13 @@ def _restore_tenant_scope(session, transaction, connection):
     if tenant and connection.dialect.name == "postgresql":
         connection.execute(text("SELECT set_config('oneboard.tenant', :tenant, true)"),
                            {"tenant": tenant})
+        if session.info.get("oneboard_request"):
+            _request_lifecycle_scope(connection, tenant)
 
 
 def get_db():
     db = SessionLocal()
+    db.info['oneboard_request'] = True
     try:
         yield db
     finally:

@@ -998,3 +998,13 @@ mutate invoice payment status or assert bank authentication. Offline provider
 scaffolding uses a dedicated AES-256-GCM key, tenant/provider/scope/expiry AAD,
 read-scope allowlists and persistent idempotent intents; no dispatch, OAuth
 verification or provider contact. New CI and adversarial tests pending.
+
+
+Batch C increment 3: owner-gated paginated export (excludes credential
+fields and derived vectors; not a point-in-time snapshot), opt-in automatic
+document retention, per-document deletion including vector rows, and
+password/explicit-confirmation workspace application-row deletion. PostgreSQL
+request transactions and monitor acquire tenant lifecycle locks to coordinate
+deletion with in-flight writes. Backup copies, external systems, arbitrary
+secret text embedded in user content, and physical storage erasure are not
+certified. Sensitive validation responses are redacted. New CI pending.

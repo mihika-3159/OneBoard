@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 
 from apps.api.core.config import settings, validate_production_configuration
 from apps.api.core.database import init_db, SessionLocal
@@ -21,6 +23,7 @@ from apps.api.routers.accountability_router import router as accountability_rout
 from apps.api.routers.integrations_router import router as integrations_router
 from apps.api.routers.alerts_router import router as alerts_router
 from apps.api.routers.model_gateway_router import router as model_gateway_router
+from apps.api.routers.data_router import router as data_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("oneboard")
@@ -59,6 +62,12 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+@app.exception_handler(RequestValidationError)
+async def redact_sensitive_validation(request, exc):
+    if request.url.path in ("/api/integrations/providers/credential", "/api/data/delete-workspace"):
+        return JSONResponse({"detail":"Invalid sensitive request"},status_code=422)
+    return await request_validation_exception_handler(request,exc)
 
 # Strict CORS origin allowlist — rejects wildcard with credentials
 cors_origins_list = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
@@ -133,3 +142,5 @@ app.include_router(accountability_router)
 app.include_router(integrations_router)
 app.include_router(alerts_router)
 app.include_router(model_gateway_router)
+
+app.include_router(data_router)

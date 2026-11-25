@@ -6,7 +6,7 @@ from sqlalchemy import text
 from math import isfinite
 from apps.api.core.config import settings
 from apscheduler.schedulers.background import BackgroundScheduler
-from apps.api.core.database import SessionLocal
+from apps.api.core.database import SessionLocal, tenant_lifecycle_lock
 from apps.api.models.entities import Commitment, Invoice
 from apps.api.models.memory import MemoryConflict
 from apps.api.models.business import Business
@@ -85,6 +85,10 @@ class SchedulerService:
                 self.active_alerts_by_business.pop(business_id, None)
             for biz in businesses:
                 b_id = biz.id
+                tenant_lifecycle_lock(db,b_id)
+                if not db.query(Business.id).filter(Business.id==b_id).first():
+                    db.rollback()
+                    continue
                 # PostgreSQL serializes this tenant's alert update across
                 # independent schedulers and HTTP workers. The transaction
                 # releases the advisory lock at commit, not process exit.
@@ -171,6 +175,9 @@ class SchedulerService:
                     })
 
                 self._persist_alerts(db, b_id, alerts, now)
+                if business_id is None:
+                    from apps.api.services.data_lifecycle import apply_retention
+                    apply_retention(db,b_id,now)
                 # Keep only an optional process-local presentation cache.
                 # Durable AlertSnapshot rows are the source of alert history.
                 self.active_alerts_by_business[b_id] = list(alerts)
