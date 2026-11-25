@@ -31,6 +31,8 @@ import apps.api.models.integrations
 import apps.api.models.operations
 
 URL = os.getenv("ONEBOARD_TEST_POSTGRES_URL")
+if os.getenv("ONEBOARD_REQUIRE_POSTGRES") == "1" and not URL:
+    raise RuntimeError("Required disposable PostgreSQL URL missing")
 pytestmark = pytest.mark.skipif(not URL, reason="Requires dedicated disposable PostgreSQL CI URL")
 ROOT = Path(__file__).resolve().parents[2]
 

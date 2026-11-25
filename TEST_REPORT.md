@@ -1040,3 +1040,17 @@ added to check actual model vector generation, relative similarity,
 indexed persistence, retrieval and tenant separation using synthetic
 data only. This is not large-corpus recall or independent production
 certification. Final-head CI pending.
+
+
+## 25 November 2026: Batch D mandatory integration acceptance
+
+Batch C exact head c6551069cc3eeb2aad48e2a8d821930e3fcb6135: all five PR workflows completed successfully.
+Modernizes the complete existing Ollama integration suite, including nine
+live API tests and two additional authentication/isolation regressions.
+Live API starts a new migrated disposable SQLite application with real
+cookie sessions, CSRF, synthetic founders, and actual local models. Full
+live inference rejects hash fallback and latency benchmark rejects simulated
+results. Dedicated job requires 20 original gateway tests, 5 smoke/embedding
+tests, 11 authenticated live HTTP tests and 27 PostgreSQL tests with zero
+missing/skipped/failed cases. Ordinary offline suite intentionally skips
+live infrastructure tests. Exact new head CI pending; not production certification.

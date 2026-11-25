@@ -51,6 +51,10 @@ def get_available_models() -> List[str]:
 
 def pick_test_model() -> str | None:
     available = get_available_models()
+    required = os.getenv("ONEBOARD_CI_OLLAMA_MODEL")
+    if required:
+        assert required in available, "Required local chat model is not installed"
+        return required
     for preferred in PREFERRED_TEST_MODELS:
         for avail in available:
             if preferred in avail or avail.startswith(preferred.split(":")[0]):
@@ -60,9 +64,19 @@ def pick_test_model() -> str | None:
 
 # ─── Markers ──────────────────────────────────────────────────────────────────
 live_model = pytest.mark.skipif(
-    not is_ollama_running(),
-    reason="Ollama is not running at localhost:11434 — skipping live model tests"
+    os.getenv("ONEBOARD_LIVE_OLLAMA_TESTS") != "1",
+    reason="Dedicated live Ollama job executes this suite",
 )
+
+@pytest.fixture(scope="module", autouse=True)
+def required_live_model_readiness():
+    if os.getenv("ONEBOARD_LIVE_OLLAMA_TESTS") == "1":
+        from urllib.parse import urlsplit
+        assert urlsplit(OLLAMA_BASE_URL).hostname in ("127.0.0.1","localhost","::1"), "Live tests must use local Ollama"
+        assert is_ollama_running(), "Required Ollama is unavailable"
+        assert pick_test_model(), "No required model installed"
+        assert os.getenv("ONEBOARD_CI_EMBEDDING_MODEL", "all-minilm:latest") in get_available_models() or os.getenv("ONEBOARD_CI_EMBEDDING_MODEL","all-minilm") + ":latest" in get_available_models(), "Required embedding model not installed"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 1: Gateway Health & Discovery
@@ -92,7 +106,7 @@ class TestOllamaGatewayHealth:
 
     @pytest.mark.asyncio
     async def test_health_check_offline_fallback(self):
-        gw = OllamaGateway(base_url="http://localhost:99999")  # unreachable
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")  # unreachable
         result = await gw.check_health()
         assert result["status"] == "offline"
         assert result["offline_mode"] is True
@@ -123,7 +137,7 @@ class TestOfflineSimulationFallback:
 
     @pytest.mark.asyncio
     async def test_chat_complete_offline_returns_content(self):
-        gw = OllamaGateway(base_url="http://localhost:99999")
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")
         result = await gw.chat_complete(
             messages=[{"role": "user", "content": "What are the key financial metrics for Northstar Studio?"}]
         )
@@ -134,7 +148,7 @@ class TestOfflineSimulationFallback:
 
     @pytest.mark.asyncio
     async def test_chat_complete_offline_json_workflow(self):
-        gw = OllamaGateway(base_url="http://localhost:99999")
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")
         result = await gw.chat_complete(
             messages=[{"role": "user", "content": "Build me a workflow automation for invoice follow-up"}],
             format_json=True
@@ -148,7 +162,7 @@ class TestOfflineSimulationFallback:
 
     @pytest.mark.asyncio
     async def test_chat_complete_offline_json_agent(self):
-        gw = OllamaGateway(base_url="http://localhost:99999")
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")
         result = await gw.chat_complete(
             messages=[{"role": "user", "content": "Create a custom agent for customer onboarding"}],
             system_prompt="You are an agent studio assistant. role_title: onboarding agent",
@@ -161,7 +175,7 @@ class TestOfflineSimulationFallback:
 
     @pytest.mark.asyncio
     async def test_chat_complete_offline_json_boardroom(self):
-        gw = OllamaGateway(base_url="http://localhost:99999")
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")
         result = await gw.chat_complete(
             messages=[{"role": "user", "content": "Run deliberation in the boardroom — should we raise prices?"}],
             format_json=True
@@ -177,7 +191,7 @@ class TestOfflineSimulationFallback:
 
     @pytest.mark.asyncio
     async def test_embedding_offline_returns_valid_vector(self):
-        gw = OllamaGateway(base_url="http://localhost:99999")
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")
         vector = await gw.generate_embedding("This is a test sentence for business memory search.")
         assert isinstance(vector, list)
         assert len(vector) == 128
@@ -188,7 +202,7 @@ class TestOfflineSimulationFallback:
     @pytest.mark.asyncio
     async def test_embedding_deterministic(self):
         """Same input must always produce identical offline embedding."""
-        gw = OllamaGateway(base_url="http://localhost:99999")
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")
         text = "Northstar Studio pricing strategy Q2 2025"
         v1 = await gw.generate_embedding(text)
         v2 = await gw.generate_embedding(text)
@@ -197,7 +211,7 @@ class TestOfflineSimulationFallback:
     @pytest.mark.asyncio
     async def test_embedding_distinct_for_different_texts(self):
         """Different inputs must yield meaningfully different vectors."""
-        gw = OllamaGateway(base_url="http://localhost:99999")
+        gw = OllamaGateway(base_url="http://127.0.0.1:1")
         v1 = await gw.generate_embedding("Revenue growth strategy")
         v2 = await gw.generate_embedding("Customer churn mitigation plan")
         dot = sum(a * b for a, b in zip(v1, v2))
@@ -276,22 +290,11 @@ class TestLiveOllamaModel:
     @live_model
     async def test_live_embedding_generation(self):
         gw = OllamaGateway()
-        # Try nomic or fallback to offline
-        try:
-            vector = await gw.generate_embedding(
-                "OneBoard AI operating system for solopreneurs",
-                model="nomic-embed-text"
-            )
-            if vector and len(vector) > 0:
-                assert isinstance(vector[0], float)
-                print(f"\n[Live/Embedding] dim={len(vector)}, sample={vector[:3]}")
-                return
-        except Exception:
-            pass
-        # Fallback embedding
-        vector = await gw.generate_embedding("OneBoard AI operating system")
-        assert len(vector) > 0
-        print(f"\n[Live/Embedding/Fallback] dim={len(vector)}")
+        model = os.getenv("ONEBOARD_CI_EMBEDDING_MODEL", "all-minilm")
+        vector = await gw.genuine_embedding("OneBoard AI operating system for solopreneurs", model=model)
+        assert vector and len(vector) > 128
+        assert all(isinstance(v,float) for v in vector)
+        assert await gw.genuine_embedding("synthetic", model="oneboard-ci-missing:never") is None
 
     @pytest.mark.asyncio
     @live_model
@@ -344,6 +347,7 @@ class TestLiveOllamaModel:
                 messages=[{"role": "user", "content": f"Say 'OK_{i}' and nothing else."}],
                 model=model
             )
+            assert result['simulated'] is False, result.get('fallback_reason')
             elapsed = (time.time() - start) * 1000
             latencies.append(elapsed)
         
@@ -356,112 +360,155 @@ class TestLiveOllamaModel:
 # SECTION 4: Live API Endpoint Integration Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-API_BASE = "http://localhost:8000"
-
+API_BASE = os.getenv("ONEBOARD_LIVE_API_URL", "http://127.0.0.1:8000")
 
 def is_api_running() -> bool:
     try:
-        r = httpx.get(f"{API_BASE}/health", timeout=2.0)
-        return r.status_code == 200
+        return httpx.get(f"{API_BASE}/health", timeout=2.0).status_code == 200
     except Exception:
         return False
 
-
 api_running = pytest.mark.skipif(
-    not is_api_running(),
-    reason="OneBoard API is not running at localhost:8000 — start with uvicorn first"
+    os.getenv("ONEBOARD_LIVE_API_TESTS") != "1",
+    reason="Dedicated authenticated live API job executes this suite",
 )
 
+@pytest.fixture(scope="class")
+def live_workspaces():
+    from uuid import uuid4
+    from urllib.parse import urlsplit
+    assert urlsplit(API_BASE).hostname in ("127.0.0.1","localhost","::1")
+    assert os.getenv("ONEBOARD_LIVE_API_DISPOSABLE") == "1", "Refuse to mutate non-disposable server"
+    assert is_api_running(), "Required fresh API unavailable"
+    def register():
+        client = httpx.Client(base_url=API_BASE,timeout=30,follow_redirects=True,trust_env=False)
+        email = uuid4().hex+"@example.test"
+        password = "Synthetic-CI-Password123!"
+        response = client.post("/api/auth/register",json={"name":"Synthetic CI Founder","email":email,"password":password,"business_name":"Disposable CI Workspace"})
+        assert response.status_code==201
+        data=response.json()
+        client.headers.update({"X-CSRF-Token":data["csrf_token"],"Origin":API_BASE})
+        # Exercise real cookie login, not a fabricated session or demo bypass.
+        client.cookies.clear()
+        login=client.post("/api/auth/login",json={"email":email,"password":password})
+        assert login.status_code==200
+        client.headers["X-CSRF-Token"]=login.json()["csrf_token"]
+        return client,data["business"]["id"]
+    a,aid=register()
+    b,bid=register()
+    try:
+        yield a,aid,b,bid
+    finally:
+        a.close()
+        b.close()
 
+@api_running
 class TestLiveAPIEndpoints:
+    def test_api_health(self,live_workspaces):
+        a,_,_,_=live_workspaces
+        r=a.get("/health")
+        assert r.status_code==200
+        assert r.json()["status"]=="healthy" and r.json()["service"]=="OneBoard API"
 
-    @api_running
-    def test_api_health(self):
-        r = httpx.get(f"{API_BASE}/health", timeout=5.0)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["status"] == "healthy"
-        assert data["app"] == "OneBoard"
-        print(f"\n[API/Health] {data}")
+    def test_api_business_metrics(self,live_workspaces):
+        a,aid,_,_=live_workspaces
+        r=a.get("/api/business/metrics")
+        assert r.status_code==200
+        data=r.json()
+        assert data["tenant_id"]==aid
+        assert data["mrr"]==0 and data["health_score"] is None
+        assert data["financial_data_status"]=="unconfigured"
+        assert data["financial_data_verified"] is False
 
-    @api_running
-    def test_api_business_metrics(self):
-        r = httpx.get(f"{API_BASE}/api/business/metrics", timeout=10.0)
-        assert r.status_code == 200
-        data = r.json()
-        assert "mrr" in data
-        assert "runway_months" in data
-        assert "health_score" in data
-        assert data["health_score"] >= 0
-        print(f"\n[API/Metrics] MRR={data['mrr']}, Runway={data['runway_months']}mo, Health={data['health_score']}")
+    def test_api_model_gateway_health(self,live_workspaces):
+        a,_,_,_=live_workspaces
+        r=a.get("/api/ai/status")
+        assert r.status_code==200
+        data=r.json()
+        assert data["status"]=="connected"
+        assert data["inference_available"] is True
+        assert data["requested_model"]==os.environ["ONEBOARD_CI_OLLAMA_MODEL"]
 
-    @api_running
-    def test_api_model_gateway_health(self):
-        r = httpx.get(f"{API_BASE}/api/ai/status", timeout=5.0)
-        assert r.status_code == 200
-        data = r.json()
-        assert "status" in data
-        print(f"\n[API/ModelGateway] status={data['status']}, models={data.get('available_models', [])}")
+    def test_api_list_workflows(self,live_workspaces):
+        a,aid,b,_=live_workspaces
+        created=a.post("/api/workflows",json={"name":"Synthetic workflow","nodes":[{"id":"start","type":"trigger","data":{}}],"edges":[]})
+        assert created.status_code==200
+        wid=created.json()["id"]
+        rows=a.get("/api/workflows")
+        assert rows.status_code==200
+        assert any(row["id"]==wid and row["business_id"]==aid for row in rows.json())
+        other=b.get("/api/workflows")
+        assert other.status_code==200 and all(row["id"]!=wid for row in other.json())
 
-    @api_running
-    def test_api_list_workflows(self):
-        r = httpx.get(f"{API_BASE}/api/workflows", timeout=10.0, follow_redirects=True)
-        assert r.status_code == 200
-        data = r.json()
-        assert isinstance(data, list)
-        print(f"\n[API/Workflows] count={len(data)}")
+    def test_api_memory_search(self,live_workspaces):
+        a,_,b,_=live_workspaces
+        marker="synthetic pricing strategy revenue growth"
+        upload=a.post("/api/memory/upload",files={"file":("synthetic.txt",marker.encode(),"text/plain")})
+        assert upload.status_code==200
+        doc=upload.json()["document_id"]
+        indexed=a.post("/api/memory/index",timeout=60)
+        assert indexed.status_code==200 and indexed.json()["indexed"]>=1
+        r=a.post("/api/memory/search",json={"query":marker})
+        assert r.status_code==200 and any(row["document_id"]==doc for row in r.json()["results"])
+        r=b.post("/api/memory/search",json={"query":marker})
+        assert r.status_code==200 and r.json()["results"]==[]
 
-    @api_running
-    def test_api_memory_search(self):
-        payload = {"query": "pricing strategy revenue growth"}
-        r = httpx.post(f"{API_BASE}/api/memory/search", json=payload, timeout=10.0)
-        assert r.status_code == 200
-        data = r.json()
-        assert "results" in data
-        print(f"\n[API/Memory] query_results={len(data['results'])}")
+    def test_api_council_trigger(self,live_workspaces):
+        a,aid,b,_=live_workspaces
+        roles=["Finance Adviser","Marketing Adviser"]
+        r=a.post("/api/council/deliberate",json={"title":"Synthetic pricing review","topic":"What evidence should a new business collect before changing prices?","meeting_type":"custom","selected_advisers":roles},timeout=240)
+        assert r.status_code==200
+        data=r.json()
+        assert data["business_id"]==aid and data["stage"]=="completed"
+        transcript=data["deliberation_transcript"]
+        assert len(transcript)==3 and all(row["simulated"] is False for row in transcript)
+        assert data["synthesis_summary"].startswith("AI-generated synthesis")
+        other=b.get("/api/council/meetings")
+        assert other.status_code==200 and all(row["id"]!=data["id"] for row in other.json())
 
-    @api_running
-    def test_api_council_trigger(self):
-        """Trigger a council deliberation and verify structured response."""
-        payload = {
-            "title": "Q4 Pricing Strategy Review",
-            "topic": "Should Northstar Studio raise prices by 15% this quarter? MRR is $18,450, monthly burn is $12,200, runway is 7.2 months, 38 active customers.",
-            "meeting_type": "strategy_session",
-            "selected_advisers": ["cfo", "cmo"]
-        }
-        r = httpx.post(f"{API_BASE}/api/council/deliberate", json=payload, timeout=90.0)
-        # Accept 200 or 201; may take time for council deliberation
-        assert r.status_code in (200, 201)
-        data = r.json()
-        # Council response may contain different top-level keys depending on state
-        assert isinstance(data, dict) and len(data) > 0
-        print(f"\n[API/Council] response_keys={list(data.keys())}")
+    def test_api_alerts(self,live_workspaces):
+        a,_,_,_=live_workspaces
+        r=a.get("/api/alerts")
+        assert r.status_code==200 and isinstance(r.json(),list)
 
-    @api_running
-    def test_api_alerts(self):
-        r = httpx.get(f"{API_BASE}/api/alerts", timeout=5.0, follow_redirects=True)
-        assert r.status_code == 200
-        data = r.json()
-        assert isinstance(data, list)
-        print(f"\n[API/Alerts] count={len(data)}")
+    def test_api_list_custom_agents(self,live_workspaces):
+        a,_,b,_=live_workspaces
+        r=a.post("/api/agents",json={"name":"Synthetic analyst","role_title":"Analyst","system_prompt":"Use only supplied facts."})
+        assert r.status_code==200
+        agent=r.json()["id"]
+        own=a.get("/api/agents")
+        other=b.get("/api/agents")
+        assert own.status_code==other.status_code==200
+        assert any(row["id"]==agent for row in own.json())
+        assert all(row["id"]!=agent for row in other.json())
 
-    @api_running
-    def test_api_list_custom_agents(self):
-        r = httpx.get(f"{API_BASE}/api/agents", timeout=5.0, follow_redirects=True)
-        assert r.status_code == 200
-        data = r.json()
-        assert isinstance(data, list)
-        print(f"\n[API/Agents] count={len(data)}")
+    def test_api_founder_command_natural_language(self,live_workspaces):
+        a,_,_,_=live_workspaces
+        r=a.post("/api/ai/command",json={"command":"What should I record before making financial forecasts?"},timeout=90)
+        assert r.status_code==200
+        data=r.json()
+        assert data["simulated"] is False and data["inference_engine"]=="local_ollama"
+        assert data["response"].strip()
+        assert data["business_state_summary"]["financial_data_verified"] is False
 
-    @api_running
-    def test_api_founder_command_natural_language(self):
-        """Test natural language input processing via Founder Command."""
-        payload = {"command": "Show me all overdue invoices and flag any customers at risk of churn"}
-        r = httpx.post(f"{API_BASE}/api/business/command", json=payload, timeout=30.0)
-        # Accept 200 or 422 (if endpoint uses different schema)
-        assert r.status_code in (200, 201, 404, 422)
-        print(f"\n[API/Command] status={r.status_code}, response_len={len(r.text)}")
+    def test_api_unauthenticated_and_csrf_are_denied(self,live_workspaces):
+        a,_,_,_=live_workspaces
+        with httpx.Client(base_url=API_BASE,trust_env=False) as anon:
+            for route in ("/api/business/metrics","/api/agents","/api/workflows","/api/data/export"):
+                assert anon.get(route).status_code==401
+        csrf=a.headers.pop("X-CSRF-Token")
+        try:
+            r=a.post("/api/workflows",json={"name":"Denied","nodes":[{"id":"x","type":"trigger"}],"edges":[]})
+            assert r.status_code==403
+        finally:
+            a.headers["X-CSRF-Token"]=csrf
 
+    def test_api_cross_tenant_workflow_execution_denied(self,live_workspaces):
+        a,_,b,_=live_workspaces
+        r=a.post("/api/workflows",json={"name":"Private workflow","nodes":[{"id":"start","type":"trigger","data":{}}],"edges":[]})
+        assert r.status_code==200
+        denied=b.post("/api/workflows/"+r.json()["id"]+"/execute",headers={"Idempotency-Key":"cross-tenant-ci"})
+        assert denied.status_code in (403,404)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 5: Full End-to-End Live Integration (Ollama + API)
