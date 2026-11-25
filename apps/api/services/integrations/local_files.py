@@ -38,7 +38,7 @@ class LocalFilesAdapter:
             return {"file_type": ext.lstrip("."), "text": text, "metadata": metadata}
 
         if ext == ".json":
-            data = json.loads(file_bytes.decode("utf-8"))
+            data = json.loads(file_bytes.decode("utf-8"),parse_constant=lambda x: (_ for _ in ()).throw(ValueError("Nonfinite JSON")))
             text = _bounded_text(json.dumps(data, indent=2, ensure_ascii=False))
             return {
                 "file_type": "json", "text": text,
@@ -47,15 +47,18 @@ class LocalFilesAdapter:
 
         if ext == ".csv":
             content = _bounded_text(file_bytes.decode("utf-8-sig"))
-            reader = csv.DictReader(io.StringIO(content))
+            reader = csv.DictReader(io.StringIO(content),strict=True)
+            if not reader.fieldnames or len(reader.fieldnames)!=len(set(reader.fieldnames)) or len(reader.fieldnames)>100:
+                raise ValueError("Invalid CSV headers")
             rows = list(islice(reader, MAX_CSV_ROWS + 1))
+            if any(None in row or any(v is None for v in row.values()) for row in rows):raise ValueError("Malformed CSV row")
             if len(rows) > MAX_CSV_ROWS:
                 raise ValueError("CSV row limit exceeded")
             return {
                 "file_type": "csv",
                 "text": _bounded_text(
                     f"CSV data with {len(rows)} records. Headers: {', '.join(reader.fieldnames or [])}.\n"
-                    + content[:2000]
+                    + content
                 ),
                 "structured_data": rows,
                 "metadata": {**metadata, "row_count": len(rows)}
@@ -65,33 +68,30 @@ class LocalFilesAdapter:
             # XLSX is ZIP-based. A small upload can otherwise expand to a huge
             # workbook; check declared uncompressed size before parsing.
             with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
-                if sum(entry.file_size for entry in archive.infolist()) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                entries=archive.infolist()
+                if len(entries)>1000 or len({e.filename for e in entries})!=len(entries) or any(e.flag_bits&1 for e in entries):raise ValueError("Invalid workbook archive")
+                if sum(entry.file_size for entry in entries) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
                     raise ValueError("Spreadsheet archive exceeds extraction limit")
             wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
             try:
-                sheet = wb.active
-                rows = []
-                if sheet:
-                    if sheet.max_row and sheet.max_row > MAX_XLSX_ROWS:
-                        raise ValueError("Spreadsheet row limit exceeded")
-                    if sheet.max_column and sheet.max_column > MAX_XLSX_COLUMNS:
-                        raise ValueError("Spreadsheet column limit exceeded")
-                    for row in sheet.iter_rows(
-                        values_only=True, max_row=MAX_XLSX_ROWS + 1,
-                        max_col=MAX_XLSX_COLUMNS + 1
-                    ):
-                        if len(row) > MAX_XLSX_COLUMNS and row[MAX_XLSX_COLUMNS] is not None:
-                            raise ValueError("Spreadsheet column limit exceeded")
-                        if any(cell is not None for cell in row[:MAX_XLSX_COLUMNS]):
-                            if len(rows) >= MAX_XLSX_ROWS:
-                                raise ValueError("Spreadsheet row limit exceeded")
-                            rows.append([str(c) if c is not None else "" for c in row[:MAX_XLSX_COLUMNS]])
-                text = _bounded_text("\n".join("\t".join(row) for row in rows[:100]))
-                return {
-                    "file_type": "xlsx", "text": text,
-                    "structured_data": rows,
-                    "metadata": {**metadata, "sheet_names": wb.sheetnames, "row_count": len(rows)}
-                }
+                if len(wb.worksheets)>20:raise ValueError("Workbook sheet limit exceeded")
+                sections=[];total_rows=0;length=0
+                for sheet in wb.worksheets:
+                    if sheet.max_row and sheet.max_row>MAX_XLSX_ROWS:raise ValueError("Spreadsheet row limit exceeded")
+                    if sheet.max_column and sheet.max_column>MAX_XLSX_COLUMNS:raise ValueError("Spreadsheet column limit exceeded")
+                    lines=[]
+                    for row in sheet.iter_rows(values_only=True,max_row=MAX_XLSX_ROWS+1,max_col=MAX_XLSX_COLUMNS+1):
+                        if row[MAX_XLSX_COLUMNS] is not None:raise ValueError("Spreadsheet column limit exceeded")
+                        if not any(c is not None for c in row[:MAX_XLSX_COLUMNS]):continue
+                        total_rows+=1
+                        if total_rows>MAX_XLSX_ROWS:raise ValueError("Workbook row limit exceeded")
+                        line="\t".join(str(c) if c is not None else "" for c in row[:MAX_XLSX_COLUMNS])
+                        length+=len(line)+1
+                        if length>MAX_EXTRACTED_CHARS:raise ValueError("Workbook text limit exceeded")
+                        lines.append(line)
+                    sections.append("--- Sheet "+sheet.title+" ---\n"+"\n".join(lines))
+                return {"file_type":"xlsx","text":_bounded_text("\n\n".join(sections)),
+                        "metadata":{**metadata,"sheet_names":wb.sheetnames,"row_count":total_rows}}
             finally:
                 wb.close()
 

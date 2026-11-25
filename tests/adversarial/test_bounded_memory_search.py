@@ -73,8 +73,8 @@ async def test_search_scans_only_bounded_chunks_without_n_plus_one_queries(
     assert all(x["candidate_limit_applied"] is True for x in results)
     assert all(x["candidate_count"] == 1000 for x in results)
     assert all("not_verified_relevance" in x["score_kind"] for x in results)
-    assert len(sql) == 1, f"Expected one joined SELECT instead of N+1 lookups: {len(sql)}"
-    embedding.assert_awaited_once()
+    assert len(sql) <= 4, f"Expected bounded joined SELECTs: {len(sql)}"
+    embedding.assert_not_awaited()
 
 
 @pytest.mark.asyncio

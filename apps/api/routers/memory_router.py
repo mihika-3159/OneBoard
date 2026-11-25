@@ -1,5 +1,5 @@
 from apps.api.services.inference_stream import stream_or_wait
-from fastapi import Request, APIRouter, Depends, UploadFile, File, HTTPException, status
+from fastapi import Request, APIRouter, Depends, UploadFile, File, HTTPException, status, Form
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
@@ -12,7 +12,7 @@ from apps.api.core.auth import get_current_user, enforce_tenant_boundary, requir
 from apps.api.models.business import User
 from apps.api.services.memory_engine import memory_engine
 from apps.api.services.integrations.local_files import local_files_adapter
-from apps.api.models.memory import MemoryDocument, MemoryConflict
+from apps.api.models.memory import MemoryDocument, MemoryConflict, MemoryChunk, MemoryDocumentState
 
 router = APIRouter(prefix="/api/memory", tags=["Business Memory"])
 
@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2048)
     top_k: int = Field(default=5, ge=1, le=20, strict=True)
+    file_type: Optional[str] = Field(default=None,max_length=20)
+    source_connector: Optional[str] = Field(default=None,max_length=50)
+    document_id: Optional[str] = Field(default=None,max_length=36)
 
     @field_validator("query")
     @classmethod
@@ -51,7 +54,7 @@ async def search_memory(
             db=db,
             business_id=current_user.business_id,
             query=req.query,
-            top_k=req.top_k
+            top_k=req.top_k, filters=req.model_dump(include={"file_type","source_connector","document_id"},exclude_none=True)
         )
         return {"query": req.query, "results": results}
     return await stream_or_wait(request, work, provider_stream=False)
@@ -100,6 +103,7 @@ def resolve_conflict(
 @router.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
+    supersedes_id: Optional[str] = Form(default=None,max_length=36),
     current_user: User = Depends(require_founder_role),
     db: Session = Depends(get_db)
 ):
@@ -148,8 +152,11 @@ async def upload_document(
             business_id=current_user.business_id,
             title=filename,
             raw_content=extracted["text"],
-            file_type=extracted["file_type"]
+            file_type=extracted["file_type"], supersedes_id=supersedes_id
         )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409,str(exc)) from exc
     except HTTPException:
         db.rollback()
         raise
@@ -168,3 +175,38 @@ async def upload_document(
         "title": doc.title,
         "file_type": doc.file_type
     }
+
+
+class FeedbackRequest(BaseModel):
+    query: str = Field(min_length=1,max_length=2048)
+    chunk_id: str = Field(min_length=1,max_length=36)
+    helpful: bool = Field(strict=True)
+
+@router.get("/documents")
+def documents(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    from apps.api.services.semantic_index import progress
+    return progress(db,current_user.business_id)
+
+@router.post("/documents/{document_id}/retry")
+def retry(document_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    from apps.api.services.semantic_index import retry_document
+    try:return retry_document(db,current_user.business_id,document_id)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+@router.get("/sources/{chunk_id}")
+def source(chunk_id:str,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    from apps.api.services.memory_sources import citation
+    from apps.api.services.semantic_index import state_join
+    row=db.query(MemoryChunk,MemoryDocument,MemoryDocumentState).join(MemoryDocument,
+        (MemoryDocument.id==MemoryChunk.document_id)&(MemoryDocument.business_id==MemoryChunk.business_id)
+    ).outerjoin(MemoryDocumentState,state_join()).filter(MemoryChunk.business_id==current_user.business_id,MemoryChunk.id==chunk_id).first()
+    if not row:raise HTTPException(404,"Source unavailable")
+    c,d,s=row
+    return {"citation":citation(d,c,s),"content":c.content,"active":s.active if s else True}
+
+@router.post("/feedback")
+def feedback(req:FeedbackRequest,current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    from apps.api.services.memory_ranking import record_feedback
+    if settings.ONEBOARD_PRODUCTION_MODE:consume_tenant_budget(db,current_user.business_id,"memory_search")
+    try:return record_feedback(db,current_user.business_id,current_user.id,req.query,req.chunk_id,req.helpful)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
