@@ -24,7 +24,7 @@ export const BusinessMemoryTab: React.FC = () => {
   useEffect(()=>{void refreshDocuments();const timer=setInterval(()=>void refreshDocuments(),10000);return()=>clearInterval(timer)},[]);
   const [isSearching, setIsSearching] = useState(false);
 
-  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[] }>({ nodes: [], links: [] });
+  const [graphData, setGraphData] = useState<{ nodes: any[]; links: any[]; unresolved?:any[]; bounded?:boolean }>({ nodes: [], links: [] });
   const [conflicts, setConflicts] = useState<MemoryConflict[]>([]);
   const [isResolving, setIsResolving] = useState<string | null>(null);
   const [resolutionError, setResolutionError] = useState<string | null>(null);
@@ -51,12 +51,12 @@ export const BusinessMemoryTab: React.FC = () => {
 
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
-    setIsSearching(true);
+    setIsSearching(true);setNotice("");
     try {
       const res = await inference.run("/memory/search", {query: searchQuery, top_k: 5,file_type:fileType||null,document_id:sourceFilter||null});
       setSearchResults(res.results || []);setLastQuery(searchQuery);
     } catch (e) {
-      console.error('Search failed', e);
+      setSearchResults([]);setNotice(e instanceof Error?e.message:'Search failed');
     } finally {
       setIsSearching(false);
     }
@@ -86,7 +86,7 @@ export const BusinessMemoryTab: React.FC = () => {
     try {
       const data = await api.uploadDocument(uploadFile,replacement||undefined);
       setUploadStatus(`Document '${data.title}' ingested into memory (${data.chunks} chunks stored; semantic embeddings are indexed separately).`);
-      setUploadFile(null);setReplacement('');await refreshDocuments();
+      setUploadFile(null);setReplacement('');setSearchResults([]);setSourceFilter("");await refreshDocuments();
       await loadMemoryData();
     } catch (err: any) {
       setUploadStatus(`Upload failed: ${err.message}`);
@@ -226,6 +226,7 @@ export const BusinessMemoryTab: React.FC = () => {
           </div>
 
           <div className="p-6 rounded-2xl glass-panel space-y-4">
+            <p className="text-xs text-slate-400">{graphData.unresolved?.length||0} unresolved or ambiguous recorded relationships excluded.{graphData.bounded?' Display limit reached.':''} Links are based on recorded evidence, not independent verification.</p>
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
               Active Entity Relationships ({graphData.links?.length || 0} Edges)
             </h3>
@@ -257,6 +258,7 @@ export const BusinessMemoryTab: React.FC = () => {
             <Search className="w-5 h-5 text-indigo-400 shrink-0" />
             <input
               type="text"
+              aria-label="Memory search query"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -274,6 +276,7 @@ export const BusinessMemoryTab: React.FC = () => {
 
           <div className="flex gap-2 text-xs"><select aria-label="File type filter" value={fileType} onChange={e=>setFileType(e.target.value)}><option value="">All file types</option>{["txt","md","pdf","csv","xlsx","json"].map(t=><option key={t}>{t}</option>)}</select><select aria-label="Source document filter" value={sourceFilter} onChange={e=>setSourceFilter(e.target.value)}><option value="">All current sources</option>{documents.filter(d=>d.active).map(d=><option key={d.document_id} value={d.document_id}>{d.title} (v{d.version})</option>)}</select></div>
           <div className="space-y-3">
+            {!isSearching&&lastQuery&&searchResults.length===0&&<p role="status">No current matching sources.</p>}
             {searchResults.map((res, i) => (
               <div key={i} className="p-4 rounded-xl glass-panel space-y-1.5 text-xs">
                 <div className="flex items-center justify-between">
@@ -304,7 +307,7 @@ export const BusinessMemoryTab: React.FC = () => {
           </div>
 
           <div className="space-y-2"><h4 className="font-bold">Indexing progress</h4><p>Model: {model||"Unavailable"}</p><button onClick={async()=>{try{const r=await inference.run("/memory/index",{});setNotice(`${r.indexed||0} chunks indexed`);await refreshDocuments()}catch(e){setNotice(String(e))}}}>Index pending documents</button>
-          {documents.map(d=><div key={d.document_id} className="border border-slate-700 p-2 rounded"><p>{d.title} · v{d.version} · {d.active?d.status:"superseded"} · {d.indexed_chunks}/{d.total_chunks}</p>{d.error&&<p>{d.error}</p>}{d.active&&["failed","retry"].includes(d.status)&&<button onClick={async()=>{try{await api.retryMemoryDocument(d.document_id);await refreshDocuments()}catch(e){setNotice(String(e))}}}>Retry indexing</button>}</div>)}</div>
+          {documents.map(d=><div key={d.document_id} className="border border-slate-700 p-2 rounded"><p>{d.title} · v{d.version} · {d.active?d.status:"superseded"} · {d.indexed_chunks}/{d.total_chunks}</p>{d.error&&<p>{d.error}</p>}{d.active&&d.status!=="indexing"&&<button className="mr-3" onClick={async()=>{if(!window.confirm("Rebuild this document using the current embedding model? Lexical search remains available."))return;try{await api.reindexMemoryDocument(d.document_id);await refreshDocuments();setNotice("Reindex requested")}catch(e){setNotice(String(e))}}}>Reindex source</button>}{d.active&&["failed","retry"].includes(d.status)&&<button onClick={async()=>{try{await api.retryMemoryDocument(d.document_id);await refreshDocuments()}catch(e){setNotice(String(e))}}}>Retry indexing</button>}</div>)}</div>
           <form onSubmit={handleFileUpload} className="space-y-3">
             <label>Replace a source (optional)<select className="block w-full bg-slate-900" value={replacement} onChange={e=>setReplacement(e.target.value)}><option value="">Add new document</option>{documents.filter(d=>d.active).map(d=><option key={d.document_id} value={d.document_id}>{d.title} v{d.version}</option>)}</select></label>
             <div className="border-2 border-dashed border-slate-700 rounded-xl p-6 text-center space-y-2">

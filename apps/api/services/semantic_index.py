@@ -167,15 +167,19 @@ async def index_pending(db,tenant,limit=16,gateway=None):
                 "provider_available":bool(indexed),"failed_documents":len(errors)}
 
 
-def retry_document(db,tenant,did):
+def retry_document(db,tenant,did,reindex=False):
     _lock(db,tenant)
     doc=db.query(MemoryDocument).filter_by(business_id=tenant,id=did).first()
     if not doc:raise ValueError("Document unavailable")
     state=ensure_state(db,tenant,did)
     if not state.active or state.lease_until>_now(db):raise ValueError("Document inactive or indexing")
+    if reindex:
+        ids=db.query(MemoryChunk.id).filter_by(business_id=tenant,document_id=did)
+        db.query(SemanticVector).filter(SemanticVector.business_id==tenant,SemanticVector.chunk_id.in_(ids)).delete(synchronize_session=False)
+        state.indexed_count=0
     state.attempts=0;state.next_attempt_at=0;state.lease_until=0;state.claim_token=None;state.status="pending";state.error=None
     db.commit()
-    return {"document_id":did,"status":"pending"}
+    return {"document_id":did,"status":"pending","reindex_requested":bool(reindex)}
 
 
 def progress(db,tenant):
@@ -243,14 +247,22 @@ async def scheduled_index(db):
         db.flush()
     last=cursor.last_tenant
     from apps.api.core.tenant_context import tenant_ids
-    ids=tenant_ids(db,last,1) or tenant_ids(db,"",1)
+    ids=tenant_ids(db,last,4) or tenant_ids(db,"",4)
     if not ids:
         db.rollback()
-        return {"indexed":0}
-    tenant=ids[0]
-    cursor.last_tenant=tenant
-    db.commit()  # Advance even if the provider is unavailable.
-    with Session(bind=db.get_bind()) as scoped:
-        scoped.info.update(oneboard_request=True,oneboard_worker=True)
-        scope_tenant_session(scoped,tenant)
-        return await index_pending(scoped,tenant,limit=16,gateway=OllamaGateway())
+        return {"indexed":0,"tenants":0}
+    cursor.last_tenant=ids[-1]
+    db.commit()
+    bind=db.get_bind()
+    sem=asyncio.Semaphore(2)
+    async def index_tenant(tenant):
+        async with sem:
+            try:
+                with Session(bind=bind) as scoped:
+                    scoped.info.update(oneboard_request=True,oneboard_worker=True)
+                    scope_tenant_session(scoped,tenant)
+                    return await index_pending(scoped,tenant,limit=16,gateway=OllamaGateway())
+            except Exception:
+                return {"indexed":0,"failed":True}
+    results=await asyncio.gather(*(index_tenant(tenant) for tenant in ids))
+    return {"indexed":sum(x["indexed"] for x in results),"tenants":len(ids),"failed_tenants":sum(bool(x.get("failed")) for x in results)}

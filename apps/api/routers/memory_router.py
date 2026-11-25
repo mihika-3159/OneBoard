@@ -211,3 +211,10 @@ def feedback(req:FeedbackRequest,current_user:User=Depends(get_current_user),db:
     if settings.ONEBOARD_PRODUCTION_MODE:consume_tenant_budget(db,current_user.business_id,"memory_search")
     try:return record_feedback(db,current_user.business_id,current_user.id,req.query,req.chunk_id,req.helpful)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+@router.post("/documents/{document_id}/reindex")
+def reindex(document_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    from apps.api.services.semantic_index import retry_document
+    if settings.ONEBOARD_PRODUCTION_MODE:consume_tenant_budget(db,current_user.business_id,"document_upload")
+    try:return retry_document(db,current_user.business_id,document_id,reindex=True)
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc

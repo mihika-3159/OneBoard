@@ -67,6 +67,8 @@ FOUNDER_MUTATIONS = {
     "/api/memory/conflicts/{conflict_id}/resolve",
     "/api/memory/upload",
     "/api/memory/index",
+    "/api/memory/documents/{document_id}/retry",
+    "/api/memory/documents/{document_id}/reindex",
     "/api/business/financial/settlements",
     "/api/integrations/providers/credential",
     "/api/integrations/providers/intent",

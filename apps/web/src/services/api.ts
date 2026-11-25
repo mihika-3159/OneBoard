@@ -567,6 +567,7 @@ export const api = {
 
   memoryDocuments: async ():Promise<any>=>request<any>('/memory/documents'),
   retryMemoryDocument: async (id:string):Promise<any>=>request<any>(`/memory/documents/${id}/retry`,{method:'POST'}),
+  reindexMemoryDocument: async (id:string):Promise<any>=>request<any>(`/memory/documents/${id}/reindex`,{method:'POST'}),
   memorySource: async (id:string):Promise<any>=>request<any>(`/memory/sources/${id}`),
   memoryFeedback: async (query:string,chunk_id:string,helpful:boolean):Promise<any>=>request<any>('/memory/feedback',{method:'POST',body:JSON.stringify({query,chunk_id,helpful})}),
   uploadDocument: async (file: File,supersedesId?:string): Promise<any> => {
