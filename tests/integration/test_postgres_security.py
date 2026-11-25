@@ -1748,3 +1748,56 @@ def test_36_batch_k_rls_journal_and_closed_periods(monkeypatch):
             conn.execute(text(f"DROP OWNED BY {role}"))
             conn.execute(text(f"DROP ROLE {role}"))
         engine.dispose()
+
+def test_37_batch_l_provider_enqueue_concurrency_and_rls(monkeypatch):
+    from uuid import uuid4
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.orm import Session
+    from apps.api.core.database import scope_tenant_session
+    from apps.api.models.business import Business
+    from apps.api.models.operations import ProviderConnection,ProviderSyncJob
+    from apps.api.services.integrations import provider_runtime as rt
+    import base64,secrets
+    engine=_engine();a,b=str(uuid4()),str(uuid4());role="oneboard_provider_ci_"+uuid4().hex[:12]
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
+            conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+            conn.execute(text(f"GRANT SELECT, INSERT, UPDATE ON provider_connections,provider_sync_jobs TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            key=bytes(old) if old is not None else secrets.token_bytes(32)
+            if old is None:conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES(true,:key)"),{"key":key})
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
+        with Session(engine) as db:
+            for tenant in (a,b):
+                db.add(Business(id=tenant,name="Synthetic",currency="USD"))
+                db.add(ProviderConnection(business_id=tenant,provider="github",state="connected",scopes=["repository.read"],generation=1))
+            db.commit()
+            foreign_id=db.query(ProviderConnection).filter_by(business_id=b).one().id
+            rt.enqueue(db,b,"github","fixture-foreign")
+        gate=Barrier(2)
+        def enqueue(i):
+            with Session(engine) as db:
+                gate.wait(timeout=10)
+                return rt.enqueue(db,a,"github","fixture-same-key").id
+        with ThreadPoolExecutor(max_workers=2) as pool:ids=list(pool.map(enqueue,range(2)))
+        assert ids[0]==ids[1]
+        with Session(engine) as db:
+            assert db.query(ProviderSyncJob).filter_by(business_id=a).count()==1
+            db.execute(text(f"SET LOCAL ROLE {role}"))
+            assert db.query(ProviderConnection).count()==db.query(ProviderSyncJob).count()==0
+            scope_tenant_session(db,a)
+            assert {x.business_id for x in db.query(ProviderConnection).all()}=={a}
+            assert {x.business_id for x in db.query(ProviderSyncJob).all()}=={a}
+            db.add(ProviderSyncJob(business_id=b,connection_id=foreign_id,generation=1,request_key="foreign-write"))
+            with pytest.raises(DBAPIError):db.flush()
+            db.rollback()
+    finally:
+        with engine.begin() as conn:
+            for table in ("provider_sync_jobs","provider_connections","businesses"):
+                col="id" if table=="businesses" else "business_id"
+                conn.execute(text(f"DELETE FROM {table} WHERE {col} IN (:a,:b)"),{"a":a,"b":b})
+            conn.execute(text(f"DROP OWNED BY {role}"))
+            conn.execute(text(f"DROP ROLE {role}"))
+        engine.dispose()

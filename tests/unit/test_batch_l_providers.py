@@ -217,3 +217,99 @@ def test_disabled_and_unsafe_endpoint_configuration(db,monkeypatch):
     with pytest.raises(ValueError):transport.endpoint("https://adapter.example.evil.test/token","adapter.example")
     with pytest.raises(ValueError):transport.endpoint("http://adapter.example/token","adapter.example")
     with pytest.raises(ValueError):transport.endpoint("https://adapter.example/token?secret=x","adapter.example")
+
+@pytest.mark.parametrize("provider",list(transport.CAPABILITIES))
+def test_native_read_only_vendor_contract(db,monkeypatch,provider):
+    from apps.api.services.integrations.native_providers import NATIVE,GOOGLE_FAMILY
+    scope,native_scope,_,token_url=NATIVE[provider]
+    cfg={"enabled":True,"mode":"native","client_id":"fixture-client","client_secret":"fixture-secret",
+         "stripe_livemode":False,"notion_read_only_app":True,"native_scope":"fixture-read"}
+    monkeypatch.setattr(settings,"PROVIDER_CONNECTORS",{provider:cfg})
+    calls=[];challenge=None;revoked=False
+    def response(req):
+        nonlocal revoked
+        host,path=req.url.host,req.url.path;calls.append((host,path))
+        def ok(value):return httpx.Response(200,json=value)
+        if str(req.url)==token_url:
+            fields=json.loads(req.content) if provider=="notion" else {k:v[0] for k,v in parse_qs(req.content.decode()).items()}
+            assert fields["grant_type"]=="authorization_code" and fields["code"]=="fixture-code"
+            if provider in GOOGLE_FAMILY or provider=="github":
+                assert base64.urlsafe_b64encode(hashlib.sha256(fields["code_verifier"].encode()).digest()).decode().rstrip("=")==challenge
+            value={"token_type":"bearer","access_token":"native-fixture","refresh_token":"refresh-fixture","expires_in":3600}
+            if provider in GOOGLE_FAMILY:value["scope"]="openid "+native_scope
+            elif provider=="github":value["scope"]="read:user"
+            elif provider=="crm":value.update(scopes=[native_scope,"oauth"],hub_id=123)
+            elif provider=="notion":value.update(workspace_id="workspace-fixture")
+            else:value.update(scope="read_only",stripe_user_id="acct_fixture",livemode=False)
+            return ok(value)
+        if path=="/v1/userinfo":return ok({"sub":"google-fixture"})
+        if host=="api.github.com" and path=="/user":return ok({"id":123})
+        if path=="/v1/oauth/introspect":return ok({"active":not revoked,"scope":"fixture-read"})
+        if path=="/v1/oauth/revoke":revoked=True;return ok({})
+        if path=="/v1/search":
+            return ok({"results":[{"id":"page-1","properties":{"Name":{"type":"title","title":[{"plain_text":"Fixture"}]}}}],"has_more":False})
+        if path=="/v1/account":
+            assert req.headers["Stripe-Account"]=="acct_fixture";return ok({"id":"acct_fixture"})
+        if path=="/v1/balance_transactions":
+            assert req.headers["Stripe-Account"]=="acct_fixture"
+            if calls.count((host,path))>1:assert "created[gte]" in req.url.params
+            return ok({"data":[{"id":"txn_1","amount":123,"currency":"usd","net":120}],"has_more":False})
+        if path=="/drive/v3/changes/startPageToken":return ok({"startPageToken":"start"})
+        if path=="/drive/v3/files":return ok({"files":[{"id":"file-1","name":"Fixture"}]})
+        if path=="/drive/v3/changes":
+            assert req.url.params["pageToken"]=="start"
+            return ok({"changes":[{"fileId":"file-1","removed":False,"file":{"name":"Fixture"}}],"newStartPageToken":"next"})
+        if path=="/calendar/v3/calendars/primary/events":
+            if calls.count((host,path))>1:assert req.url.params["syncToken"]=="sync-1"
+            return ok({"items":[{"id":"event-1","summary":"Fixture"}],"nextSyncToken":"sync-1"})
+        if path=="/gmail/v1/users/me/profile":return ok({"historyId":"1"})
+        if path=="/gmail/v1/users/me/messages":return ok({"messages":[{"id":"message-1","threadId":"thread-1"}]})
+        if path=="/gmail/v1/users/me/history":
+            assert req.url.params["startHistoryId"]=="1"
+            return ok({"history":[{"id":"2","messagesAdded":[{"message":{"id":"message-2"}}]}],"historyId":"2"})
+        if path=="/user/repos":return ok([{"id":1,"name":"Public","private":False},{"id":2,"name":"Private","private":True}])
+        if path in ("/crm/v3/objects/contacts","/crm/v3/objects/contacts/search"):
+            if path.endswith("/search"):assert json.loads(req.content)["filterGroups"]
+            return ok({"results":[{"id":"contact-1","properties":{"firstname":"Fixture"}}]})
+        if path=="/revoke" or path.endswith("/token/revoke") or (path.startswith("/applications/") and path.endswith("/token")):
+            return httpx.Response(204)
+        if path=="/oauth/deauthorize":return ok({"stripe_user_id":"acct_fixture"})
+        raise AssertionError((host,path))
+    original=httpx.Client
+    monkeypatch.setattr(transport.httpx,"Client",lambda **kw:original(transport=httpx.MockTransport(response),**kw))
+    auth=rt.start_authorization(db,"a","actor",provider,[scope])
+    q=parse_qs(urlsplit(auth["authorization_url"]).query);challenge=q.get("code_challenge",[None])[0]
+    assert q["state"] and q["response_type"]==["code"]
+    if provider in GOOGLE_FAMILY or provider=="github":assert q["code_challenge_method"]==["S256"]
+    assert rt.complete_authorization(db,"a","actor",q["state"][0],"fixture-code")["state"]=="connected"
+    row=rt.connection(db,"a",provider)
+    assert transport.adapter_for(provider).actions=={}
+    rt.enqueue(db,"a",provider,"native-1");assert rt.run_sync(db,"a")["state"]=="succeeded"
+    assert row.checkpoint and db.query(ProviderRecord).count()==1
+    rt.enqueue(db,"a",provider,"native-2");assert rt.run_sync(db,"a")["state"]=="succeeded"
+    assert db.query(ProviderRecord).count()==(2 if provider=="email" else 1)
+    assert "Private" not in str([x.payload for x in db.query(ProviderRecord).all()])
+    queued=rt.enqueue(db,"a",provider,"native-reset")
+    assert rt.reset_checkpoint(db,"a",provider,"RESET CHECKPOINT "+provider)["checkpoint_reset"]
+    assert row.checkpoint is None and db.get(ProviderSyncJob,queued.id).state=="cancelled"
+    assert db.query(ProviderRecord).count()>0
+    result=rt.disconnect(db,"a",provider)
+    assert result["remote_revocation_confirmed"]==(provider in GOOGLE_FAMILY or provider=="finance")
+    assert row.encrypted_credentials is None
+
+def test_adapter_reconfiguration_blocks_credential_egress(db,monkeypatch):
+    f=fake(monkeypatch,"github",["repository.read"]);row=connect(db,"github",f.scopes,f)
+    prior=list(f.calls)
+    config=dict(settings.PROVIDER_CONNECTORS);config["github"]={**config["github"],"client_id":"changed"}
+    monkeypatch.setattr(settings,"PROVIDER_CONNECTORS",config)
+    rt.enqueue(db,"a","github","mismatch-job")
+    result=rt.run_sync(db,"a")
+    assert result["state"]=="failed" and result["error_code"]=="adapter_identity_changed"
+    assert row.state=="auth_required" and f.calls==prior
+
+def test_malformed_sensitive_page_is_atomic(db,monkeypatch):
+    f=fake(monkeypatch,"github",["repository.read"]);row=connect(db,"github",f.scopes,f)
+    f.pages=[(None,page("next",[("1","r1",{"name":"fine"}),("2","r1",{"nested":{"access_token":"not-a-real-secret"}})]))]
+    rt.enqueue(db,"a","github","malformed-job")
+    assert rt.run_sync(db,"a")["state"]=="failed"
+    assert row.checkpoint is None and db.query(ProviderRecord).count()==0

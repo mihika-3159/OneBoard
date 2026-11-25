@@ -347,7 +347,7 @@ def dispatch_one(db,tenant):
         _lock(db,tenant)
         action=db.query(ProviderDelivery).filter_by(business_id=tenant,id=ident).one()
         row=by_id(db,tenant,action.connection_id)
-        if row.generation!=action.generation or row.state!="connected":
+        if (not db.query(Business).filter_by(id=tenant,owner_id=action.actor_id).first() or not db.query(User).filter_by(id=action.actor_id,business_id=tenant,is_active=True).first() or row.generation!=action.generation or row.state!="connected"):
             action.state="cancelled";action.updated_at=now();db.commit();return delivery_public(action)
         try:
             if adapter.fingerprint!=row.adapter_fingerprint or action.action not in adapter.actions:raise ValueError("Adapter identity changed")

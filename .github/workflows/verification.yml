@@ -216,7 +216,7 @@ jobs:
           createdb -h 127.0.0.1 -U oneboard_ci queue_test
           python scripts/require_test_suite.py 2 queue.xml tests/test_inference_queue_postgres.py
       - name: Run disposable PostgreSQL migration and concurrency tests
-        run: python scripts/require_test_suite.py 36 postgres-required.xml tests/integration/test_postgres_security.py
+        run: python scripts/require_test_suite.py 37 postgres-required.xml tests/integration/test_postgres_security.py
       - name: Verify full PostgreSQL 16 logical backup and restore in disposable CI
         env:
           ONEBOARD_CI_DISPOSABLE_RESTORE: "1"
