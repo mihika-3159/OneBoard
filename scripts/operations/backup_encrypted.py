@@ -40,6 +40,8 @@ def _pg_environment(source: dict[str, str]) -> dict[str, str]:
 
 
 def verify_manifest(archive: Path, manifest: Path) -> dict:
+    if any(path.is_symlink() or not path.is_file() for path in (archive, manifest)):
+        raise RuntimeError("Backup archive and manifest must be regular non-symlink files")
     record = json.loads(manifest.read_text(encoding="utf-8"))
     expected = record.get("sha256")
     if (record.get("format") != "age-encrypted-pg-custom-v1"
@@ -104,6 +106,7 @@ def backup(directory: Path, recipient: str, source: dict[str, str]) -> tuple[Pat
                 digest.update(piece)
         # Never overwrite an existing backup, even under a concurrent run.
         os.link(temporary, archive, follow_symlinks=False)
+        manifest_created = False
         try:
             metadata = dict(
                 format="age-encrypted-pg-custom-v1", filename=name,
@@ -112,6 +115,7 @@ def backup(directory: Path, recipient: str, source: dict[str, str]) -> tuple[Pat
                 verified_restore=False, offsite_replicated=False
             )
             with manifest.open("x", encoding="utf-8") as handle:
+                manifest_created = True
                 os.chmod(manifest, 0o600)
                 json.dump(metadata, handle, sort_keys=True)
                 handle.flush()
@@ -119,7 +123,8 @@ def backup(directory: Path, recipient: str, source: dict[str, str]) -> tuple[Pat
             verify_manifest(archive, manifest)
         except Exception:
             archive.unlink(missing_ok=True)
-            manifest.unlink(missing_ok=True)
+            if manifest_created:
+                manifest.unlink(missing_ok=True)
             raise
         return archive, manifest
     finally:

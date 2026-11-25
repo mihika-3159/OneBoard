@@ -136,3 +136,51 @@ def test_probe_checks_hsts_host_rejection_and_forwarded_header_rewrite():
         probe("https://api.example.test", FakeClient(spoofed_code=403))
     with pytest.raises(RuntimeError, match="Host"):
         probe("https://api.example.test", FakeClient(host_code=200))
+
+
+def test_backup_manifest_collision_preserves_existing_file(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from io import BytesIO
+    from scripts.operations import backup_encrypted as module
+
+    destination = tmp_path / "private"
+    destination.mkdir(mode=0o700)
+    fixed = datetime(2026, 11, 25, tzinfo=timezone.utc)
+    monkeypatch.setattr(module, "datetime", SimpleNamespace(now=lambda _: fixed))
+    monkeypatch.setattr(module.os, "urandom", lambda n: bytes([1]) * n)
+    archive = destination / "oneboard-20261125T000000Z-01010101.dump.age"
+    manifest = Path(str(archive) + ".json")
+    manifest.write_text("existing manifest")
+
+    def fake_popen(command, **kwargs):
+        if command[0] == "age":
+            kwargs["stdout"].write(b"fictional ciphertext " * 8)
+        return SimpleNamespace(stdout=BytesIO(b"fictional dump"),
+                               wait=lambda **_: 0, poll=lambda: 0)
+
+    monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
+    env = {
+        "ONEBOARD_BACKUP_OPERATION_APPROVED": "YES",
+        "ONEBOARD_PRODUCTION_MODE": "true",
+        "DATABASE_URL": "postgresql+psycopg://ci:placeholder@localhost/oneboard",
+    }
+    with pytest.raises(FileExistsError):
+        backup(destination, "age1" + "q" * 58, env)
+    assert manifest.read_text() == "existing manifest"
+    assert not archive.exists()
+    assert list(destination.iterdir()) == [manifest]
+
+
+def test_manifest_verifier_rejects_symlink(tmp_path):
+    artifact = tmp_path / "actual.dump.age"
+    artifact.write_bytes(b"fictional ciphertext")
+    linked = tmp_path / "linked.dump.age"
+    linked.symlink_to(artifact)
+    manifest = Path(str(linked) + ".json")
+    manifest.write_text(json.dumps({
+        "format": "age-encrypted-pg-custom-v1",
+        "filename": linked.name,
+        "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+    }))
+    with pytest.raises(RuntimeError, match="non-symlink"):
+        verify_manifest(linked, manifest)
