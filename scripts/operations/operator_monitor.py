@@ -17,7 +17,7 @@ def evaluate(health,metrics,backup_status=None,backup_max_age_hours=26):
         if health.get(key) not in good:alerts.add(key+"_unavailable")
     if metrics.get("inflight",0)>100:alerts.add("request_concurrency_high")
     pool=metrics.get("pool",{})
-    if pool.get("size",0)>0 and pool.get("checkedout",0)>=pool["size"]+max(0,pool.get("overflow",0)):alerts.add("database_pool_saturated")
+    if pool.get("configured_max",0)>0 and pool.get("checkedout",0)>=pool["configured_max"]:alerts.add("database_pool_saturated")
     events=metrics.get("events",{})
     if events.get("scheduler_failed",0)>0 and health.get("scheduler")!="ready":alerts.add("background_job_failure")
     if backup_status is not None:

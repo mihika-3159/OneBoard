@@ -46,7 +46,12 @@ def verify_encrypted_roundtrip() -> dict:
 
         backup_env = dict(os.environ, ONEBOARD_PRODUCTION_MODE="true",
                           ONEBOARD_BACKUP_OPERATION_APPROVED="YES")
-        archive, manifest = backup(folder, recipient, backup_env)
+        from scripts.operations.backup_manager import manage,inventory
+        scheduled=manage(folder,recipient,backup_env)
+        assert scheduled["backup_created"] is True
+        repeated=manage(folder,recipient,backup_env)
+        assert repeated["backup_created"] is False and repeated["verified_archives"]==1
+        _,archive,manifest,_=inventory(folder)[0]
         verify_manifest(archive, manifest)
         scratch = parsed.set(database="oneboard_restore_drill").render_as_string(
             hide_password=False

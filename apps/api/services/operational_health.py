@@ -74,6 +74,7 @@ class Telemetry:
 def snapshot():
     pool=engine.pool
     pool_stats={name:getattr(pool,name)() for name in ("size","checkedout","overflow") if callable(getattr(pool,name,None))}
+    if engine.dialect.name=="postgresql":pool_stats["configured_max"]=settings.DB_POOL_SIZE+settings.DB_MAX_OVERFLOW
     resources={}
     try:
         import resource

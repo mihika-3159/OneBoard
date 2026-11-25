@@ -74,9 +74,14 @@ async def lifespan(app: FastAPI):
     finally:
         draining(True)
         logger.info("Shutting down OneBoard Services...")
-        scheduler_service.shutdown()
-        from apps.api.core.database import engine
-        engine.dispose()
+        try:
+            scheduler_service.shutdown()
+        finally:
+            from apps.api.core.database import engine
+            engine.dispose()
+            # Uvicorn has stopped accepting requests at this point. Reset for
+            # an explicitly new lifespan or a reusable ASGI test harness.
+            draining(False)
 
 from sqlalchemy.exc import TimeoutError as DatabasePoolTimeout, OperationalError
 from fastapi import Request
