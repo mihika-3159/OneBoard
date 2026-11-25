@@ -93,10 +93,21 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     expense_total = Decimal("0.00")
     overdue_total = Decimal("0.00")
     overdue_count = 0
-    journal_rows=db.query(JournalEntry).filter(JournalEntry.business_id==business_id,JournalEntry.invoice_id.isnot(None)).all()
+    journal_rows=db.query(JournalEntry).filter(JournalEntry.business_id==business_id).all()
     by_invoice={}
-    for row in journal_rows:by_invoice.setdefault(row.invoice_id,[]).append(row)
+    for row in journal_rows:
+        if row.invoice_id:by_invoice.setdefault(row.invoice_id,[]).append(row)
     cash = business.current_cash_balance
+    profile_cash=cash
+    opening_recorded=any(r.kind in ("opening_cash","opening_overdraft") for r in journal_rows)
+    journal_cash=None
+    cash_source="business_profile"
+    if journal_rows:
+        from apps.api.services.finance_ledger import trial_balance,major
+        try:
+            journal_cash=Decimal(major(trial_balance(journal_rows,business.currency).get("cash",0),business.currency))
+            if opening_recorded:cash=journal_cash;cash_source="journal_with_recorded_opening_balance"
+        except ValueError:issues.append("invalid_journal_cash_balance")
     if cash is None or not isfinite(cash):
         issues.append("invalid_business_cash_balance")
         cash = Decimal(0)
@@ -131,7 +142,7 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
     monthly_burn = float(expense_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
     overdue = float(overdue_total.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP))
     runway, runway_status, net_burn = runway_from_records(cash, expense_total, customer_total,scale)
-    configured = bool(customers or invoices or expenses or cash)
+    configured = bool(customers or invoices or expenses or cash or journal_rows)
     if issues:
         # Partial figures are not a valid basis for a positive health claim.
         runway, runway_status = None, "needs_review"
@@ -156,6 +167,9 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
         "runway_months": runway,
         "runway_status": runway_status,
         "cash_balance": float(round(cash, scale)),
+        "profile_cash_balance": str(profile_cash) if profile_cash is not None and isfinite(profile_cash) else None,
+        "journal_cash_balance": str(journal_cash) if journal_cash is not None else None,
+        "journal_opening_balance_recorded": opening_recorded,
         "overdue_receivables_amount": overdue,
         "overdue_invoices_count": overdue_count,
         "active_customers_count": len(customers),
@@ -170,11 +184,11 @@ def calculate_business_financials(db: Session, business_id: str) -> Dict[str, An
         "financial_sources": {
             "mrr": "active_customer_records",
             "monthly_burn": "recurring_expense_records",
-            "cash_balance": "business_profile",
+            "cash_balance": cash_source,
             "overdue_receivables": "overdue_invoice_records",
         },
         "financial_provenance": {
-            "cash_balance": "user_recorded_unreconciled",
+            "cash_balance": "recorded_journal_not_independently_verified" if opening_recorded and journal_cash is not None else "user_recorded_unreconciled",
             "mrr": "user_recorded_unreconciled",
             "monthly_burn": "user_recorded_unreconciled",
             "overdue_receivables": "invoice_status_unreconciled",

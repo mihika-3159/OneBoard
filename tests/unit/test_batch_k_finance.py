@@ -238,3 +238,15 @@ def test_three_decimal_base_financials_and_currency_precision(db):
     inv=invoice(db,"1.234",tenant="b",ident="kwd-inv")
     post(db,"invoice_issue","1.234","kwd-issue",inv.id,currency="KWD",tenant="b")
     assert ledger.invoice_balance(db,"b",inv)==Decimal("1.234")
+
+
+def test_dashboard_cash_switches_only_after_explicit_opening_balance(db):
+    post(db,"capital","20","capital-0001")
+    before=calculate_business_financials(db,"a")
+    assert before["cash_balance"]==123.45 and before["journal_cash_balance"]=="20.00"
+    post(db,"opening_cash","100","opening-0001")
+    post(db,"expense","5","expense-0001")
+    after=calculate_business_financials(db,"a")
+    assert after["cash_balance"]==115 and after["journal_cash_balance"]=="115.00"
+    assert after["profile_cash_balance"]=="123.45"
+    assert after["financial_sources"]["cash_balance"]=="journal_with_recorded_opening_balance"

@@ -82,7 +82,7 @@ export const FinanceTab: React.FC = () => {
         {[
           ['Monthly Recurring Revenue', summary?.mrr],
           ['Monthly Recurring Expenses', summary?.monthly_burn],
-          ['User-Recorded Cash Balance', summary?.cash_balance],
+          ['Recorded Cash Balance', summary?.cash_balance],
           ['Recorded Overdue Receivables', summary?.overdue_receivables_amount],
         ].map(([label, value]) => (
           <div key={String(label)} className="p-5 rounded-2xl glass-panel">
@@ -111,7 +111,7 @@ export const FinanceTab: React.FC = () => {
           {' '}{summary?.overdue_invoices_count ?? 0} overdue invoice records.
         </p>
         <p className="text-xs text-slate-400">
-          Last recorded data update: {summary?.financial_data_updated_at || 'Not available'}.
+          Last recorded data update: {summary?.financial_data_updated_at || 'Not available'}. Cash source: {summary?.financial_sources?.cash_balance === 'journal_with_recorded_opening_balance' ? 'Accounting journal with recorded opening balance' : 'Business profile (unreconciled)' }.
         </p>
         <p className="text-xs text-slate-400">
           {summary?.financial_data_verified ? 'Independently verified' : 'Unverified application records'}.
