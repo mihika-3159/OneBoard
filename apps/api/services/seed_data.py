@@ -25,8 +25,8 @@ def seed_northstar_studio(db: Session, reset: bool = False):
         if demo_doc_ids:
             db.query(MemoryChunk).filter(MemoryChunk.document_id.in_(demo_doc_ids)).delete(synchronize_session=False)
 
-        from apps.api.models.operations import JournalEntry, AccountingClose, BankStatementLine, FinanceForecast, SemanticVector, SideEffectOutbox, WorkflowRevision, WorkflowTriggerState, WorkflowEvent
-        for model in [FinanceForecast, BankStatementLine, AccountingClose, JournalEntry, MemoryRelevanceFeedback, MemoryDocumentState, SemanticVector, WorkflowEvent, WorkflowTriggerState, WorkflowRevision, SideEffectOutbox, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
+        from apps.api.models.operations import UnitEconomicsObservation, JournalEntry, AccountingClose, BankStatementLine, FinanceForecast, SemanticVector, SideEffectOutbox, WorkflowRevision, WorkflowTriggerState, WorkflowEvent
+        for model in [UnitEconomicsObservation, FinanceForecast, BankStatementLine, AccountingClose, JournalEntry, MemoryRelevanceFeedback, MemoryDocumentState, SemanticVector, WorkflowEvent, WorkflowTriggerState, WorkflowRevision, SideEffectOutbox, Product, Customer, Lead, Invoice, Expense, Commitment, SupportTicket,
                       Goal, Task, Project, Decision, Evidence, CouncilMeeting, AdviserScorecard,
                       MemoryDocument, EntityRelationship, MemoryConflict,
                       CustomAgent, ApprovalRequest, WorkflowRun, WorkflowDefinition, IntegrationAccount,

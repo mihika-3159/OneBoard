@@ -394,3 +394,22 @@ def forecast_observe(forecast_id:str,current_user:User=Depends(require_founder_r
     finance_budget(db,current_user)
     try:return forecasts.observe(db,current_user.business_id,current_user.id,forecast_id)
     except ValueError as exc:invalid_finance(db,exc)
+
+from apps.api.services import unit_economics
+from apps.api.models.operations import UnitEconomicsObservation
+class UnitEconomicsRequest(BaseModel):
+    period:str=Field(min_length=7,max_length=7)
+    starting_customers:int=Field(ge=0,le=10000000,strict=True)
+    new_customers:int=Field(ge=0,le=10000000,strict=True)
+    lost_customers:int=Field(ge=0,le=10000000,strict=True)
+    ending_customers:int=Field(ge=0,le=10000000,strict=True)
+    evidence_text:str=Field(min_length=1,max_length=262144,repr=False)
+@router.post("/financial/unit-economics")
+def economics_record(req:UnitEconomicsRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    finance_budget(db,current_user)
+    try:return unit_economics.record(db,current_user.business_id,current_user.id,**req.model_dump())
+    except ValueError as exc:invalid_finance(db,exc)
+@router.get("/financial/unit-economics")
+def economics_list(current_user:User=Depends(get_current_user),db:Session=Depends(get_db)):
+    rows=db.query(UnitEconomicsObservation).filter_by(business_id=current_user.business_id).order_by(UnitEconomicsObservation.period.desc()).limit(60).all()
+    return {"records":[unit_economics.serialize(r) for r in rows]}

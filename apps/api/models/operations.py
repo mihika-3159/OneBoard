@@ -292,3 +292,17 @@ class FinanceForecast(Base):
     due_period=Column(String(7),nullable=False)
     outcome=Column(JSON,nullable=True)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class UnitEconomicsObservation(Base):
+    __tablename__="unit_economics_observations"
+    __table_args__=(UniqueConstraint("business_id","period",name="uq_unit_economics_period"),)
+    id=Column(String(36),primary_key=True,default=lambda:str(uuid.uuid4()))
+    business_id=Column(String(36),nullable=False)
+    period=Column(String(7),nullable=False)
+    close_id=Column(String(36),nullable=False)
+    source_hash=Column(String(64),nullable=False)
+    request_hash=Column(String(64),nullable=False)
+    inputs=Column(JSON,nullable=False)
+    results=Column(JSON,nullable=False)
+    actor_id=Column(String(36),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)

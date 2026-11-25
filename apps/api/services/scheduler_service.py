@@ -200,7 +200,8 @@ class SchedulerService:
                     invalid_amount = False
                     for invoice in overdue_invs:
                         try:
-                            value = float(invoice.amount)
+                            from apps.api.services.finance_ledger import invoice_balance
+                            value = invoice_balance(db,b_id,invoice)
                             if not isfinite(value) or value < 0:
                                 raise ValueError("Invalid overdue receivable")
                             amounts.append(value)

@@ -3,7 +3,7 @@ from decimal import Decimal,ROUND_HALF_UP
 from datetime import date,datetime
 from apps.api.core.money import decimal_value
 from apps.api.models.operations import AccountingClose,FinanceForecast
-from apps.api.services.finance_ledger import digest,serialize_close,minor,major,period_key,workspace
+from apps.api.services.finance_ledger import digest,serialize_close,minor,major,period_key,workspace,precision
 from apps.api.services.tenant_storage import _lock
 
 def next_month(period,offset):
@@ -18,7 +18,7 @@ def rate(value):
 def scenarios(snapshot,months,assumptions):
     if type(months) is not int or not 1<=months<=24:raise ValueError("Forecast horizon must be 1–24 months")
     if set(assumptions)!={"low","base","high"}:raise ValueError("Exactly low, base and high assumptions required")
-    currency=snapshot["currency"];scale=Decimal(10)**__import__("apps.api.services.finance_ledger",fromlist=["precision"]).precision(currency)
+    currency=snapshot["currency"];scale=Decimal(10)**precision(currency)
     cash=Decimal(snapshot["cash_balance"]);revenue=Decimal(snapshot["revenue"]);cost=Decimal(snapshot["cost_of_sales"])+Decimal(snapshot["operating_expenses"])
     if revenue<0 or cost<0:raise ValueError("Negative baseline revenue or expense requires review")
     normalized={};result={}

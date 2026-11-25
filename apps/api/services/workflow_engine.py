@@ -45,8 +45,9 @@ class ToolRegistry:
         # A financial workflow must not bypass the dashboard's data
         # quality checks: a negative, NaN, or missing amount must fail the
         # workflow visibly, never become an actionable collection total.
+        from apps.api.services.finance_ledger import invoice_balance
         total = sum(
-            (_money(invoice.amount, "invoice.amount") for invoice in invoices),
+            (_money(invoice_balance(db,business_id,invoice) if hasattr(invoice,"id") else invoice.amount, "invoice.amount") for invoice in invoices),
             Decimal("0.00"),
         )
         return {
@@ -64,12 +65,16 @@ class ToolRegistry:
         ).order_by(Invoice.id).all()
         drafts = []
         for inv in invoices:
-            _money(inv.amount, "invoice.amount")
+            from apps.api.services.finance_ledger import invoice_balance
+            amount=_money(invoice_balance(db,business_id,inv),"invoice.amount")
+            from apps.api.models.business import Business
+            biz=db.query(Business).filter_by(id=business_id).first()
+            currency=biz.currency if biz else "USD"
             drafts.append({
                 "invoice_id": inv.id,
                 "recipient": inv.customer_name,
                 "subject": f"Reminder: Invoice {inv.invoice_number} is pending",
-                "body": f"Dear {inv.customer_name},\nThis is a friendly note that invoice {inv.invoice_number} for ${inv.amount} is past due. Please let us know if you need any assistance."
+                "body": f"Dear {inv.customer_name},\nThis is a friendly note that invoice {inv.invoice_number} for {currency} {amount} is past due. Please let us know if you need any assistance."
             })
         return {"drafts_created": len(drafts), "drafts": drafts}
 

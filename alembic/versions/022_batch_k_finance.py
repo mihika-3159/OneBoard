@@ -2,13 +2,13 @@
 from alembic import op
 import sqlalchemy as sa
 from decimal import Decimal,ROUND_HALF_UP
-from apps.api.models.operations import JournalEntry,AccountingClose,BankStatementLine,FinanceForecast
+from apps.api.models.operations import JournalEntry,AccountingClose,BankStatementLine,FinanceForecast,UnitEconomicsObservation
 revision="022_batch_k_finance"
 down_revision="021_batch_j_memory"
 branch_labels=None
 depends_on=None
 REGISTRY="_oneboard_022_created_schema"
-MODELS=(JournalEntry,AccountingClose,BankStatementLine,FinanceForecast)
+MODELS=(JournalEntry,AccountingClose,BankStatementLine,FinanceForecast,UnitEconomicsObservation)
 FIELDS={"businesses":("monthly_burn_rate","current_cash_balance"),"products":("price",),"customers":("mrr","contract_price"),"leads":("estimated_value",),"invoices":("amount",),"expenses":("amount",)}
 
 def upgrade():
@@ -48,5 +48,22 @@ def upgrade():
             op.execute(f"CREATE POLICY oneboard_tenant_scope ON public.{name} USING {pred} WITH CHECK {pred}")
 
 def downgrade():
-    # Refuse destructive financial-history downgrade. Restore a pre-upgrade backup instead.
-    raise RuntimeError("Financial exact-storage migration is irreversible; restore a pre-upgrade backup")
+    conn=op.get_bind()
+    # Disposable/empty databases may downgrade for schema regression testing.
+    # A populated accounting journal must never be silently discarded.
+    for model in MODELS:
+        if conn.execute(sa.select(sa.func.count()).select_from(model.__table__)).scalar_one():
+            raise RuntimeError("Accounting history exists; restore a pre-upgrade backup")
+    added={r[0] for r in conn.execute(sa.text("SELECT name FROM "+REGISTRY))}
+    for model in reversed(MODELS):
+        if model.__table__.name in added:model.__table__.drop(conn)
+    for table,fields in FIELDS.items():
+        change=[n for n in fields if table+"."+n in added]
+        if not change:continue
+        if conn.dialect.name=="postgresql":
+            for name in change:op.alter_column(table,name,type_=sa.Float(),postgresql_using=f"{name}::double precision/100")
+        else:
+            with op.batch_alter_table(table,recreate="always") as batch:
+                for name in change:batch.alter_column(name,existing_type=sa.BigInteger(),type_=sa.Float())
+            for name in change:conn.execute(sa.text(f"UPDATE {table} SET {name}={name}/100.0 WHERE {name} IS NOT NULL"))
+    op.drop_table(REGISTRY)

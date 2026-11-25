@@ -73,6 +73,7 @@ FOUNDER_MUTATIONS = {
     "/api/business/financial/bank/import",
     "/api/business/financial/bank/{line_id}/match",
     "/api/business/financial/forecasts",
+    "/api/business/financial/unit-economics",
     "/api/business/financial/forecasts/{forecast_id}/observe",
     "/api/memory/documents/{document_id}/retry",
     "/api/memory/documents/{document_id}/reindex",

@@ -187,7 +187,7 @@ def statement(db,tenant,period):
     return {"period":period,"currency":biz.currency,"entry_count":len(rows),
       "trial_balance":{k:major(v,biz.currency) for k,v in sorted(balances.items())},
       "closing_balances":{k:major(v,biz.currency) for k,v in sorted(cumulative.items())},
-      "revenue":major(revenue,biz.currency),"cost_of_sales":major(cogs,biz.currency),"operating_expenses":major(operating,biz.currency),
+      "acquisition_expense":major(balances.get("acquisition_expense",0),biz.currency),"revenue":major(revenue,biz.currency),"cost_of_sales":major(cogs,biz.currency),"operating_expenses":major(operating,biz.currency),
       "gross_profit":major(revenue-cogs,biz.currency),"operating_result":major(revenue-cogs-operating,biz.currency),
       "cash_balance":major(cumulative.get("cash",0),biz.currency),
       "gross_margin_pct":str((Decimal(revenue-cogs)*100/revenue).quantize(Decimal("0.01"))) if revenue>0 else None,
