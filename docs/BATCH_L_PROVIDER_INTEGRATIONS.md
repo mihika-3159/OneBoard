@@ -1,0 +1,19 @@
+# Batch L: provider integrations (79–91)
+
+The default installation does not contact a provider. Legacy sandbox connectors remain separate from the external lifecycle. No real third-party account, vendor OAuth application, paid service or public HTTPS host is provisioned by this change.
+
+## Operator configuration
+Set `PUBLIC_API_ORIGIN` to the deployed HTTPS origin. Create a separate 32-byte random base64 encryption key for `PROVIDER_ENCRYPTION_KEYS`, select its ID with `PROVIDER_ACTIVE_KEY_ID`. Keep the previous key available while rotating tenant credential envelopes; after all active credentials and authorization verifiers have rotated, retire the previous key. The prior `PROVIDER_TOKEN_KEY` must remain available until legacy staged credentials are converted. Never put actual keys in source code.
+
+`PROVIDER_CONNECTORS` is a server-side JSON map keyed by crm, email, calendar, finance, github, notion or google. Each enabled normalized adapter has an explicit trusted HTTPS host, authorization, token, identity, sync and revoke URLs, client ID and secret; writable adapters also have action/status URLs. A webhook secret (at least 32 characters) is optional. Configure redirect URI as PUBLIC_API_ORIGIN/api/integrations/providers/oauth/callback. Configure TLS, no redirects and access-log query redaction at the reverse proxy as well. No tenant controls any endpoint URL.
+
+## Normalized adapter protocol
+The transport is a real bounded HTTPS client for a trusted adapter implementing the following protocol. This is NOT the native HTTP API of each named vendor; a vendor-specific adapter or bridge is necessary before connecting a live vendor account.
+- OAuth authorization code with S256 PKCE and actor/tenant-bound single-use state. Token endpoint returns Bearer access token, explicit granted scope(s), expiry, optional refresh token. Identity endpoint returns account_id. The adapter must preserve account identity across refresh.
+- Sync endpoint accepts opaque cursor, scopes, limit <=100 and returns records [{id,revision,payload}], next_cursor and has_more. Persisted checkpoint and records commit atomically; revisions are deduplicated or presented for an explicit conflict decision. Provider records remain a distinct sourced collection, not invented financial or CRM facts.
+- Action endpoint accepts action, payload, idempotency_key. Status endpoint accepts the same key and returns status (confirmed/rejected/pending/not_found/unknown), idempotency_key and remote_reference on confirmation. The adapter must persist delivery identity; OneBoard records dispatching before contacting it and never automatically replays an ambiguous write. A crashed or timed-out write can be reconciled by status.
+- Revoke endpoint reports revoked=true only upon confirmation. Local disconnect clears credentials and cancels queued sync/undispatched actions even if remote revoke fails.
+- Webhook POST /api/integrations/providers/webhook/{provider}/{tenant}/{connection_id}, exact raw JSON {event_id,account_id,type:"records.changed"}. Headers x-oneboard-timestamp (Unix seconds), x-oneboard-signature (hex HMAC-SHA256). Sign provider, tenant, connection_id, timestamp and raw body joined by newline bytes. Verify timestamp within 300 seconds before tenant scope; deduplicate event and body hash atomically with sync enqueue.
+
+## Verification
+Seven simulated provider contracts exercise OAuth PKCE, grants, identity, pages, checkpoints, duplicate/conflicting records and revocation. Additional tests verify state replay and tenant binding, refresh and rate limits, credential rotation, authenticated webhook replay and uncertain delivery. No simulated outcome is evidence of actual vendor authorization, real delivery or native vendor compatibility. The native vendors' approval, account-specific scopes and real service access remain separately gated.
