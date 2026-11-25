@@ -21,6 +21,11 @@ INDEXES=(("tasks",("business_id","id")),("customers",("business_id","id")),("inv
 def upgrade():
     conn=op.get_bind()
     op.create_table(REGISTRY,sa.Column("name",sa.String(100),primary_key=True))
+    existing={c['name'] for c in sa.inspect(conn).get_columns('data_retention_policies')}
+    for field in ('completed_sync_days','resolved_conflict_days','completed_draft_days','performance_sample_days'):
+        if field not in existing:
+            op.add_column('data_retention_policies',sa.Column(field,sa.Integer(),nullable=True))
+            conn.execute(sa.text('INSERT INTO '+REGISTRY+' (name) VALUES (:n)'),{'n':'column:'+field})
     for model in MODELS:
         t=model.__table__
         if t.name not in sa.inspect(conn).get_table_names():
@@ -51,4 +56,6 @@ def downgrade():
         if name in names:op.drop_index(name,table_name=table)
     for model in reversed(MODELS):
         if model.__table__.name in names:model.__table__.drop(conn)
+    for field in ('completed_sync_days','resolved_conflict_days','completed_draft_days','performance_sample_days'):
+        if 'column:'+field in names:op.drop_column('data_retention_policies',field)
     op.drop_table(REGISTRY)

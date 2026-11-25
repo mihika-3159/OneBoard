@@ -2,7 +2,7 @@
 from datetime import datetime,timedelta
 import math
 from decimal import Decimal
-from sqlalchemy import select,delete
+from sqlalchemy import select,delete,func
 from apps.api.core.database import Base,tenant_lifecycle_lock
 from apps.api.models.business import Business,User,BusinessMembership,UserSession
 from apps.api.models.integrations import IntegrationAccount
@@ -110,8 +110,10 @@ def delete_documents(db,tenant,ids):
     result=db.execute(delete(MemoryDocument).where(MemoryDocument.business_id==tenant,MemoryDocument.id.in_(ids)))
     return result.rowcount
 
-def set_retention(db,tenant,days,resolved_alert_days=None,expired_session_days=None):
-    values=(days,resolved_alert_days,expired_session_days)
+RETENTION_FIELDS=("document_days","resolved_alert_days","expired_session_days","completed_sync_days","resolved_conflict_days","completed_draft_days","performance_sample_days")
+
+def set_retention(db,tenant,days,resolved_alert_days=None,expired_session_days=None,completed_sync_days=None,resolved_conflict_days=None,completed_draft_days=None,performance_sample_days=None):
+    values=(days,resolved_alert_days,expired_session_days,completed_sync_days,resolved_conflict_days,completed_draft_days,performance_sample_days)
     if any(v is not None and (isinstance(v,bool) or not isinstance(v,int) or not 30<=v<=3650) for v in values):
         raise ValueError("Retention must be disabled or 30–3650 days")
     _lock(db,tenant)
@@ -119,11 +121,10 @@ def set_retention(db,tenant,days,resolved_alert_days=None,expired_session_days=N
     if row is None:
         row=DataRetentionPolicy(business_id=tenant)
         db.add(row)
-    row.document_days,row.resolved_alert_days,row.expired_session_days=values
+    for field,value in zip(RETENTION_FIELDS,values):setattr(row,field,value)
     row.updated_at=datetime.utcnow()
     db.commit()
-    return {"document_days":days,"automatic_document_deletion_enabled":days is not None,
-            "resolved_alert_days":resolved_alert_days,"expired_session_days":expired_session_days}
+    return {**dict(zip(RETENTION_FIELDS,values)),"automatic_document_deletion_enabled":days is not None}
 
 def apply_retention(db,tenant,now=None):
     _lock(db,tenant)
@@ -147,6 +148,21 @@ def apply_retention(db,tenant,now=None):
         ids=[x[0] for x in db.query(UserSession.id).filter_by(business_id=tenant)
              .filter(UserSession.expires_at<cutoff).order_by(UserSession.expires_at).limit(200).all()]
         count+=db.execute(delete(UserSession).where(UserSession.business_id==tenant,UserSession.id.in_(ids))).rowcount
+    from apps.api.models.operations import ProviderSyncJob,ProviderRecordConflict,SideEffectOutbox,DatabasePerformanceSample
+    # Retain request identities for deduplication: only old finished sync jobs
+    # with non-webhook request keys may be removed; provider action receipts,
+    # audit/security chains and financial history are never retention targets.
+    for field,model,stamp,condition in (
+        ("completed_sync_days",ProviderSyncJob,ProviderSyncJob.finished_at,ProviderSyncJob.state.in_(["succeeded","failed","cancelled"]) & ~ProviderSyncJob.request_key.like("webhook:%")),
+        ("resolved_conflict_days",ProviderRecordConflict,ProviderRecordConflict.created_at,ProviderRecordConflict.state.in_(["keep_recorded","accept_incoming"])),
+        ("completed_draft_days",SideEffectOutbox,SideEffectOutbox.processed_at,SideEffectOutbox.state=="draft_ready"),
+        ("performance_sample_days",DatabasePerformanceSample,DatabasePerformanceSample.created_at,True),
+    ):
+        days=getattr(row,field)
+        if days is None:continue
+        cutoff=now-timedelta(days=days)
+        ids=[x[0] for x in db.query(model.id).filter(model.business_id==tenant,stamp<cutoff,condition).order_by(stamp,model.id).limit(200)]
+        count+=db.execute(delete(model).where(model.business_id==tenant,model.id.in_(ids))).rowcount
     return count
 
 def delete_workspace(db,user,confirmation):
@@ -157,23 +173,38 @@ def delete_workspace(db,user,confirmation):
     owner(db,user)
     _lock(db,tenant)
     counts={}
-    preferred=["sync_history","semantic_vectors","memory_chunks","memory_documents",
-               "side_effect_outbox","approval_requests","workflow_schedules","workflow_runs","workflow_definitions",
-               "settlement_evidence","support_tickets","invoices","customers","tasks","goals","decisions",
-               "user_sessions","business_memberships","users","businesses"]
-    late={"user_sessions","business_memberships","users","businesses"}
-    names=[n for n in preferred if n not in late]
-    names += [t.name for t in Base.metadata.tables.values()
-              if t.name not in names and t.name not in late and _scope(t,tenant) is not None]
-    names += [n for n in preferred if n in late]
+    # Keep parents alive until their indirect children have been deleted.
+    # The explicit order reflects both ORM and migration-only composite FKs.
+    scoped={t.name for t in Base.metadata.tables.values() if _scope(t,tenant) is not None}
+    global_tables={"login_throttle_states","scheduled_job_leases","scheduler_cursors"}
+    unknown=set(Base.metadata.tables)-scoped-global_tables
+    if unknown:raise RuntimeError("Unclassified application ownership: "+", ".join(sorted(unknown)))
+    early=["portable_archive_pages","sync_history","semantic_vectors","memory_relevance_feedback","memory_document_states","memory_chunks","memory_documents",
+           "side_effect_outbox","approval_requests","workflow_schedules","workflow_events","workflow_trigger_states","workflow_revisions","workflow_runs","workflow_definitions",
+           "bank_statement_lines","unit_economics_observations","finance_forecasts","accounting_closes","journal_entries","settlement_evidence","support_tickets","invoices","customers","tasks","goals","decisions",
+           "provider_authorizations","provider_sync_jobs","provider_record_conflicts","provider_webhook_receipts","provider_deliveries","provider_records","provider_connections","portable_archives"]
+    late=["account_security","user_sessions","business_memberships","users","businesses"]
+    names=[n for n in early if n in scoped]+sorted(scoped-set(early)-set(late))+[n for n in late if n in scoped]
+    integration_ids=[x[0] for x in db.query(IntegrationAccount.id).filter_by(business_id=tenant)]
     user_ids=select(User.id).where(User.business_id==tenant)
+    # Cross-workspace memberships of deleted users are handled by the actual
+    # FK cascade, even when row-level policy hides them from the runtime.
     db.execute(delete(UserSession).where(UserSession.user_id.in_(user_ids)))
     db.execute(delete(BusinessMembership).where(BusinessMembership.user_id.in_(user_ids)))
     for name in names:
         table=Base.metadata.tables[name]
-        condition=_scope(table,tenant)
-        if condition is not None:
-            counts[name]=db.execute(delete(table).where(condition)).rowcount
+        condition=table.c.integration_id.in_(integration_ids) if name=="sync_history" else _scope(table,tenant)
+        counts[name]=db.execute(delete(table).where(condition)).rowcount
+    db.flush()
+    # Verify in the same transaction, before success is visible. The scoped
+    # session still has its signed tenant context even after business deletion.
+    remaining={}
+    for name in names:
+        table=Base.metadata.tables[name]
+        condition=table.c.integration_id.in_(integration_ids) if name=="sync_history" else _scope(table,tenant)
+        count=db.execute(select(func.count()).select_from(table).where(condition)).scalar_one()
+        if count:remaining[name]=count
+    if remaining:raise RuntimeError("Incomplete workspace deletion")
     db.commit()
-    return {"status":"workspace_application_rows_deleted","deleted_counts":counts,
+    return {"status":"workspace_application_rows_deleted","deleted_counts":counts,"verified_remaining_rows":0,
             "external_provider_data_deleted":False,"backup_copies_deleted":False}

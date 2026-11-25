@@ -147,6 +147,10 @@ class DataRetentionPolicy(Base):
     document_days = Column(Integer, nullable=True)
     resolved_alert_days = Column(Integer, nullable=True)
     expired_session_days = Column(Integer, nullable=True)
+    completed_sync_days = Column(Integer, nullable=True)
+    resolved_conflict_days = Column(Integer, nullable=True)
+    completed_draft_days = Column(Integer, nullable=True)
+    performance_sample_days = Column(Integer, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
