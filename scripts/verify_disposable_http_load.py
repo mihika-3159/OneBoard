@@ -30,9 +30,14 @@ def main():
     admin=create_engine(url)
     role='oneboard_runtime_ci_'+uuid4().hex[:10]
     password=secrets.token_hex(24)
-    provision(admin,role,password)
+    import base64
+    context=secrets.token_bytes(32)
+    with admin.begin() as conn:
+        existing=conn.execute(text('SELECT secret FROM oneboard_private.context_key WHERE singleton')).scalar_one_or_none()
+        if existing is not None: context=bytes(existing)
+    provision(admin,role,password,context)
     runtime_url=url.set(username=role,password=password).render_as_string(hide_password=False)
-    env=dict(os.environ,DATABASE_URL=runtime_url,ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",
+    env=dict(os.environ,DATABASE_URL=runtime_url,TENANT_CONTEXT_KEY=base64.b64encode(context).decode(),ACCOUNT_SECURITY_KEY=base64.b64encode(secrets.token_bytes(32)).decode(),ONEBOARD_PRODUCTION_MODE="true",ONEBOARD_DEMO_MODE="false",
              COOKIE_SECURE="true",PUBLIC_API_ORIGIN=BASE,CORS_ORIGINS=BASE,
              TRUSTED_PROXY_IPS="127.0.0.1",AUTH_SECRET_KEY=secrets.token_hex(32),
              OLLAMA_BASE_URL="http://127.0.0.1:1",SCHEDULER_INTERVAL_SECONDS="10")

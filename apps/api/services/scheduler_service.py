@@ -73,7 +73,8 @@ class SchedulerService:
 
     def tenant_ids(self):
         with SessionLocal() as db:
-            return [row[0] for row in db.query(Business.id).order_by(Business.id).all()]
+            from apps.api.core.tenant_context import tenant_ids
+            return tenant_ids(db)
 
     def next_job_tenants(self,limit=64):
         from apps.api.models.operations import SchedulerCursor
@@ -83,9 +84,10 @@ class SchedulerService:
                 cursor=SchedulerCursor(key="tenant_jobs",last_tenant="")
                 db.add(cursor)
                 db.flush()
-            ids=[row[0] for row in db.query(Business.id).filter(Business.id>cursor.last_tenant).order_by(Business.id).limit(limit).all()]
+            from apps.api.core.tenant_context import tenant_ids
+            ids=tenant_ids(db,cursor.last_tenant,limit)
             if not ids:
-                ids=[row[0] for row in db.query(Business.id).order_by(Business.id).limit(limit).all()]
+                ids=tenant_ids(db,"",limit)
             if ids:
                 cursor.last_tenant=ids[-1]
             db.commit()

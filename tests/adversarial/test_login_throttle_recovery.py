@@ -13,7 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from apps.api.core.auth import hash_password
-from apps.api.models.business import Business, User, UserSession, LoginThrottleState
+from apps.api.models.business import Business, User, UserSession, LoginThrottleState, AccountSecurity
 from apps.api.routers.auth_router import LoginRequest, login
 
 
@@ -27,7 +27,7 @@ def _request(host):
 
 def test_legitimate_password_recovers_from_remote_account_lockout():
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    for table in [Business.__table__, User.__table__, LoginThrottleState.__table__, UserSession.__table__]:
+    for table in [Business.__table__, User.__table__, LoginThrottleState.__table__, UserSession.__table__, AccountSecurity.__table__]:
         table.create(engine)
     make_session = sessionmaker(bind=engine)
     email = f"victim-{uuid4()}@example.test"

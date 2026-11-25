@@ -115,13 +115,12 @@ async def scheduled_index(db):
         db.add(cursor)
         db.flush()
     last=cursor.last_tenant
-    row=db.query(Business.id).filter(Business.id>last).order_by(Business.id).first()
-    if row is None:
-        row=db.query(Business.id).order_by(Business.id).first()
-    if row is None:
+    from apps.api.core.tenant_context import tenant_ids
+    ids=tenant_ids(db,last,1) or tenant_ids(db,"",1)
+    if not ids:
         db.rollback()
         return {"indexed":0}
-    tenant=row[0]
+    tenant=ids[0]
     cursor.last_tenant=tenant
     db.commit()  # Advance even if the provider is unavailable.
     with Session(bind=db.get_bind()) as scoped:

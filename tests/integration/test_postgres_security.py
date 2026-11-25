@@ -72,7 +72,7 @@ def test_01_two_concurrent_alembic_upgrades_create_full_postgres_schema():
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "014_batch_f_security"
+            assert revision == "015_batch_f_context"
             inspector = inspect(conn)
             tables = set(inspector.get_table_names())
             expected = set(Base.metadata.tables)
@@ -291,7 +291,7 @@ def test_07_postgres_downgrade_upgrade_roundtrip_preserves_auth_rows():
         alembic("upgrade", "head")
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-            assert revision == "014_batch_f_security"
+            assert revision == "015_batch_f_context"
             assert conn.execute(text("SELECT count(*) FROM businesses WHERE id = :id"),
                                 {"id": tenant_id}).scalar_one() == 1
             assert conn.execute(text("SELECT count(*) FROM users WHERE id = :id"),
@@ -413,7 +413,7 @@ def test_10_orphan_legacy_auth_data_blocks_fk_migration_without_loss():
     with _engine().connect() as conn:
         assert conn.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == "014_batch_f_security"
+        ).scalar_one() == "015_batch_f_context"
 
 
 def test_11_postgres_rejects_revoked_membership_for_bearer_and_api_key(monkeypatch):
@@ -708,7 +708,7 @@ def test_14_postgres_legacy_api_keys_are_hashed_without_losing_users(monkeypatch
             assert stored != old_raw
             assert conn.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "014_batch_f_security"
+            ).scalar_one() == "015_batch_f_context"
 
         monkeypatch.setattr(settings, "ONEBOARD_PRODUCTION_MODE", True)
         db = sessionmaker(bind=engine)()
@@ -808,7 +808,7 @@ def test_16_postgres_production_guard_rejects_stamped_plaintext_api_key(monkeypa
         with engine.begin() as conn:
             assert conn.execute(text(
                 "SELECT version_num FROM alembic_version"
-            )).scalar_one() == "014_batch_f_security"
+            )).scalar_one() == "015_batch_f_context"
             conn.execute(
                 text("INSERT INTO businesses (id,name) VALUES (:id,'Tampered synthetic tenant')"),
                 {"id": business_id},
@@ -1210,7 +1210,7 @@ def test_24_postgres_rejects_cross_tenant_document_reference():
         engine.dispose()
 
 
-def test_25_postgres_rls_scoped_reads_and_writes_with_non_superuser():
+def test_25_postgres_rls_scoped_reads_and_writes_with_non_superuser(monkeypatch):
     from uuid import uuid4
     from sqlalchemy.exc import DBAPIError
     from apps.api.core.database import scope_tenant_session
@@ -1224,14 +1224,28 @@ def test_25_postgres_rls_scoped_reads_and_writes_with_non_superuser():
             conn.execute(text(f"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOBYPASSRLS"))
             conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             conn.execute(text(f"GRANT SELECT, INSERT, UPDATE ON memory_documents TO {role}"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION public.ob_scope_valid() TO {role}"))
+            import base64,secrets
+            from apps.api.core.config import settings
+            key=secrets.token_bytes(32)
+            old=conn.execute(text("SELECT secret FROM oneboard_private.context_key WHERE singleton")).scalar_one_or_none()
+            if old is None:
+                conn.execute(text("INSERT INTO oneboard_private.context_key(singleton,secret) VALUES (true,:key)"),{"key":key})
+            else: key=bytes(old)
+            monkeypatch.setattr(settings,"TENANT_CONTEXT_KEY",base64.b64encode(key).decode())
         with factory() as db:
             db.add_all([MemoryDocument(business_id=t, title="Synthetic",
                                        content_hash="a"*64) for t in (a,b)])
             db.commit()
             db.execute(text(f"SET LOCAL ROLE {role}"))
             assert db.query(MemoryDocument).count()==0  # unscoped runtime fails closed
+            db.execute(text("SELECT set_config('oneboard.tenant',:tenant,true)"),{"tenant":b})
+            assert db.query(MemoryDocument).count()==0
             scope_tenant_session(db, a)
             assert [row.business_id for row in db.query(MemoryDocument).all()] == [a]
+            db.execute(text("SELECT set_config('oneboard.tenant',:tenant,true)"),{"tenant":b})
+            assert db.query(MemoryDocument).count()==0
+            scope_tenant_session(db,a)
             db.add(MemoryDocument(business_id=b, title="Rejected", content_hash="b"*64))
             with pytest.raises(DBAPIError):
                 db.flush()

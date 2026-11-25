@@ -82,7 +82,15 @@ def recover(req:Recovery,request:Request,response:Response,db:Session=Depends(ge
     source=request.client.host if request.client else "unknown"
     _charge(db,"account-recovery-source:"+source)
     _charge(db,"account-recovery:"+email)
-    user=db.query(User).filter_by(email=email,is_active=True).first()
+    from apps.api.core.tenant_context import restricted,lookup
+    if restricted(db):
+        found=lookup(db,"email",email)
+        if not found: raise HTTPException(401,"Recovery failed")
+        db.info["oneboard_exclusive_lifecycle"]=True
+        scope_tenant_session(db,found.tenant)
+        user=db.query(User).filter_by(id=found.uid,business_id=found.tenant,is_active=True).first()
+    else:
+        user=db.query(User).filter_by(email=email,is_active=True).first()
     if not user: raise HTTPException(401,"Recovery failed")
     db.info["oneboard_exclusive_lifecycle"]=True
     scope_tenant_session(db,user.business_id)
@@ -167,7 +175,8 @@ def create_member(req:Member,user:User=Depends(get_current_user),db:Session=Depe
     if req.role not in ("member","founder") or "@" not in req.email:
         raise HTTPException(422,"Invalid member role or email")
     email=req.email.strip().lower()
-    if db.query(User.id).filter_by(email=email).first():
+    from apps.api.core.tenant_context import restricted,lookup
+    if (lookup(db,"email",email) if restricted(db) else db.query(User.id).filter_by(email=email).first()):
         raise HTTPException(409,"Account already exists")
     import secrets
     member=User(email=email,name=req.name.strip(),role=req.role,business_id=user.business_id,
