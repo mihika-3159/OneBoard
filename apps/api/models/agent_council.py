@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Integer, Boolean
+from sqlalchemy import Column, String, Text, DateTime, JSON, Float, Integer, Boolean, Index
 from datetime import datetime
 import uuid
 from apps.api.core.database import Base
@@ -57,6 +57,16 @@ class AdviserScorecard(Base):
 
 class AgentRun(Base):
     __tablename__ = "agent_runs"
+    __table_args__ = (Index("uq_agent_run_tenant_key", "business_id", "idempotency_key", unique=True),)
+    idempotency_key = Column(String(128), nullable=True)
+    request_hash = Column(String(64), nullable=True)
+    status = Column(String(30), nullable=True)
+    next_step = Column(Integer, nullable=True)
+    attempt_count = Column(Integer, nullable=True)
+    lease_owner = Column(String(36), nullable=True)
+    lease_until = Column(DateTime, nullable=True)
+    deadline = Column(DateTime, nullable=True)
+    checkpoint_at = Column(DateTime, nullable=True)
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     business_id = Column(String(36), nullable=False)

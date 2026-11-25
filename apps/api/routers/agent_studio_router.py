@@ -1,4 +1,6 @@
 from apps.api.services.inference_stream import stream_or_wait
+from apps.api.services import agent_runtime
+from apps.api.models.agent_council import AgentRun
 from fastapi import Request, APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -24,6 +26,7 @@ class AgentCreateRequest(BaseModel):
     system_prompt: str = Field(min_length=1,max_length=8000)
     selected_model: str = "qwen2.5:7b"
     allowed_tools: List[str] = []
+    allowed_memory_collections: List[str] = Field(default_factory=list, max_length=50)
     requires_approval_for: List[str] = []
     max_steps: int = Field(default=5,ge=1,le=25)
 
@@ -61,6 +64,7 @@ def create_agent(
         system_prompt=req.system_prompt,
         selected_model=req.selected_model,
         allowed_tools=req.allowed_tools,
+        allowed_memory_collections=req.allowed_memory_collections,
         requires_approval_for=req.requires_approval_for,
         max_steps=req.max_steps,
         status="active"
@@ -137,3 +141,61 @@ def toggle_agent_status(
     agent.status = "paused" if agent.status == "active" else "active"
     db.commit()
     return {"id": agent.id, "status": agent.status}
+
+
+class RuntimeStep(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=36)
+    tool: str = Field(min_length=1, max_length=50)
+    document_id: str | None = Field(default=None, max_length=36)
+
+
+class RuntimeStart(BaseModel):
+    goal: str = Field(min_length=1, max_length=2000)
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    steps: list[RuntimeStep] = Field(min_length=1, max_length=12)
+
+
+@router.post("/{agent_id}/runs")
+def start_agent_run(agent_id: str, req: RuntimeStart, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "agent_run")
+    try:
+        return agent_runtime.serialize(agent_runtime.plan_run(db, current_user.business_id, agent_id, req.goal,
+            [s.model_dump() for s in req.steps], req.idempotency_key))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/runs")
+def list_agent_runs(current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    rows = db.query(AgentRun.id).filter_by(business_id=current_user.business_id, approval_state="runtime_read_only")\
+        .order_by(AgentRun.created_at.desc()).limit(50).all()
+    return [agent_runtime.serialize(agent_runtime.expire_or_recover(db, current_user.business_id, row[0])) for row in rows]
+
+
+@router.get("/runs/{run_id}")
+def get_agent_run(run_id: str, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    run = agent_runtime.expire_or_recover(db, current_user.business_id, run_id)
+    if not run:
+        raise HTTPException(404, "Run unavailable")
+    return agent_runtime.serialize(run)
+
+
+@router.post("/runs/{run_id}/advance")
+async def advance_agent_run(run_id: str, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db), request: Request = None):
+    if not agent_runtime.get_run(db, current_user.business_id, run_id):
+        raise HTTPException(404, "Run unavailable")
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db, current_user.business_id, "agent_run")
+    async def work():
+        run = await agent_runtime.advance(db, current_user.business_id, run_id)
+        return agent_runtime.serialize(run)
+    return await stream_or_wait(request, work, provider_stream=False)
+
+
+@router.post("/runs/{run_id}/cancel")
+def cancel_agent_run(run_id: str, current_user: User = Depends(require_founder_role), db: Session = Depends(get_db)):
+    run = agent_runtime.cancel(db, current_user.business_id, run_id)
+    if not run:
+        raise HTTPException(404, "Run unavailable")
+    return agent_runtime.serialize(run)
