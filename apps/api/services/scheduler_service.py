@@ -96,8 +96,8 @@ class SchedulerService:
     def run_tenant_jobs(self):
         from apps.api.services.workflow_schedule import run_due
         from apps.api.services.workflow_events import detect,drain
-        failed=0
-        for tenant in self.next_job_tenants():
+        def run_tenant(tenant):
+            failed=0
             try:
                 self.run_proactive_checks(tenant, apply_policy=True)
             except Exception as exc:
@@ -112,6 +112,15 @@ class SchedulerService:
                 except Exception as exc:
                     failed+=1
                     logger.error("Tenant background job failed (%s)",type(exc).__name__)
+            return failed
+        tenants=self.next_job_tenants()
+        if settings.ONEBOARD_PRODUCTION_MODE and tenants:
+            from concurrent.futures import ThreadPoolExecutor
+            # Independent tenant scopes; no shared Session between workers.
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                failed=sum(pool.map(run_tenant,tenants))
+        else:
+            failed=sum(run_tenant(t) for t in tenants)
         if settings.ONEBOARD_PRODUCTION_MODE:
             import asyncio
             from apps.api.services.semantic_index import scheduled_index

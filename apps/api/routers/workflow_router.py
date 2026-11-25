@@ -260,7 +260,7 @@ def resolve_approval(
         run = db.query(WorkflowRun).filter(
             WorkflowRun.id == approval.workflow_run_id,
             WorkflowRun.business_id == current_user.business_id,
-        ).first()
+        ).with_for_update().populate_existing().first()
         if (
             not run
             or run.status != "awaiting_approval"
@@ -368,7 +368,7 @@ def rollback_definition(workflow_id:str,req:WorkflowRollbackRequest,current_user
 
 @router.post("/{workflow_id}/webhook",status_code=202)
 def accept_webhook(workflow_id:str,req:WebhookEventRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
-    if not db.info.get("oneboard_api_key"):
+    if not db.info.get("oneboard_api_key") or not current_user.is_active:
         raise HTTPException(403,"Webhook requires authenticated write-capable API key")
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db,current_user.business_id,"workflow_execute")
@@ -395,5 +395,14 @@ def recover_run(run_id:str,current_user:User=Depends(require_founder_role),db:Se
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db,current_user.business_id,"workflow_execute")
     try:return workflow_engine.recover_run(db,current_user.business_id,run_id)
+    except ValueError as exc:
+        db.rollback();raise HTTPException(409,str(exc)) from exc
+
+
+@router.post("/events/{event_id}/retry")
+def retry_event(event_id:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workflow_execute")
+    try:return workflow_events.retry_dead_letter(db,current_user.business_id,event_id)
     except ValueError as exc:
         db.rollback();raise HTTPException(409,str(exc)) from exc

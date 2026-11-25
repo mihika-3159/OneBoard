@@ -16,7 +16,7 @@ def validate_conditions(nodes,edges):
     by_id={n["id"]:n for n in nodes}
     for edge in edges:
         branch=edge.get("branch")
-        if branch is not None and (type(branch) is not bool or by_id[edge["source"]].get("type")!="condition"):
+        if "branch" in edge and (type(branch) is not bool or by_id[edge["source"]].get("type")!="condition"):
             raise ValueError("Branch edges require a boolean condition source")
     for n in nodes:
         data=n.get("data",{})
@@ -26,18 +26,22 @@ def validate_conditions(nodes,edges):
         if not isinstance(bindings,dict) or len(bindings)>8:
             raise ValueError("Invalid data bindings")
         for key,ref in bindings.items():
-            if n.get("type")!="condition" or key!="left" or not isinstance(ref,dict) or ref.get("step") not in ancestors(n["id"],edges) or not isinstance(ref.get("field"),str):
+            if n.get("type")!="condition" or key not in ("left","right") or not isinstance(ref,dict) or ref.get("step") not in ancestors(n["id"],edges) or not isinstance(ref.get("field"),str) or not 1<=len(ref["field"])<=100:
                 raise ValueError("Only condition operands may bind an ancestor result")
 
 def resolve_data(data,node,edges,results):
     out=dict(data)
     for key,ref in out.pop("bindings",{}).items():
-        if key!="left" or ref.get("step") not in ancestors(node,edges):
+        if key not in ("left","right") or ref.get("step") not in ancestors(node,edges):
             raise ValueError("Invalid predecessor binding")
         result=results.get(ref["step"],{}).get("result")
-        if not isinstance(result,dict) or ref["field"] not in result:
-            raise ValueError("Missing predecessor value")
-        out[key]=result[ref["field"]]
+        parts=ref["field"].split(".")
+        if len(parts)>4:raise ValueError("Predecessor field path too deep")
+        for part in parts:
+            if not isinstance(result,dict) or part not in result:raise ValueError("Missing predecessor value")
+            result=result[part]
+        if type(result) not in (str,int,float,bool):raise ValueError("Predecessor value is not scalar")
+        out[key]=result
     return out
 
 def condition_result(data):

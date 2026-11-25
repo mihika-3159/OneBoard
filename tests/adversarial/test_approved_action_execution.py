@@ -26,7 +26,7 @@ def resume_fixture(node_type, node_data):
     run = SimpleNamespace(
         id="run-1", business_id="biz-1", workflow_id="wf-1",
         status="awaiting_approval", current_step_id="risky",
-        step_results={"start": {"status": "success"}},
+        step_results={"start": {"status": "success"},"risky":{"status":"awaiting_founder_approval","payload_digest":payload["payload_digest"]}},
         verification_details={
             "node_order": ["start", "risky", "finish"],
             "definition_digest": engine._definition_digest(wf),

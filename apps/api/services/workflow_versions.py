@@ -45,6 +45,13 @@ def validate(definition):
 
 def edit(db,tenant,wid,expected_version,definition=None,rollback_version=None):
     _lock(db,tenant)
+    # Coordinate edits with the scheduler's session-level dispatch lock.
+    from apps.api.services.durable_jobs import _key
+    from sqlalchemy import text
+    if db.get_bind().dialect.name=="postgresql" and not db.execute(
+        text("SELECT pg_try_advisory_xact_lock(:key)"),{"key":_key("workflow-schedule:"+wid)}
+    ).scalar_one():
+        raise ValueError("Schedule is currently executing; retry after completion")
     wf=db.query(WorkflowDefinition).filter_by(business_id=tenant,id=wid).with_for_update().first()
     if not wf: raise ValueError("Workflow unavailable")
     current=ensure_version(db,wf)
@@ -68,6 +75,7 @@ def edit(db,tenant,wid,expected_version,definition=None,rollback_version=None):
     if sched:
         sched.enabled=False
         sched.last_status="definition_changed"
+    db.flush()
     activate(db,wf)
     db.commit()
     return wf

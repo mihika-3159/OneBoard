@@ -6,7 +6,8 @@ from math import isfinite
 from uuid import uuid4
 from sqlalchemy import or_,and_
 from apps.api.models.workflow import WorkflowDefinition,WorkflowRun
-from apps.api.models.operations import WorkflowEvent,WorkflowTriggerState
+from apps.api.models.operations import WorkflowEvent,WorkflowTriggerState,WorkflowRevision
+from sqlalchemy import func
 from apps.api.models.entities import Customer,Invoice
 from apps.api.services.financial_metrics import calculate_business_financials
 from apps.api.services.tenant_storage import _lock
@@ -33,8 +34,13 @@ def config_for(kind,config):
     return dict(config)
 
 
-def fingerprint(wf):
-    return canonical_digest({"nodes":wf.nodes or [],"edges":wf.edges or [],"trigger":wf.trigger_type,"config":wf.trigger_config or {}})
+def revision_number(db,tenant,wid):
+    return db.query(func.max(WorkflowRevision.version)).filter_by(business_id=tenant,workflow_id=wid).scalar() or 0
+
+
+def fingerprint(db,wf):
+    return canonical_digest({"nodes":wf.nodes or [],"edges":wf.edges or [],"trigger":wf.trigger_type,
+                             "config":wf.trigger_config or {},"revision":revision_number(db,wf.business_id,wf.id)})
 
 
 def activate(db,wf):
@@ -44,9 +50,9 @@ def activate(db,wf):
         if row: db.delete(row)
         return
     if not row:
-        row=WorkflowTriggerState(business_id=wf.business_id,workflow_id=wf.id,config_digest=fingerprint(wf))
+        row=WorkflowTriggerState(business_id=wf.business_id,workflow_id=wf.id,config_digest=fingerprint(db,wf))
         db.add(row)
-    row.config_digest=fingerprint(wf)
+    row.config_digest=fingerprint(db,wf)
     row.activated_at=datetime.utcnow()
     row.state={}
 
@@ -67,7 +73,7 @@ def enqueue(db,wf,kind,identity,payload):
     if db.query(WorkflowEvent).filter_by(business_id=wf.business_id).count()>=MAX_EVENTS:
         raise ValueError("Event storage exhausted; no event was accepted")
     row=WorkflowEvent(business_id=wf.business_id,workflow_id=wf.id,event_key=key,kind=kind,
-                      payload=payload,definition_digest=fingerprint(wf),next_attempt_at=0)
+                      payload=payload,definition_digest=fingerprint(db,wf),next_attempt_at=0)
     db.add(row);db.flush()
     return row
 
@@ -77,7 +83,7 @@ def active_workflows(db,tenant,kind=None):
       (WorkflowTriggerState.workflow_id==WorkflowDefinition.id)&(WorkflowTriggerState.business_id==WorkflowDefinition.business_id)
     ).filter(WorkflowDefinition.business_id==tenant,WorkflowDefinition.is_active.is_(True),WorkflowDefinition.is_valid.is_(True))
     if kind:q=q.filter(WorkflowDefinition.trigger_type==kind)
-    return [(wf,state) for wf,state in q.order_by(WorkflowDefinition.id).limit(200) if state.config_digest==fingerprint(wf)]
+    return [(wf,state) for wf,state in q.order_by(WorkflowDefinition.id).limit(200) if state.config_digest==fingerprint(db,wf)]
 
 
 def customer_created(db,tenant,customer):
@@ -136,6 +142,7 @@ def serialize(row):
 
 
 def drain(db,tenant,limit=20,now=None):
+    if not 1<=limit<=100:raise ValueError("Invalid event drain limit")
     from apps.api.services.workflow_engine import workflow_engine
     now=_now(db) if now is None else now
     ids=[r[0] for r in db.query(WorkflowEvent.id).filter(WorkflowEvent.business_id==tenant,
@@ -149,20 +156,48 @@ def drain(db,tenant,limit=20,now=None):
             if not row or row.status not in ("queued","running") or row.next_attempt_at>now or (row.status=="running" and row.lease_until>now):
                 db.rollback();continue
             wf=db.query(WorkflowDefinition).filter_by(business_id=tenant,id=row.workflow_id,is_active=True,is_valid=True).first()
-            if row.attempts>=MAX_ATTEMPTS or not wf or fingerprint(wf)!=row.definition_digest:
+            if row.attempts>=MAX_ATTEMPTS or not wf or fingerprint(db,wf)!=row.definition_digest:
                 row.status="dead_letter";row.error="Retry budget exhausted or workflow changed";db.commit();continue
             token=str(uuid4());row.status="running";row.owner_token=token;row.lease_until=now+300;row.attempts+=1
-            wid,kind,payload=row.workflow_id,row.kind,row.payload
+            wid,kind,payload,digest=row.workflow_id,row.kind,row.payload,row.definition_digest
             db.commit()
             try:
                 run=workflow_engine.execute_workflow(db,tenant,wid,trigger_source=kind,idempotency_key="event_"+ident,
-                                                     event_payload=payload)
+                                                     event_payload=payload,expected_event_digest=digest)
                 state="dispatched" if run.status in ("completed","awaiting_approval") else "dead_letter"
                 values={"status":state,"run_id":run.id,"error":None if state=="dispatched" else "Run requires operator review"}
             except Exception:
                 db.rollback()
-                values={"status":"queued","next_attempt_at":now+60,"error":"Dispatch failed; retry same execution identity"}
+                # Preserve the same event identity on infrastructure errors.
+                # Never turn a committed but uncertain run into a second run.
+                existing=db.query(WorkflowRun).filter_by(business_id=tenant,idempotency_key="event_"+ident).first()
+                current=db.query(WorkflowEvent).filter_by(business_id=tenant,id=ident).first()
+                if existing:
+                    values={"status":"dead_letter","run_id":existing.id,"error":"Run requires operator review"}
+                elif not current or current.attempts>=MAX_ATTEMPTS:
+                    values={"status":"dead_letter","error":"Dispatch retry budget exhausted"}
+                else:
+                    values={"status":"queued","next_attempt_at":now+60*current.attempts,"error":"Dispatch failed; retry same execution identity"}
             values.update(owner_token=None,lease_until=0)
             db.query(WorkflowEvent).filter_by(business_id=tenant,id=ident,owner_token=token).update(values,synchronize_session=False)
             db.commit()
     return len(ids)
+
+
+def retry_dead_letter(db,tenant,ident):
+    _lock(db,tenant)
+    row=db.query(WorkflowEvent).filter_by(business_id=tenant,id=ident,status="dead_letter").with_for_update().first()
+    if not row:raise ValueError("Dead letter unavailable")
+    if row.run_id or db.query(WorkflowRun.id).filter_by(business_id=tenant,idempotency_key="event_"+ident).first():
+        raise ValueError("Existing execution must be recovered or cancelled from run history")
+    wf=db.query(WorkflowDefinition).filter_by(business_id=tenant,id=row.workflow_id,is_active=True,is_valid=True).first()
+    if not wf or fingerprint(db,wf)!=row.definition_digest:
+        raise ValueError("Definition changed; this event cannot be replayed")
+    if row.error=="Operator retry exhausted":
+        raise ValueError("Operator retry limit reached")
+    # No reset of the durable attempt counter. Permit exactly one extra claim.
+    if row.attempts>=MAX_ATTEMPTS:
+        raise ValueError("Retry budget exhausted; inspect event and create a new explicit business event if appropriate")
+    row.status="queued";row.next_attempt_at=0;row.owner_token=None;row.lease_until=0
+    db.commit()
+    return serialize(row)

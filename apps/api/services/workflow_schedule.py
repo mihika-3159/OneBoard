@@ -41,6 +41,8 @@ def parse(cron,zone):
     try:
         minute,hour,dom,month,dow=cron.split()
         if dom!="*" and dow!="*":raise ValueError("Specify day of month OR weekday, not both")
+        if dow!="*" and any(day not in DAYS for day in dow.split(",")):
+            raise ValueError("Use named weekdays (mon through sun)")
         minutes=field(minute,0,59)
         # Bound frequency to at most 12 slots/hour.
         if len(minutes)>12 or any(b-a<5 for a,b in zip(sorted(minutes),sorted(minutes)[1:])):
@@ -143,7 +145,7 @@ def run_due(db,tenant,now=None,limit=20):
                     continue
                 row.last_run_id=run.id
                 row.last_status=run.status
-                if run.status in ("running","pending","paused","failed","awaiting_approval"):
+                if run.status in ("running","pending","paused","failed","awaiting_approval","cancelled"):
                     # Require the founder to review or resolve before future dispatch.
                     row.enabled=False
                 row.coalesced=coalesced and policy=="coalesce"
