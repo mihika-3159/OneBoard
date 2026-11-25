@@ -37,6 +37,7 @@ export interface DashboardMetrics {
     expense_ids: string[];
     invoice_ids: string[];
   };
+  financial_sources?: { cash_balance: string; [key: string]: string };
   financial_provenance: {
     currency: string;
     independent_ledger_reconciliation: boolean;
