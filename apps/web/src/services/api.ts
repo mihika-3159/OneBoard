@@ -145,7 +145,16 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 // Preserve the same request identity when a network/5xx error leaves the
 // outcome unknown. A deliberate new execution receives a new UUID only after
 // the previous outcome has been confirmed.
-const pendingWorkflowKeys = new Map<string, string>();
+// These are non-secret operation IDs, not authentication material.
+// Do not dispatch if persistent storage is unavailable: a reload must not
+// silently generate a new operation after an ambiguous response.
+const workflowKeyPrefix = 'oneboard.workflow.pending.v1:';
+function workflowIdentity(workflowId:string,dryRun:boolean){return workflowKeyPrefix+workflowId+':'+dryRun}
+async function withWorkflowLock<T>(identity:string,operation:()=>Promise<T>):Promise<T>{
+  if(navigator.locks) return navigator.locks.request(identity,operation);
+  // session-local fallback still preserves the pending key across reloads.
+  return operation();
+}
 
 // ---------------------------------------------------------------------------
 // Exported API Client
@@ -387,28 +396,26 @@ export const api = {
   },
 
   executeWorkflow: async (workflowId: string, dryRun: boolean = false): Promise<any> => {
-    const requestIdentity = `${workflowId}:${dryRun}`;
-    let key = pendingWorkflowKeys.get(requestIdentity);
-    if (!key) {
-      key = crypto.randomUUID();
-      pendingWorkflowKeys.set(requestIdentity, key);
-    }
-    try {
-      const result = await request<any>(`/workflows/${workflowId}/execute?dry_run=${dryRun}`, {
-        method: 'POST',
-        headers: { 'Idempotency-Key': key },
+    const identity=workflowIdentity(workflowId,dryRun);
+    return withWorkflowLock(identity,async()=>{
+      let key=localStorage.getItem(identity);
+      if(!key){key=crypto.randomUUID();localStorage.setItem(identity,key);}
+      const result=await request<any>(`/workflows/${workflowId}/execute?dry_run=${dryRun}`,{
+        method:'POST',headers:{'Idempotency-Key':key}
       });
-      pendingWorkflowKeys.delete(requestIdentity);
+      // Clear only after the durable identity has been returned.
+      if(result?.id && localStorage.getItem(identity)===key)localStorage.removeItem(identity);
       return result;
-    } catch (error) {
-      // 4xx is a definite refusal. For lost responses and 5xx, preserve the
-      // original key so a retry checks the previous durable run.
-      if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
-        pendingWorkflowKeys.delete(requestIdentity);
-      }
-      throw error;
-    }
+    });
   },
+  getWorkflowVersions: async (id:string):Promise<any[]> => request<any[]>(`/workflows/${id}/versions`),
+  updateWorkflowDefinition: async (id:string,payload:any):Promise<WorkflowDef> => request<WorkflowDef>(`/workflows/${id}/definition`,{method:'PUT',body:JSON.stringify(payload)}),
+  rollbackWorkflow: async (id:string,expected_version:number,target_version:number):Promise<WorkflowDef> =>
+    request<WorkflowDef>(`/workflows/${id}/rollback`,{method:'POST',body:JSON.stringify({expected_version,target_version})}),
+  getWorkflowEvents: async ():Promise<any[]>=>request<any[]>('/workflows/events'),
+  cancelWorkflowRun: async (id:string):Promise<any>=>request<any>(`/workflows/runs/${id}/cancel`,{method:'POST'}),
+  recoverWorkflowRun: async (id:string):Promise<any>=>request<any>(`/workflows/runs/${id}/recover`,{method:'POST'}),
+  reconcileWorkflowRuns: async ():Promise<any>=>request<any>('/workflows/runs/reconcile-interrupted',{method:'POST'}),
 
   generateWorkflowPrompt: async (prompt: string): Promise<any> => {
     return request<any>('/workflows/generate', {
@@ -432,8 +439,8 @@ export const api = {
   },
 
   getSchedules: async (): Promise<any[]> => request<any[]>('/workflows/schedules'),
-  saveSchedule: async (id:string, cron:string, timezone:string, enabled:boolean):Promise<any> =>
-    request<any>(`/workflows/${id}/schedule`,{method:'PUT',body:JSON.stringify({cron,timezone,enabled})}),
+  saveSchedule: async (id:string, cron:string, timezone:string, enabled:boolean,missed_policy:string='coalesce'):Promise<any> =>
+    request<any>(`/workflows/${id}/schedule`,{method:'PUT',body:JSON.stringify({cron,timezone,enabled,missed_policy})}),
   getRetention: async ():Promise<any> => request<any>('/data/retention',{cache:'no-store'}),
   saveRetention: async (policy:Record<string,number|null>):Promise<any> =>
     request<any>('/data/retention',{method:'PUT',body:JSON.stringify(policy)}),

@@ -156,6 +156,7 @@ export interface CustomAgent {
 }
 
 export interface WorkflowDef {
+  version?: number;
   id: string;
   name: string;
   description?: string;

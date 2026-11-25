@@ -25,6 +25,7 @@ import {
 import { api } from '../services/api';
 import { useInferenceOperation } from './useInferenceOperation';
 import { WorkflowDef } from '../types';
+import { WorkflowOperationsPanel } from './WorkflowOperationsPanel';
 
 export const WorkflowStudioTab: React.FC = () => {
   const inference = useInferenceOperation();
@@ -35,6 +36,8 @@ export const WorkflowStudioTab: React.FC = () => {
   const [schedule, setSchedule] = useState<any>(null);
   const [scheduleTime, setScheduleTime] = useState('09:00');
   const [scheduleDay, setScheduleDay] = useState('*');
+  const [advancedCron,setAdvancedCron]=useState('');
+  const [missedPolicy,setMissedPolicy]=useState('coalesce');
   const [scheduleZone, setScheduleZone] = useState('UTC');
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [scheduleBusy,setScheduleBusy] = useState(false);
@@ -53,14 +56,17 @@ export const WorkflowStudioTab: React.FC = () => {
       const row=rows.find(x=>x.workflow_id===id);
       setSchedule(row||null);
       const [minute,hour,,,day]=(row?.cron||'0 9 * * *').split(' ');
-      setScheduleTime(hour.padStart(2,'0')+':'+minute.padStart(2,'0'));
+      const simple=/^\d{1,2} \d{1,2} \* \* (\*|mon|tue|wed|thu|fri|sat|sun)$/.test(row?.cron||'0 9 * * *');
+      setAdvancedCron(simple?'':row.cron);
+      setMissedPolicy(row?.missed_policy||'coalesce');
+      setScheduleTime(simple?hour.padStart(2,'0')+':'+minute.padStart(2,'0'):'09:00');
       setScheduleDay(day);
       setScheduleZone(row?.timezone||'UTC');
       setScheduleEnabled(Boolean(row?.enabled));
       setScheduleLoaded(true);
     }).catch(e=>{if(!cancelled)setScheduleError(e instanceof Error?e.message:'Schedule lookup failed');});
     return ()=>{cancelled=true};
-  },[selectedWorkflow?.id]);
+  },[selectedWorkflow?.id,selectedWorkflow?.version]);
 
   const saveSchedule=async()=>{
     if(!selectedWorkflow||!scheduleLoaded||!scheduleTime||!scheduleZone.trim())return;
@@ -68,7 +74,7 @@ export const WorkflowStudioTab: React.FC = () => {
     setScheduleError(null);
     try {
       const [hour,minute]=scheduleTime.split(':').map(Number);
-      const row=await api.saveSchedule(selectedWorkflow.id,`${minute} ${hour} * * ${scheduleDay}`,scheduleZone.trim(),scheduleEnabled);
+      const row=await api.saveSchedule(selectedWorkflow.id,advancedCron.trim()||`${minute} ${hour} * * ${scheduleDay}`,scheduleZone.trim(),scheduleEnabled,missedPolicy);
       setSchedule(row);
     } catch(e) {setScheduleError(e instanceof Error?e.message:'Schedule update failed');}
     finally {setScheduleBusy(false);}
@@ -210,6 +216,7 @@ export const WorkflowStudioTab: React.FC = () => {
   return (
     <div className="space-y-6">
       {inference.indicator}
+      <WorkflowOperationsPanel selected={selectedWorkflow} onUpdated={wf=>{setWorkflows(old=>old.map(x=>x.id===wf.id?wf:x));selectWorkflow(wf);}} />
       {/* Header bar */}
       <div className="p-5 rounded-2xl glass-panel flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -232,7 +239,7 @@ export const WorkflowStudioTab: React.FC = () => {
           </button>
           <button
             onClick={() => handleRunWorkflow(false)}
-            disabled={isRunning || !selectedWorkflow}
+            disabled={isRunning || !selectedWorkflow || selectedWorkflow.is_active===false}
             className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition shadow-lg shadow-indigo-600/20"
           >
             <Play className="w-3.5 h-3.5 fill-white" />
@@ -243,7 +250,7 @@ export const WorkflowStudioTab: React.FC = () => {
 
       {selectedWorkflow && <section aria-label="Workflow schedule" className="p-4 rounded-2xl glass-panel space-y-3 text-xs">
         <h2 className="text-sm font-bold text-white">Scheduled execution</h2>
-        <p className="text-slate-400">Opt-in only. Missed slots coalesce into one run. A pending approval or uncertain run pauses future executions; external delivery remains unavailable.</p>
+        <p className="text-slate-400">Opt-in only. Choose coalescing, skipping or bounded catch-up for missed slots. Pending approvals or uncertain runs pause execution. No external delivery.</p>
         {scheduleError && <p role="alert" className="text-rose-300">{scheduleError}</p>}
         <div className="flex flex-wrap gap-3 items-end">
           <label className="space-y-1">Local run time
@@ -256,6 +263,14 @@ export const WorkflowStudioTab: React.FC = () => {
           </label>
           <label className="space-y-1">IANA timezone
             <input aria-label="IANA timezone" className="block bg-slate-900 border rounded p-2 text-white" value={scheduleZone} onChange={e=>setScheduleZone(e.target.value)} disabled={!scheduleLoaded||scheduleBusy}/>
+          </label>
+          <label className="space-y-1">Advanced five-field cron (optional)
+            <input aria-label="Advanced cron" className="block bg-slate-900 border rounded p-2" placeholder="0 9 1 * *" value={advancedCron} onChange={e=>setAdvancedCron(e.target.value)}/>
+          </label>
+          <label className="space-y-1">Missed slots
+            <select aria-label="Missed slot policy" className="block bg-slate-900 border rounded p-2" value={missedPolicy} onChange={e=>setMissedPolicy(e.target.value)}>
+              <option value="coalesce">Coalesce</option><option value="skip">Skip</option><option value="catch_up">Catch up one per pass</option>
+            </select>
           </label>
           <label className="flex gap-2 items-center"><input type="checkbox" checked={scheduleEnabled} onChange={e=>setScheduleEnabled(e.target.checked)} disabled={!scheduleLoaded||scheduleBusy}/>Enable automatic execution</label>
           <button className="px-3 py-2 rounded bg-indigo-600 disabled:opacity-50" onClick={saveSchedule} disabled={!scheduleLoaded||scheduleBusy}>Save schedule</button>
@@ -303,8 +318,10 @@ export const WorkflowStudioTab: React.FC = () => {
               <div>
                 <div className="font-semibold text-white">{app.title}</div>
                 <div className="text-[11px] text-slate-400">{app.description}</div>
+                <details><summary>Review immutable approval payload</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(app.payload,null,2)}</pre></details>
               </div>
               <button
+                disabled={!app.payload?.payload_digest}
                 onClick={() => handleApprovePending(app.id)}
                 className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg transition flex items-center gap-1"
               >

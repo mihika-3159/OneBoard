@@ -9,6 +9,7 @@ def resume_fixture(node_type, node_data):
     engine = WorkflowEngine()
     wf = SimpleNamespace(
         name="Approval test",
+        is_active=True, is_valid=True,
         nodes=[
             {"id": "start", "type": "trigger", "data": {}},
             {"id": "risky", "type": node_type, "data": node_data},
@@ -17,7 +18,11 @@ def resume_fixture(node_type, node_data):
         edges=[{"source": "start", "target": "risky"},
                {"source": "risky", "target": "finish"}],
     )
-    request = SimpleNamespace(status="pending", payload={"step_id": "risky"})
+    from apps.api.services.workflow_effects import canonical_digest
+    payload={"step_id":"risky","node_data":node_data,"resolved_data":node_data,"effect_preview":None,
+             "action_digest":engine._action_digest(wf.nodes[1]),"definition_digest":engine._definition_digest(wf),"run_id":"run-1"}
+    payload["payload_digest"]=canonical_digest(payload)
+    request = SimpleNamespace(status="pending", payload=payload)
     run = SimpleNamespace(
         id="run-1", business_id="biz-1", workflow_id="wf-1",
         status="awaiting_approval", current_step_id="risky",
