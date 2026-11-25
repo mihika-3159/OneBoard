@@ -1008,3 +1008,8 @@ request transactions and monitor acquire tenant lifecycle locks to coordinate
 deletion with in-flight writes. Backup copies, external systems, arbitrary
 secret text embedded in user content, and physical storage erasure are not
 certified. Sensitive validation responses are redacted. New CI pending.
+
+
+Batch C increment 4: automatic bounded genuine embedding backfill, validated
+evidence-content SHA-256, local provider credential revocation/cancelled
+intents, additional quotas and no-store sensitive endpoints. CI pending.

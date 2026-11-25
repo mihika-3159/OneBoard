@@ -57,6 +57,10 @@ class SchedulerService:
                 try:
                     self.run_proactive_checks()
                     process_local_outbox(db)
+                    if settings.ONEBOARD_PRODUCTION_MODE:
+                        import asyncio
+                        from apps.api.services.semantic_index import scheduled_index
+                        asyncio.run(scheduled_index(db))
                 except Exception:
                     db.rollback()
                     finish_job(db, job, token, False)

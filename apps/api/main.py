@@ -65,7 +65,7 @@ app = FastAPI(
 
 @app.exception_handler(RequestValidationError)
 async def redact_sensitive_validation(request, exc):
-    if request.url.path in ("/api/integrations/providers/credential", "/api/data/delete-workspace"):
+    if request.url.path in ("/api/integrations/providers/credential", "/api/data/delete-workspace", "/api/business/financial/settlements"):
         return JSONResponse({"detail":"Invalid sensitive request"},status_code=422)
     return await request_validation_exception_handler(request,exc)
 
@@ -116,7 +116,7 @@ async def security_response_headers(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    if request.url.path.startswith("/api/auth/"):
+    if request.url.path.startswith(("/api/auth/", "/api/data/", "/api/integrations/providers/", "/api/business/financial/")):
         response.headers["Cache-Control"] = "no-store"
     if settings.ONEBOARD_PRODUCTION_MODE and secure_external_request:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"

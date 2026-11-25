@@ -112,6 +112,7 @@ class SettlementRequest(BaseModel):
     invoice_id: str = Field(min_length=1,max_length=36)
     source_reference: str = Field(min_length=8,max_length=128)
     source_sha256: str = Field(min_length=64,max_length=64)
+    evidence_text: str = Field(min_length=1,max_length=262144,repr=False)
     amount: str = Field(min_length=1,max_length=32)
     currency: str = Field(min_length=3,max_length=3)
     fx_rate: str = Field(min_length=1,max_length=32)

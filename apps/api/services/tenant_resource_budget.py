@@ -24,6 +24,7 @@ POLICIES = {
     "agent_test": (20, 60),
     "document_upload": (10, 300),
     "council_deliberate": (6, 60),
+    "workspace_delete": (3, 300),
 }
 
 

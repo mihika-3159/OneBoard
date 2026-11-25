@@ -78,6 +78,11 @@ class ProviderIntentRequest(BaseModel):
 def save_provider_credential(req: ProviderCredentialRequest,current_user: User = Depends(require_founder_role),
                              db: Session = Depends(get_db)):
     from apps.api.services.provider_staging import store_credential
+    from apps.api.services.data_lifecycle import owner
+    try:
+        owner(db,current_user)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403,detail=str(exc)) from exc
     if settings.ONEBOARD_PRODUCTION_MODE:
         consume_tenant_budget(db,current_user.business_id,"customer_import")
     try:
@@ -85,6 +90,18 @@ def save_provider_credential(req: ProviderCredentialRequest,current_user: User =
     except ValueError:
         db.rollback()
         raise HTTPException(status_code=422,detail="Invalid provider credential or encryption configuration") from None
+
+@router.delete("/providers/credential/{provider}")
+def remove_provider_credential(provider:str,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
+    from apps.api.services.provider_staging import revoke_credential
+    from apps.api.services.data_lifecycle import owner
+    try:
+        owner(db,current_user)
+        return revoke_credential(db,current_user.business_id,provider)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403,detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
 
 @router.post("/providers/intent")
 def stage_provider_intent(req: ProviderIntentRequest,current_user: User = Depends(require_founder_role),

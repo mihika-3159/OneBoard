@@ -74,8 +74,20 @@ def stage_intent(db,tenant,provider,scope,key):
     if old and old.request_sha256!=digest:
         raise ValueError("Idempotency key already used with different intent")
     if not old:
+        if db.query(ProviderIntent).filter_by(business_id=tenant).count()>=1000:
+            raise ValueError("Tenant provider intent limit reached")
         old=ProviderIntent(business_id=tenant,provider=provider,idempotency_key=key,request_sha256=digest,scope=scope)
         db.add(old)
         db.commit()
     return {"id":old.id,"status":old.state,"provider":provider,"scope":scope,
             "provider_contacted":False,"grants_verified":False}
+
+
+def revoke_credential(db,tenant,provider):
+    if provider not in SCOPES:
+        raise ValueError("Unsupported provider")
+    _lock(db,tenant)
+    removed=db.query(ProviderCredential).filter_by(business_id=tenant,provider=provider).delete()
+    db.query(ProviderIntent).filter_by(business_id=tenant,provider=provider,state="staged_no_dispatch").update({"state":"cancelled_local"},synchronize_session=False)
+    db.commit()
+    return {"local_credential_removed":bool(removed),"remote_revocation_confirmed":False}

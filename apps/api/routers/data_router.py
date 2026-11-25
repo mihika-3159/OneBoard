@@ -61,6 +61,10 @@ class DeleteRequest(BaseModel):
 def delete_workspace(req:DeleteRequest,current_user:User=Depends(require_founder_role),db:Session=Depends(get_db)):
     from apps.api.core.auth import verify_password
     _owner(db,current_user)
+    from apps.api.core.config import settings
+    from apps.api.services.tenant_resource_budget import consume_tenant_budget
+    if settings.ONEBOARD_PRODUCTION_MODE:
+        consume_tenant_budget(db,current_user.business_id,"workspace_delete")
     if not verify_password(req.password,current_user.hashed_password):
         raise HTTPException(status_code=403,detail="Password verification failed")
     try:

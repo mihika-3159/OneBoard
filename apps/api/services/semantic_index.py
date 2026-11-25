@@ -10,6 +10,8 @@ from apps.api.models.memory import MemoryChunk, MemoryDocument
 from apps.api.models.operations import SemanticVector
 from apps.api.services.ollama_gateway import ollama_gateway
 from apps.api.services.tenant_storage import _lock
+from apps.api.core.database import tenant_lifecycle_lock
+from apps.api.models.business import Business
 
 @lru_cache(maxsize=8)
 def _planes(dimension):
@@ -48,6 +50,7 @@ async def index_pending(db, tenant, limit=8):
         if vector is None:
             break
         bands = signatures(vector)
+        tenant_lifecycle_lock(db,tenant)
         _lock(db, tenant)
         chunk = db.query(MemoryChunk).filter_by(id=chunk_id, business_id=tenant).first()
         if chunk is None or chunk.content != content:
@@ -93,3 +96,20 @@ async def retrieve(db, tenant, query, top_k):
                "embedding_model": model, "metadata": c.metadata_tags or {}}
               for v,c,title in rows[:200]]
     return sorted(scored, key=lambda row: row["score"], reverse=True)[:top_k]
+
+
+async def scheduled_index(db):
+    """Bounded automatic backfill: rotate tenants, one chunk per monitor tick."""
+    import time
+    from sqlalchemy import distinct
+    model = ollama_gateway.get_model_for_task("embedding")
+    tenants = [row[0] for row in db.query(distinct(MemoryChunk.business_id)).join(
+        Business, Business.id == MemoryChunk.business_id
+    ).outerjoin(SemanticVector, and_(SemanticVector.chunk_id == MemoryChunk.id,
+        SemanticVector.business_id == MemoryChunk.business_id, SemanticVector.model == model)
+    ).filter(SemanticVector.chunk_id.is_(None)).order_by(MemoryChunk.business_id).limit(1000).all()]
+    db.rollback()
+    if not tenants:
+        return {"indexed":0}
+    tenant = tenants[int(time.time() // 60) % len(tenants)]
+    return await index_pending(db, tenant, limit=1)
